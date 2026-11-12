@@ -105,5 +105,31 @@
     "noticeCheck": "我已阅读并理解以上内容",
     "noticeAccept": "继续",
     "noticeBusy": "正在记录…"
+  },
+  "foreign": {
+    "title": "从其他 HARNESS 导入",
+    "description": "扫描其他 agent harness 在这台机器上记录下的会话，勾选要发送的，然后发送。只有点击「扫描」之后才会开始扫描。",
+    "scan": "扫描",
+    "scanning": "正在扫描…",
+    "scanFailed": "扫描结果读取失败。",
+    "empty": "其他 harness 里没有找到会话。",
+    "groupEmpty": "没有会话。",
+    "unavailable": "这台机器上没有找到。",
+    "harnessError": "扫描出错：",
+    "untitled": "未命名会话",
+    "cwdUnknown": "未提供目录",
+    "modelUnknown": "未提供模型",
+    "messages": "条消息",
+    "save": "保存勾选",
+    "send": "发送选中的 {count} 个会话",
+    "statusWaiting": "等待中",
+    "statusSending": "发送中…",
+    "statusOk": "发送成功（{requests} 次请求）",
+    "statusOkTruncated": "发送成功（{requests} 次请求，只发送了这段对话的前一部分）",
+    "statusFailed": "失败：{error}",
+    "statusUnknown": "未知错误",
+    "warnTitle": "要把这些会话发送到下面的目标吗？",
+    "warnBody": "这些不是 DSH 会话。发出去的内容会被包装成一段 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
+    "warnConfirm": "发送"
   }
 }

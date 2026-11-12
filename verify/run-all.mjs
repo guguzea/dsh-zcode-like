@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url'
 const SUITE = [
   ['implementer host unit tests', 'host-unit.mjs'],
   ['implementer client checks', 'client-check.mjs'],
+  ['other-harness adapters', 'foreign-adapters.mjs'],
+  ['other-harness envelope forging', 'foreign-forge.mjs'],
   ['payload fidelity (differential vs the shipped uploader)', 'fidelity.mjs'],
   ['host adversarial checks', 'adversarial-host.mjs'],
   ['client consent-gate checks', 'adversarial-client.mjs'],

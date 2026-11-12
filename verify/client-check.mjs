@@ -65,7 +65,31 @@ const REQUIRED_KEYS = [
 	"upload.ledger.titlesLabel",
 	"upload.ledger.titlesDetail",
 	"upload.ledger.columnsHint",
-	"upload.saveFailed"
+	"upload.saveFailed",
+	"foreign.title",
+	"foreign.description",
+	"foreign.scan",
+	"foreign.scanning",
+	"foreign.scanFailed",
+	"foreign.empty",
+	"foreign.groupEmpty",
+	"foreign.unavailable",
+	"foreign.harnessError",
+	"foreign.untitled",
+	"foreign.cwdUnknown",
+	"foreign.modelUnknown",
+	"foreign.messages",
+	"foreign.save",
+	"foreign.send",
+	"foreign.statusWaiting",
+	"foreign.statusSending",
+	"foreign.statusOk",
+	"foreign.statusOkTruncated",
+	"foreign.statusFailed",
+	"foreign.statusUnknown",
+	"foreign.warnTitle",
+	"foreign.warnBody",
+	"foreign.warnConfirm"
 ];
 
 let passed = 0;
@@ -110,10 +134,10 @@ function sortedKeys(object) {
 	return Object.keys(object).sort();
 }
 
-/** The client half owns `upload.*` only; `meta.*` is Host display metadata. */
-function uploadOnly(flat) {
+/** The client half owns `upload.*` and `foreign.*`; `meta.*` is Host display metadata. */
+function clientOnly(flat) {
 	const out = {};
-	for (const key of Object.keys(flat)) if (key.startsWith("upload.")) out[key] = flat[key];
+	for (const key of Object.keys(flat)) if (key.startsWith("upload.") || key.startsWith("foreign.")) out[key] = flat[key];
 	return out;
 }
 
@@ -241,17 +265,17 @@ check("no-host-packages", "no @deepseek-ai/* module and no unexpected require", 
 });
 
 // 5 ─ locale keys used ──────────────────────────────────────────────────────────────────
-check("locale-keys", "every t(...) key and every upload.* literal exists in both locale files", () => {
+check("locale-keys", "every t(...) key and every upload.* / foreign.* literal exists in both locale files", () => {
 	const tKeys = new Set();
 	const tCall = /\bt\(\s*(["'])([A-Za-z0-9_.]+)\1/g;
 	for (const match of clientSource.matchAll(tCall)) {
-		if (/^upload(\.[A-Za-z0-9]+)+$/.test(match[2])) tKeys.add(match[2]);
+		if (/^(?:upload|foreign)(\.[A-Za-z0-9]+)+$/.test(match[2])) tKeys.add(match[2]);
 	}
 	assert(tKeys.size > 0, "no literal t(\"upload.*\") key found");
 	const literals = new Set();
 	const literalPattern = /(["'])((?:(?!\1)[^\\\r\n]|\\.)*)\1/g;
 	for (const match of clientSource.matchAll(literalPattern)) {
-		if (/^upload(\.[A-Za-z0-9]+)+$/.test(match[2])) literals.add(match[2]);
+		if (/^(?:upload|foreign)(\.[A-Za-z0-9]+)+$/.test(match[2])) literals.add(match[2]);
 	}
 	const missing = [];
 	for (const key of [...tKeys, ...literals].sort()) {
@@ -261,7 +285,7 @@ check("locale-keys", "every t(...) key and every upload.* literal exists in both
 	assert(missing.length === 0, `missing keys: ${missing.join(", ")}`);
 	const requiredMissing = REQUIRED_KEYS.filter((key) => !(key in enFlat) || !(key in zhFlat));
 	assert(requiredMissing.length === 0, `frozen keys absent: ${requiredMissing.join(", ")}`);
-	return `${tKeys.size} t() keys, ${literals.size} upload.* literals, ${REQUIRED_KEYS.length} frozen keys`;
+	return `${tKeys.size} t() keys, ${literals.size} client literals, ${REQUIRED_KEYS.length} frozen keys`;
 });
 
 // 6 ─ en/zh parity ──────────────────────────────────────────────────────────────────────
@@ -281,17 +305,17 @@ check("dict-parity", "inline DICTIONARIES match both locale files exactly", () =
 	}
 	const enInline = dictionaries.en;
 	const zhInline = dictionaries.zh;
-	const enUpload = uploadOnly(enFlat);
-	const zhUpload = uploadOnly(zhFlat);
-	assert(sameSet(sortedKeys(enInline), sortedKeys(enUpload)), "inline en key set differs from locale/en.json");
-	assert(sameSet(sortedKeys(zhInline), sortedKeys(zhUpload)), "inline zh key set differs from locale/zh.json");
-	for (const key of sortedKeys(enUpload)) {
-		assert(enInline[key] === enUpload[key], `inline en["${key}"] differs from locale/en.json`);
+	const enClient = clientOnly(enFlat);
+	const zhClient = clientOnly(zhFlat);
+	assert(sameSet(sortedKeys(enInline), sortedKeys(enClient)), "inline en key set differs from locale/en.json");
+	assert(sameSet(sortedKeys(zhInline), sortedKeys(zhClient)), "inline zh key set differs from locale/zh.json");
+	for (const key of sortedKeys(enClient)) {
+		assert(enInline[key] === enClient[key], `inline en["${key}"] differs from locale/en.json`);
 	}
-	for (const key of sortedKeys(zhUpload)) {
-		assert(zhInline[key] === zhUpload[key], `inline zh["${key}"] differs from locale/zh.json`);
+	for (const key of sortedKeys(zhClient)) {
+		assert(zhInline[key] === zhClient[key], `inline zh["${key}"] differs from locale/zh.json`);
 	}
-	return `${sortedKeys(enUpload).length} upload.* keys × 2 languages in sync`;
+	return `${sortedKeys(enClient).length} client keys × 2 languages in sync`;
 });
 
 // 8 ─ registration shape ────────────────────────────────────────────────────────────────
@@ -772,6 +796,8 @@ async function disclosedValues(value, rounds) {
 const LEDGER_ROUTE = "api/session-log-upload.ledger";
 /** The Host default destination, used for a served form in the ledger scenarios. */
 const SERVED_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
+/** The Host default byte cap (`host/config.js` DEFAULT_MAX_BYTES): the page's fallback too. */
+const DEFAULT_CAP = 20971520;
 
 /**
  * A `fetch` stub for the ledger route, standing in for the page's own fetch.
@@ -870,7 +896,7 @@ async function ledgerScenario(replies, options) {
 	const form = settings.form !== undefined ? settings.form : createWritableForm({
 		mode: settings.mode === undefined ? "official-only" : settings.mode,
 		endpoint: settings.endpoint === undefined ? SERVED_ENDPOINT : settings.endpoint,
-		maxBytes: settings.maxBytes === undefined ? 8388608 : settings.maxBytes
+		maxBytes: settings.maxBytes === undefined ? DEFAULT_CAP : settings.maxBytes
 	});
 	const runtime = createHookRuntime();
 	applyWith({
@@ -1073,6 +1099,161 @@ async function checkAsync(id, title, run) {
 		console.log(`[FAIL] ${id.padEnd(16)} ${title} — ${error && error.message ? error.message : String(error)}`);
 	}
 }
+
+// ── other-harness import: the page's half of docs/foreign-import.md ─────────────────────────
+/** A JSON response shaped the way the page's own `fetch` sees one. */
+function foreignResponse(status, body) {
+	const payload = body === undefined ? {} : body;
+	return {
+		ok: status >= 200 && status < 300,
+		status: status,
+		json: function () { return Promise.resolve(JSON.parse(JSON.stringify(payload))); },
+		text: function () { return Promise.resolve(JSON.stringify(payload)); }
+	};
+}
+
+/**
+ * The page fetcher stub for the other-harness block. It answers the notice and ledger reads
+ * that happen on mount, the GET scan from `settings.scan`, and each POST from `settings.uploads`
+ * in order. A `{defer: true}` upload reply stays pending until the test releases it, which is
+ * what makes the serial loop observable instead of only its final state.
+ *
+ * @param settings - `{scan: {status, body}, uploads: Array<{status, body, reject, defer}>}`.
+ * @returns `{calls, scanCalls, uploadCalls, controls, fetch}`.
+ */
+function foreignFetch(settings) {
+	const options = settings || {};
+	const scanReply = options.scan === undefined ? { status: 200, body: { harnesses: [] } } : options.scan;
+	const uploads = Array.isArray(options.uploads) ? options.uploads.slice() : [];
+	const calls = [];
+	const controls = [];
+	const respond = function (reply) {
+		if (reply !== undefined && reply.defer === true) {
+			return new Promise(function (resolve, reject) {
+				controls.push({
+					resolve: function (body) { resolve(foreignResponse(200, body === undefined ? { ok: true } : body)); },
+					reject: function (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+				});
+			});
+		}
+		if (reply !== undefined && reply.reject !== undefined) return Promise.reject(new Error(String(reply.reject)));
+		const status = reply !== undefined && typeof reply.status === "number" ? reply.status : 200;
+		return Promise.resolve(foreignResponse(status, reply === undefined ? {} : reply.body));
+	};
+	const fetchStub = function (input, init) {
+		const url = typeof input === "string" ? input : String(input);
+		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
+		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("foreign-scan") >= 0) {
+			calls.push({ url: url, method: method, body: null });
+			return respond(scanReply);
+		}
+		if (url.indexOf("foreign-upload") >= 0) {
+			const body = init !== null && init !== undefined && typeof init.body === "string" ? JSON.parse(init.body) : null;
+			calls.push({ url: url, method: method, body: body });
+			const reply = uploads.length > 1 ? uploads.shift() : uploads[0];
+			return respond(reply);
+		}
+		// The ledger read that happens on mount.
+		return Promise.resolve(foreignResponse(200, { generatedAt: 1, directory: "C:\\l", total: 0, sessions: [] }));
+	};
+	return {
+		calls: calls,
+		get scanCalls() { return calls.filter(function (call) { return call.url.indexOf("foreign-scan") >= 0; }); },
+		get uploadCalls() { return calls.filter(function (call) { return call.url.indexOf("foreign-upload") >= 0; }); },
+		controls: controls,
+		fetch: fetchStub
+	};
+}
+
+/**
+ * Render the section with a served, writable form and the fetch stub above.
+ * @param settings - `{scan, uploads, savedIds, form}`.
+ */
+async function foreignScenario(settings) {
+	const options = settings || {};
+	const stub = foreignFetch(options);
+	const form = options.form !== undefined ? options.form : createWritableForm({
+		mode: "official-only",
+		endpoint: SERVED_ENDPOINT,
+		maxBytes: DEFAULT_CAP,
+		foreignSessionIds: options.savedIds === undefined ? [] : options.savedIds
+	});
+	const runtime = createHookRuntime();
+	applyWith({
+		configForms: createConfigForms({ served: [ "session-log-upload" ], form: form }),
+		fetch: stub.fetch
+	}, runtime);
+	await settle(runtime);
+	return { runtime: runtime, form: form, fetch: stub };
+}
+
+/** The block's scan / save / send control. */
+function foreignButton(runtime, action) {
+	return runtime.findAll(function (node) { return node.type === "button" && node.props["data-foreign-action"] === action; })[0];
+}
+
+/** The scanned session checkboxes, in render order. */
+function foreignRows(runtime) {
+	return runtime.findAll(function (node) { return node.type === "input" && typeof node.props["data-foreign-id"] === "string"; });
+}
+
+function foreignRow(runtime, id) {
+	return foreignRows(runtime).filter(function (node) { return node.props["data-foreign-id"] === id; })[0];
+}
+
+/** One row's whole rendered text. */
+function foreignRowText(runtime, id) {
+	const row = runtime.findAll(function (node) { return node.props["data-foreign-row"] === id; })[0];
+	return row === undefined ? "" : textOf(row);
+}
+
+/** The group headings, in render order. */
+function foreignGroupTitles(runtime) {
+	return runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-foreignGroupTitle") >= 0;
+	}).map(textOf);
+}
+
+/** The per-row status line, or "" when the row has none. */
+function foreignStatusTextOf(runtime, id) {
+	const node = runtime.findAll(function (node) { return node.props["data-foreign-status"] === id; })[0];
+	return node === undefined ? "" : textOf(node);
+}
+
+function clickForeign(runtime, action) {
+	const button = foreignButton(runtime, action);
+	assert(button !== undefined, `no foreign ${action} button`);
+	button.props.onClick({});
+	runtime.flush();
+}
+
+function tickForeign(runtime, id, checked) {
+	const box = foreignRow(runtime, id);
+	assert(box !== undefined, `no foreign row ${id}`);
+	box.props.onChange({ target: { checked: checked } });
+	runtime.flush();
+}
+
+/** A scan payload with one fully-populated session, one with every optional field missing, and a harness that is not installed. */
+const FOREIGN_SCAN_PAYLOAD = {
+	harnesses: [
+		{
+			harness: "zcode", label: "ZCode", available: true, error: null,
+			sessions: [
+				{ id: "zcode/sess_a", title: "Refactor the parser", cwd: "F:\\work\\a", createdAt: 1, updatedAt: 2, messageCount: 12, provider: "deepseek", model: "deepseek-v4", bytes: 100 },
+				{ id: "zcode/sess_b", title: "", cwd: "", createdAt: 0, updatedAt: 0, messageCount: 0, provider: "", model: "", bytes: 0 }
+			]
+		},
+		{
+			harness: "cursor", label: "Cursor", available: true, error: null,
+			sessions: [
+				{ id: "cursor/sess_c", title: "Fix the build", cwd: "F:\\work\\c", createdAt: 3, updatedAt: 4, messageCount: 3, provider: "anthropic", model: "claude", bytes: 50 }
+			]
+		},
+		{ harness: "workbuddy", label: "WorkBuddy", available: false, error: "not installed", sessions: [] }
+	]
+};
 
 // 10 ─ registration + degraded render ───────────────────────────────────────────────────
 await checkAsync("render-fallback", "no served form: controls disabled, no bare save error, manual route last", async () => {
@@ -1473,27 +1654,27 @@ await checkAsync("display-narrowing", "the page shows the endpoint and cap the H
 		[ 1024, humanBytes(1024) ],
 		[ 1, humanBytes(1) ],
 		[ Number.MAX_SAFE_INTEGER, humanBytes(Number.MAX_SAFE_INTEGER) ],
-		[ Number.MAX_SAFE_INTEGER + 1, humanBytes(8388608) ],
-		[ 2 ** 53, humanBytes(8388608) ],
-		[ 2 ** 53 + 2, humanBytes(8388608) ],
-		[ 1e21, humanBytes(8388608) ],
-		[ Number.MAX_VALUE, humanBytes(8388608) ],
-		[ 0, humanBytes(8388608) ],
-		[ -1, humanBytes(8388608) ],
-		[ 1.5, humanBytes(8388608) ],
-		[ 2.5, humanBytes(8388608) ],
-		[ NaN, humanBytes(8388608) ],
-		[ Infinity, humanBytes(8388608) ],
-		[ -Infinity, humanBytes(8388608) ],
-		[ "1024", humanBytes(8388608) ],
-		[ "8388608", humanBytes(8388608) ],
-		[ null, humanBytes(8388608) ],
-		[ true, humanBytes(8388608) ],
-		[ {}, humanBytes(8388608) ],
-		[ [], humanBytes(8388608) ],
-		[ undefined, humanBytes(8388608) ],
+		[ Number.MAX_SAFE_INTEGER + 1, humanBytes(DEFAULT_CAP) ],
+		[ 2 ** 53, humanBytes(DEFAULT_CAP) ],
+		[ 2 ** 53 + 2, humanBytes(DEFAULT_CAP) ],
+		[ 1e21, humanBytes(DEFAULT_CAP) ],
+		[ Number.MAX_VALUE, humanBytes(DEFAULT_CAP) ],
+		[ 0, humanBytes(DEFAULT_CAP) ],
+		[ -1, humanBytes(DEFAULT_CAP) ],
+		[ 1.5, humanBytes(DEFAULT_CAP) ],
+		[ 2.5, humanBytes(DEFAULT_CAP) ],
+		[ NaN, humanBytes(DEFAULT_CAP) ],
+		[ Infinity, humanBytes(DEFAULT_CAP) ],
+		[ -Infinity, humanBytes(DEFAULT_CAP) ],
+		[ "1024", humanBytes(DEFAULT_CAP) ],
+		[ "8388608", humanBytes(DEFAULT_CAP) ],
+		[ null, humanBytes(DEFAULT_CAP) ],
+		[ true, humanBytes(DEFAULT_CAP) ],
+		[ {}, humanBytes(DEFAULT_CAP) ],
+		[ [], humanBytes(DEFAULT_CAP) ],
+		[ undefined, humanBytes(DEFAULT_CAP) ],
 		[ { get: function () { return 4194304; } }, humanBytes(4194304) ],
-		[ { get: function () { return 1e21; } }, humanBytes(8388608) ]
+		[ { get: function () { return 1e21; } }, humanBytes(DEFAULT_CAP) ]
 	];
 	for (const [ value, expected ] of caps) {
 		const shown = await disclosedValues({ mode: "official-only", endpoint: fallbackUrl, maxBytes: value }, 3);
@@ -1795,11 +1976,13 @@ await checkAsync("field-editing", "the destination and byte cap are editable, va
 	assert(fieldStateTexts(failed.runtime).includes("The setting could not be saved."), "a refused write did not surface a failure");
 	assert(!fieldStateTexts(failed.runtime).includes("Saved."), "a refused write claimed success");
 	for (const set of failed.form.sets) assert(set[0] !== "mode", "the field editor wrote the mode");
-	// The whitelist grew from two names to four when the user gained two editable lists (a
-	// model-pattern list, so a proxy's renamed model can be marked as DeepSeek; and the working-directory
-	// exclusion list). The property that matters is unchanged: `mode`, `uploadModel` and `credentialRef`
-	// are never in it, so the field editor cannot touch them.
-	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories", "uploadSessionIds" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the five editable fields");
+	// The generic field editor's whitelist is the five fields it renders controls for. The
+	// other-harness tick set is written through the SAME writeField path but by its own Save
+	// control, so it is admitted by name instead of widening the generic editor's reach. The
+	// property that matters is unchanged: `mode`, `uploadModel` and `credentialRef` are reachable
+	// through neither.
+	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories", "uploadSessionIds" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the five fields the generic editor renders");
+	assert(/if \(field === "foreignSessionIds"\) return persistField\(field, value\);/.test(stripComments(clientSource)), "the other-harness tick set is not writable through writeField");
 	for (const forbidden of ['mode', 'uploadModel', 'credentialRef']) {
 		assert(!new RegExp(`EDITABLE_FIELDS = Object\\.freeze\\(\\[[^\\]]*"${forbidden}"`).test(stripComments(clientSource)), `${forbidden} entered EDITABLE_FIELDS`);
 	}
@@ -2353,6 +2536,201 @@ await checkAsync("chooser-ui", "the chooser is styled, and Session ticks are ind
 	assert(clientSource.includes('saveField("uploadDirectories", chosenDirectories'), "the directory allowlist is not saved");
 	assert(clientSource.includes('saveField("uploadSessionIds", chosenSessions'), "the Session allowlist is not saved");
 	return "7 chooser classes styled; the two tick sets are separate; both allowlists are written";
+});
+
+// 37 ─ the other-harness import: scan only on click, grouped rows, readable fallbacks ─────────
+await checkAsync("foreign-scan", "the block scans only on click, groups by harness, and never prints undefined", async () => {
+	const scenario = await foreignScenario({ scan: { status: 200, body: FOREIGN_SCAN_PAYLOAD } });
+	// Before the click: the block exists, but nothing has been scanned or fetched.
+	const textBefore = textOf(scenario.runtime.tree());
+	assert(textBefore.includes("Import from other HARNESSES"), "the import block is missing");
+	assert(textBefore.includes("Nothing is scanned until you click Scan."), "the block does not explain that scanning is on demand");
+	assert(foreignRows(scenario.runtime).length === 0, "rows were rendered before any scan");
+	assert(scenario.fetch.scanCalls.length === 0, "the page scanned on mount");
+	assert(foreignButton(scenario.runtime, "send") === undefined, "the send control exists before a scan");
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	assert(scenario.fetch.scanCalls.length === 1, `expected one scan, saw ${scenario.fetch.scanCalls.length}`);
+	assert(scenario.fetch.scanCalls[0].method === "GET", "the scan was not a GET");
+	assert(scenario.fetch.scanCalls[0].url === "api/session-log-upload.foreign-scan", `the scan fetched ${JSON.stringify(scenario.fetch.scanCalls[0].url)}`);
+	const titles = foreignGroupTitles(scenario.runtime);
+	assert(titles.length === 3, `expected 3 harness groups, saw ${JSON.stringify(titles)}`);
+	assert(titles[0].includes("ZCode") && titles[0].includes("2"), `the first group heading is ${JSON.stringify(titles[0])}`);
+	assert(titles[1].includes("Cursor") && titles[1].includes("1"), `the second group heading is ${JSON.stringify(titles[1])}`);
+	assert(titles[2].includes("WorkBuddy"), `the third group heading is ${JSON.stringify(titles[2])}`);
+	assert(foreignRows(scenario.runtime).length === 3, `expected 3 session rows, saw ${foreignRows(scenario.runtime).length}`);
+	const first = foreignRowText(scenario.runtime, "zcode/sess_a");
+	assert(first.includes("Refactor the parser"), `the title is missing: ${first}`);
+	assert(first.includes("F:\\work\\a"), `the directory is missing: ${first}`);
+	assert(first.includes("deepseek/deepseek-v4"), `provider/model is missing: ${first}`);
+	assert(first.includes("12 messages"), `the message count is missing: ${first}`);
+	const untitled = foreignRowText(scenario.runtime, "zcode/sess_b");
+	assert(untitled.includes("Untitled conversation"), `a missing title is not readable: ${untitled}`);
+	assert(!/undefined/.test(untitled), `a missing title rendered "undefined": ${untitled}`);
+	assert(untitled.includes("No folder reported") && untitled.includes("Model not reported"), `unreported fields are not named: ${untitled}`);
+	const all = textOf(scenario.runtime.tree());
+	assert(all.includes("Not found on this machine."), "an unavailable harness is not named");
+	assert(all.includes("not installed"), "a harness scan error is not shown");
+	assert(radios(scenario.runtime).length === 4, "the section stopped rendering its mode controls");
+	// A failed scan degrades to one error line: no throw, no invented rows.
+	const failed = await foreignScenario({ scan: { status: 404 } });
+	clickForeign(failed.runtime, "scan");
+	await settle(failed.runtime);
+	assert(foreignRows(failed.runtime).length === 0, "a failed scan produced rows");
+	assert(textOf(failed.runtime.tree()).includes("The scan could not be read."), "a failed scan is not reported");
+	assert(radios(failed.runtime).length === 4, "a failed scan broke the section");
+	return "scan on click only, 3 groups, 3 rows, title fallback, unavailable/error groups, failed scan degrades";
+});
+
+// 38 ─ the tick draft is independent per row, and Save writes exactly the tick set ────────────
+await checkAsync("foreign-ticks", "ticking one row never ticks another, and Save writes exactly the tick set", async () => {
+	const scenario = await foreignScenario({ scan: { body: FOREIGN_SCAN_PAYLOAD } });
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	tickForeign(scenario.runtime, "zcode/sess_a", true);
+	assert(foreignRow(scenario.runtime, "zcode/sess_a").props.checked === true, "the ticked row is not ticked");
+	assert(foreignRow(scenario.runtime, "zcode/sess_b").props.checked === false, "ticking one row ticked its sibling");
+	assert(foreignRow(scenario.runtime, "cursor/sess_c").props.checked === false, "ticking one row ticked a row in another group");
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	let writes = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(writes.length === 1, `Save wrote foreignSessionIds ${writes.length} times`);
+	assert(JSON.stringify(writes[0][1]) === JSON.stringify([ "zcode/sess_a" ]), `Save wrote ${JSON.stringify(writes[0][1])}`);
+	assert(fieldStateTexts(scenario.runtime).includes("Saved."), "an accepted tick-set write was not confirmed");
+	// A second row is added to the SAME draft: both ids are written, in scan order.
+	tickForeign(scenario.runtime, "cursor/sess_c", true);
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	writes = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(JSON.stringify(writes[writes.length - 1][1]) === JSON.stringify([ "zcode/sess_a", "cursor/sess_c" ]), `the second Save wrote ${JSON.stringify(writes[writes.length - 1][1])}`);
+	// Unticking a saved row removes it: the draft is authoritative, not the saved value.
+	tickForeign(scenario.runtime, "zcode/sess_a", false);
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	writes = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(JSON.stringify(writes[writes.length - 1][1]) === JSON.stringify([ "cursor/sess_c" ]), `unticking did not remove the id: ${JSON.stringify(writes[writes.length - 1][1])}`);
+	// Nothing but the tick set is written by this block.
+	for (const set of scenario.form.sets) assert(set[0] === "foreignSessionIds", `the import block wrote ${set[0]}`);
+	// A saved allowlist is the draft's starting point: the page reads back what it wrote.
+	const saved = await foreignScenario({ scan: { body: FOREIGN_SCAN_PAYLOAD }, savedIds: [ "cursor/sess_c" ] });
+	clickForeign(saved.runtime, "scan");
+	await settle(saved.runtime);
+	assert(foreignRow(saved.runtime, "cursor/sess_c").props.checked === true, "a saved tick set was not read back");
+	assert(foreignRow(saved.runtime, "zcode/sess_a").props.checked === false, "seeding the draft ticked an unsaved row");
+	return "3 independent ticks, whole tick set written, untick removes, read back on scan, no other field written";
+});
+
+// 39 ─ the consent gate holds, and the POST body is exactly {id} ────────────────────────────────
+await checkAsync("foreign-consent", "the send button is disabled at zero and nothing POSTs before the consent dialog is confirmed", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { body: { ok: true, requests: 2 } }, { body: { ok: true, requests: 1 } } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	const idle = foreignButton(scenario.runtime, "send");
+	assert(idle !== undefined, "no send button after a scan");
+	assert(idle.props.disabled === true, "the send button is enabled with nothing ticked");
+	assert(textOf(idle).includes("0"), `the send label does not carry the count: ${textOf(idle)}`);
+	tickForeign(scenario.runtime, "zcode/sess_a", true);
+	tickForeign(scenario.runtime, "cursor/sess_c", true);
+	const ready = foreignButton(scenario.runtime, "send");
+	assert(ready.props.disabled !== true, "the send button stayed disabled with two ticks");
+	assert(textOf(ready).includes("2"), `the send label does not carry the tick count: ${textOf(ready)}`);
+	assert(scenario.fetch.uploadCalls.length === 0, "a POST happened before any confirmation");
+	clickForeign(scenario.runtime, "send");
+	// Clicking the block's button opens the dialog; the POSTs must wait for the confirm button.
+	assert(scenario.fetch.uploadCalls.length === 0, "clicking send POSTed before the dialog was confirmed");
+	const opened = dialog(scenario.runtime);
+	assert(opened !== undefined, "no consent dialog before sending");
+	const dialogBody = textOf(opened);
+	assert(/not DSH sessions/.test(dialogBody), `the dialog does not say these are not DSH sessions: ${dialogBody}`);
+	assert(/wrapped as a DSH session record/.test(dialogBody), `the dialog does not say the content is wrapped as a DSH session record: ${dialogBody}`);
+	assert(dialogBody.includes(SERVED_ENDPOINT), `the dialog does not name the endpoint: ${dialogBody}`);
+	assert(dialogBody.includes("Cancel"), "the dialog has no Cancel");
+	// Cancel closes the gate and sends nothing.
+	clickButton(scenario.runtime, "Cancel");
+	await settle(scenario.runtime);
+	assert(dialog(scenario.runtime) === undefined, "Cancel did not close the dialog");
+	assert(scenario.fetch.uploadCalls.length === 0, "Cancel POSTed");
+	// Confirm: exactly one POST per ticked id, each body exactly {id}.
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	assert(dialog(scenario.runtime) === undefined, "the dialog stayed open after confirming");
+	assert(scenario.fetch.uploadCalls.length === 2, `expected 2 POSTs, saw ${scenario.fetch.uploadCalls.length}`);
+	for (const call of scenario.fetch.uploadCalls) {
+		assert(call.method === "POST", "a send was not a POST");
+		assert(call.url === "api/session-log-upload.foreign-upload", `a send fetched ${JSON.stringify(call.url)}`);
+		assert(JSON.stringify(Object.keys(call.body)) === JSON.stringify([ "id" ]), `a send invented request fields: ${JSON.stringify(call.body)}`);
+	}
+	assert(
+		JSON.stringify(scenario.fetch.uploadCalls.map(function (call) { return call.body.id; })) === JSON.stringify([ "zcode/sess_a", "cursor/sess_c" ]),
+		"the POSTs are not the ticked ids in scan order"
+	);
+	return "disabled at zero, count in the label, dialog before any POST, cancel cancels, body exactly {id}";
+});
+
+// 40 ─ serial progress with a failure row ──────────────────────────────────────────────────────
+await checkAsync("foreign-serial", "one POST at a time, per-row progress, and a failure does not stop the batch", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { defer: true }, { defer: true }, { defer: true } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	for (const id of [ "zcode/sess_a", "zcode/sess_b", "cursor/sess_c" ]) tickForeign(scenario.runtime, id, true);
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await null;
+	scenario.runtime.flush();
+	assert(scenario.fetch.uploadCalls.length === 1, `the page started ${scenario.fetch.uploadCalls.length} POSTs at once, expected 1`);
+	assert(scenario.fetch.controls.length === 1, `expected one pending request, saw ${scenario.fetch.controls.length}`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_a").includes("Sending"), `row a says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_a"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_b").includes("Waiting"), `row b says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_b"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "cursor/sess_c").includes("Waiting"), `row c says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "cursor/sess_c"))}`);
+	assert(radios(scenario.runtime).length === 4 && foreignRows(scenario.runtime).length === 3, "the section blanked while sending");
+	// Releasing the first reply lets the second POST start, and only then.
+	scenario.fetch.controls[0].resolve({ ok: true, requests: 2 });
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 2, `after the first reply there are ${scenario.fetch.uploadCalls.length} POSTs, expected 2`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_a").includes("Sent (2 requests)"), `row a says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_a"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_b").includes("Sending"), `row b says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_b"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "cursor/sess_c").includes("Waiting"), `row c says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "cursor/sess_c"))}`);
+	// The second request fails with a host error; the failure stays on its row and the loop continues.
+	scenario.fetch.controls[1].resolve({ ok: false, error: "boom" });
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 3, `the batch stopped after a failure: ${scenario.fetch.uploadCalls.length} POSTs`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_b").includes("Failed: boom"), `the failure is not on its row: ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_b"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "cursor/sess_c").includes("Sending"), `row c says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "cursor/sess_c"))}`);
+	scenario.fetch.controls[2].resolve({ ok: true, requests: 1 });
+	await settle(scenario.runtime);
+	assert(foreignStatusTextOf(scenario.runtime, "cursor/sess_c").includes("Sent (1 requests)"), `row c says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "cursor/sess_c"))}`);
+	// The section kept rendering throughout, and the send control recovers for another batch.
+	assert(textOf(scenario.runtime.tree()).includes("Import from other HARNESSES"), "the import block vanished during the send");
+	assert(radios(scenario.runtime).length === 4 && foreignRows(scenario.runtime).length === 3, "the section blanked during the send");
+	const send = foreignButton(scenario.runtime, "send");
+	assert(send !== undefined && send.props.disabled !== true, "the send control did not recover after a batch");
+	return "1 POST at a time, waiting/sending/sent/failed per row, a failure does not stop the batch, section never blank";
+});
+
+await checkAsync("foreign-truncated", "a truncated import says so instead of only 'Sent'", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { body: { ok: true, requests: 1, truncated: true } }, { body: { ok: true, requests: 1 } } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	for (const id of [ "zcode/sess_a", "zcode/sess_b" ]) tickForeign(scenario.runtime, id, true);
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	const truncated = foreignStatusTextOf(scenario.runtime, "zcode/sess_a");
+	const whole = foreignStatusTextOf(scenario.runtime, "zcode/sess_b");
+	assert(truncated.includes("first part"), `a truncated row reads ${JSON.stringify(truncated)}`);
+	assert(!whole.includes("first part"), `a complete row was marked truncated: ${JSON.stringify(whole)}`);
+	assert(truncated !== whole, "truncated and complete imports render the same text");
+	return "a truncated import is distinguishable from a complete one";
 });
 
 console.log("");

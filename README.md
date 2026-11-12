@@ -82,12 +82,14 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 | `mode` | enum | `official-only` | 见上表 |
 | `deepseekModelPatterns` | `string[]` | `['deepseek']` | 大小写不敏感的子串，只匹配模型 id。见下面「反代改了模型名怎么办」。 |
 | `uploadDirectories` | `string[]` | `[]` | 空 = 所有工作区的会话都上传。填了目录就只上传这些目录（含子目录）里的会话。见下面「只上传指定目录」。 |
+| `uploadSessionIds` | `string[]` | `[]` | 单独勾选的 DSH 会话 id，和目录白名单是「或」的关系。 |
+| `foreignSessionIds` | `string[]` | `[]` | 从其他 harness 导入时勾选的会话，值形如 `zcode/sess_xxx`。见下面「从其他 harness 导入」。 |
 | `endpoint` | string | DeepSeek 官方端点 | 只带日志的那条请求发往哪里。必须是绝对 `http(s)` URL，否则回落到默认值。 |
 | `uploadModel` | string | `deepseek-flash` | 那条请求的 `model` 字段。必须是官方 API 认识的名字（`deepseek-flash` 或 `deepseek-v4-pro`）。 |
 | `credentialRef` | string | `DEEPSEEK_API_KEY` | 通过 `ctx.credentials.resolve(ref)` 解析。 |
-| `maxBytes` | int ≥ 1 | `8388608` | 单次请求里 `dsh_session_log` 字段的最大字节数。 |
+| `maxBytes` | int ≥ 1 | `20971520` | 单次请求里 `dsh_session_log` 字段的最大字节数。 |
 
-`mode`、`deepseekModelPatterns`、`uploadDirectories`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
+`mode`、`deepseekModelPatterns`、`uploadDirectories`、`uploadSessionIds`、`foreignSessionIds`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
 
 ### 反代改了模型名怎么办
 
@@ -102,6 +104,29 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 **默认所有工作区的会话都上传。** 想收窄，在设置页勾上「选择指定目录」，点扫描，然后勾选你要的目录。
 
 勾了之后只上传这些目录（含子目录）里的会话，DSH 自带的上传也一并受限。不区分大小写，`\` 和 `/` 视为相同。清空选择就回到默认的「全部上传」。
+
+## 从其他 harness 导入
+
+设置 → 会话日志上传 → 「从其他 HARNESS 导入」。点扫描，它读本机上其他 agent 工具记下的会话：ZCode、Qoder、Cursor、WorkBuddy、Cline。勾选要发的会话，点发送，每个会话单独发一次，失败只影响那一行，其余照发。
+
+发出去的东西是一段 DSH 会话记录，不是原来的格式：
+
+- 会话 id 是合成的，形如 `foreign-zcode-a1b2c3d4e5f6`。同一个原始会话每次算出同一个 id，所以重复发送会从上次停下的位置接着发，不会整段重发。
+- 第一条事件是来源标记：`Source: harness=zcode provider=… model=… session=…`。原始供应商和模型只出现在这一行里。
+- 之后每条消息一个事件，用户和助手分开。
+- 助手消息的模型一律写 `deepseek-flash`，供应商写 `deepseek`。
+
+这么做的原因是接收方只认 DSH 的格式：外部会话没有 DSH 的会话 id，也没有 DSH 的事件序号，想发就得造一套。造出来的记录在接收方看来就是一个普通的 DSH 会话，唯一的痕迹是开头那行来源标记。
+
+三条边界：
+
+- 目录和会话白名单只管 DSH 会话，管不到导入。导入也不改变四种模式，它是另一条独立的路径。
+- 扫描只读元数据：标题、目录、模型、消息数。正文只有在你点发送、并且目标会话就是那一行时才会被读出来。
+- 外部日志比 DSH 的脏。里面有整条命令的输出、文件内容，可能带着密钥。发之前先想清楚这一条要发给谁。
+
+单个会话的读取上限是 64 MiB。超过就只发送前面的部分，这一行会写"只发送了这段对话的前一部分"，不会假装整段都发了。按本机的数据，594 段里 10 段会触发这个上限。
+
+支持范围随各 harness 自己的存储格式走。它们改版本可能就扫不出来，扫不出来会报错而不是静默少列。
 
 ## 不用界面切换模式
 
@@ -167,8 +192,9 @@ attribution 头都是**尽力而为**：拿不到就省略，不会自己编一�
 
 都跟着 `$DSH_HOME` 走（非空的 `DSH_HOME` 优先，`~` 会展开，否则 `~/.dsh`）：
 
-- `session-log-upload/watermarks.json` — 每个会话传到哪了
+- `session-log-upload/watermarks.json` — 每个会话传到哪了（导入的外部会话按合成 id 记在里面）
 - `session-log-upload/last-failure.json` — 上次失败
+- `session-log-upload/notice-acknowledged.json` — 免责说明点过没有
 
 删掉水印文件不会损坏会话，只是让插件忘记进度、下次重发。
 
@@ -178,7 +204,7 @@ attribution 头都是**尽力而为**：拿不到就省略，不会自己编一�
 node verify/run-all.mjs
 ```
 
-七套检查：host 单测、client 检查、payload 与官方上传器的差分保真、两套对抗测试、对着 `app.asar` 里真实 schemastery 的 schema 检查、主题令牌检查。
+九套检查：host 单测、client 检查、其他 harness 适配器、信封伪造、payload 与官方上传器的差分保真、两套对抗测试、对着 `app.asar` 里真实 schemastery 的 schema 检查、主题令牌检查。
 
 `verify/REPORT.md` 是独立验收报告，写清了哪些结论被驱动验证过、哪些没有。
 

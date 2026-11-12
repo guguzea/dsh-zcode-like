@@ -27,7 +27,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -91,6 +92,7 @@ const DEFAULT_CONFIG = {
   deepseekModelPatterns: ['deepseek'],
   uploadDirectories: [],
   uploadSessionIds: [],
+  foreignSessionIds: [],
   endpoint: DEFAULT_ENDPOINT,
   uploadModel: DEFAULT_UPLOAD_MODEL,
   credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -150,6 +152,7 @@ await check('a valid config round-trips unchanged', () => {
     // normalized form: that is the value the host actually compares against.
     uploadDirectories: ['d:/secret/work'],
     uploadSessionIds: [],
+    foreignSessionIds: [],
     endpoint: 'https://example.test/v1/messages',
     uploadModel: 'deepseek-reasoner',
     credentialRef: 'OTHER_KEY',
@@ -271,6 +274,7 @@ await check('every volatile live reference is unwrapped at call time; plain keys
     deepseekModelPatterns: ['deepseek', 'dfmodel'],
     uploadDirectories: ['d:/secret', 'c:/users/someone/private'],
     uploadSessionIds: [],
+    foreignSessionIds: [],
     endpoint: 'https://second.test/v1/messages',
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -454,6 +458,13 @@ section('5. zero bare specifiers (INTERFACES.md §0)')
 const hostFiles = readdirSync(join(root, 'host'))
   .filter((name) => name.endsWith('.js'))
   .map((name) => join('host', name))
+  // The other-harness adapters are shipped host files too, so the dependency-freedom scan must see them:
+  // one bare specifier anywhere makes the whole bundle fail to load from a profile.
+  .concat(
+    readdirSync(join(root, 'host', 'foreign'))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => join('host', 'foreign', name)),
+  )
   .sort()
 const scannedFiles = ['index.js', ...hostFiles]
 
@@ -478,6 +489,14 @@ await check('every shipped host file is present', () => {
     join('host', 'config.js'),
     join('host', 'eligibility.js'),
     join('host', 'failure.js'),
+    join('host', 'foreign-forge.js'),
+    join('host', 'foreign', 'cline.js'),
+    join('host', 'foreign', 'cursor.js'),
+    join('host', 'foreign', 'index.js'),
+    join('host', 'foreign', 'qoder.js'),
+    join('host', 'foreign', 'shared.js'),
+    join('host', 'foreign', 'workbuddy.js'),
+    join('host', 'foreign', 'zcode.js'),
     join('host', 'logfield.js'),
     join('host', 'notice.js'),
     join('host', 'upload.js'),
@@ -555,10 +574,10 @@ await check('the mode field is constrained, defensive, and volatile (H2, task-8)
     .map((line) => line.trim().slice(0, line.trim().indexOf(':')))
   assert.deepEqual(
     volatileKeys,
-    ['deepseekModelPatterns', 'uploadDirectories', 'uploadSessionIds', 'endpoint', 'maxBytes'],
+    ['deepseekModelPatterns', 'uploadDirectories', 'uploadSessionIds', 'foreignSessionIds', 'endpoint', 'maxBytes'],
     'the declared volatile set changed',
   )
-  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 6, 'mode + the three lists + endpoint + maxBytes is exactly six')
+  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 7, 'mode + the four lists + endpoint + maxBytes is exactly seven')
   // The two the settings page must NOT be able to write: they decide which credential is used and
   // which model this plugin spends money on. (`deepseekModelPatterns` moved into the volatile set when
   // the user gained the ability to mark a proxy's model name as DeepSeek.)
@@ -2010,8 +2029,8 @@ await check('a throwing optional registration cannot take the "off" exclusion do
     ],
     // Two routes register now (the ledger and the scan), each in its own wrapped effect. A throw from
     // one must not prevent the other, so the assertion is "the OTHER route is present", not a count.
-    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 3, 'all three routes must still register')],
-    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 3, 'later registrations must still run')],
+    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 5, 'all five routes must still register')],
+    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 5, 'later registrations must still run')],
   ]
   for (const [what, options, after] of cases) {
     // The throw must not escape `apply`.
@@ -2985,5 +3004,345 @@ await check('the notice route is authenticated by inheritance, not by a raw web 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+section('19. the other-harness import: scan and send through the real routes')
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// This section exists because the two halves were written against a contract by different authors, and
+// a contract holds only if something drives the REAL route through the REAL adapter and the REAL forger.
+// Nothing here stubs those three. The only stand-ins are the filesystem (a fixture ZCode database), the
+// home directory (so the adapters do not read the user's real stores) and `fetch` (so no byte is sent).
+
+/** Run `run` with `homedir()` pointed at `home`; always restores the environment. */
+async function withForeignHome(home, run) {
+  const saved = {
+    USERPROFILE: process.env.USERPROFILE,
+    HOME: process.env.HOME,
+    HOMEDRIVE: process.env.HOMEDRIVE,
+    HOMEPATH: process.env.HOMEPATH,
+  }
+  process.env.USERPROFILE = home
+  process.env.HOME = home
+  delete process.env.HOMEDRIVE
+  delete process.env.HOMEPATH
+  try {
+    return await run()
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+}
+
+/** Temporarily replace global fetch so a route test cannot reach the network. */
+async function withForeignFetch(stub, run) {
+  const original = globalThis.fetch
+  globalThis.fetch = stub
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
+/**
+ * A ZCode store with one conversation, in the shape the adapter queries: `semantics.kind` /
+ * `semantics.origin` mark the turns, and the assistant message carries the observed provider/model.
+ */
+function seedForeignZcode(home) {
+  const directory = join(home, '.zcode', 'cli', 'db')
+  mkdirSync(directory, { recursive: true })
+  const db = new DatabaseSync(join(directory, 'db.sqlite'))
+  try {
+    db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)')
+    db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT, sequence INTEGER)')
+    db.exec('CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, sequence INTEGER, data TEXT)')
+    db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run(
+      'sess_fixture',
+      'Fixture conversation',
+      'F:\\fixture-repo',
+      TIME,
+      TIME + 2000,
+    )
+    const messages = [
+      ['msg-user-1', '{"role":"user","semantics":{"origin":"real_user"}}', 0],
+      [
+        'msg-assistant-1',
+        '{"role":"assistant","semantics":{"kind":"assistant_response"},"providerId":"cline-pass","modelId":"deepseek-v4.1-flash"}',
+        1,
+      ],
+      ['msg-user-2', '{"role":"user","semantics":{"origin":"real_user"}}', 2],
+    ]
+    const insertMessage = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)')
+    for (const [id, data, sequence] of messages) insertMessage.run(id, 'sess_fixture', TIME, data, sequence)
+    const insertPart = db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)')
+    insertPart.run('part-1', 'msg-user-1', 'sess_fixture', 0, '{"type":"text","text":"what is in this repo"}')
+    insertPart.run('part-2', 'msg-assistant-1', 'sess_fixture', 0, '{"type":"reasoning","text":"look first"}')
+    insertPart.run('part-3', 'msg-assistant-1', 'sess_fixture', 1, '{"type":"text","text":"a fixture repo"}')
+    insertPart.run('part-4', 'msg-user-2', 'sess_fixture', 0, '{"type":"text","text":"thanks"}')
+  } finally {
+    db.close()
+  }
+}
+
+/** One foreign route handler from a fresh fake host. */
+function foreignHost(raw = { mode: 'official-only' }) {
+  return fakeHost({ raw, credential: 'sk-test', sessions: {} })
+}
+
+function foreignRoute(host, path) {
+  const route = host.state.routes.find((candidate) => candidate.path === path)
+  assert.ok(route !== undefined, `the route ${path} was not registered`)
+  return route
+}
+
+/** GET the scan route. */
+async function foreignScan(host) {
+  const route = foreignRoute(host, indexNamespace.FOREIGN_SCAN_ROUTE_PATH)
+  const response = await route.fetch(new Request(`http://127.0.0.1${route.path}`))
+  assert.equal(response.status, 200)
+  return await response.json()
+}
+
+/** POST the send route with a JSON body. */
+async function foreignSend(host, body) {
+  const route = foreignRoute(host, indexNamespace.FOREIGN_UPLOAD_ROUTE_PATH)
+  const response = await route.fetch(
+    new Request(`http://127.0.0.1${route.path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    }),
+  )
+  assert.equal(response.status, 200, 'the send route must always answer 200 with a result object')
+  return await response.json()
+}
+
+const FOREIGN_HOME = mkdtempSync(join(root, 'verify', '.tmp-foreign-home-'))
+
+await check('both other-harness routes are registered on the authenticated registry with the expected methods', () => {
+  const host = foreignHost()
+  try {
+    assert.deepEqual(foreignRoute(host, indexNamespace.FOREIGN_SCAN_ROUTE_PATH).methods, ['GET'])
+    assert.deepEqual(foreignRoute(host, indexNamespace.FOREIGN_UPLOAD_ROUTE_PATH).methods, ['POST'])
+    // Same discipline as the other optional routes: each is its own wrapped effect, so a duplicate path
+    // cannot dispose the `off` exclusion.
+    assert.ok(host.state.routes.every((route) => route.requestBody === 'buffered'))
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('scan lists the fixture conversation with metadata only, never message content', async () => {
+  seedForeignZcode(FOREIGN_HOME)
+  const host = foreignHost()
+  try {
+    const payload = await withForeignHome(FOREIGN_HOME, () => foreignScan(host))
+    const zcode = payload.harnesses.find((group) => group.harness === 'zcode')
+    assert.ok(zcode !== undefined, 'the zcode group is missing from the scan payload')
+    assert.equal(zcode.available, true, `the fixture store was not recognised: ${String(zcode.error)}`)
+    assert.equal(zcode.sessions.length, 1, `expected one fixture conversation, got ${zcode.sessions.length}`)
+    const [session] = zcode.sessions
+    assert.equal(session.id, 'zcode/sess_fixture', 'the scan does not hand back a composite id')
+    assert.equal(session.title, 'Fixture conversation')
+    assert.equal(session.cwd, 'F:\\fixture-repo')
+    assert.equal(session.messageCount, 3)
+    assert.equal(session.provider, 'cline-pass')
+    assert.equal(session.model, 'deepseek-v4.1-flash')
+    // The chooser needs recognition data, not the conversation. This is the privacy property of the scan.
+    const flat = JSON.stringify(payload)
+    assert.equal(flat.includes('what is in this repo'), false, 'the scan leaked message text')
+    assert.equal(flat.includes('a fixture repo'), false, 'the scan leaked message text')
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('scan on a machine without any harness store still answers, with every group present', async () => {
+  const emptyHome = mkdtempSync(join(root, 'verify', '.tmp-foreign-empty-'))
+  const host = foreignHost()
+  try {
+    const payload = await withForeignHome(emptyHome, () => foreignScan(host))
+    assert.equal(payload.harnesses.length, 5, `expected the five adapters, got ${payload.harnesses.length}`)
+    for (const group of payload.harnesses) {
+      assert.equal(typeof group.harness, 'string')
+      assert.equal(group.available, false, `${group.harness} claimed to be available on an empty home`)
+      assert.deepEqual(group.sessions, [])
+    }
+  } finally {
+    host.cleanup()
+    rmSync(emptyHome, { recursive: true, force: true })
+  }
+})
+
+await check('the send route refuses a body that is not JSON and a body without an id', async () => {
+  const host = foreignHost()
+  try {
+    const notJson = await foreignSend(host, 'this is not json')
+    assert.equal(notJson.ok, false)
+    assert.match(String(notJson.error), /not JSON/)
+    const noId = await foreignSend(host, {})
+    assert.equal(noId.ok, false)
+    assert.match(String(noId.error), /no conversation id/)
+    const blank = await foreignSend(host, { id: '   ' })
+    assert.equal(blank.ok, false)
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('the send route refuses an id no adapter can address', async () => {
+  const host = foreignHost()
+  try {
+    const unknown = await foreignSend(host, { id: 'nope/sess_x' })
+    assert.equal(unknown.ok, false)
+    assert.equal(typeof unknown.error, 'string')
+    const malformed = await foreignSend(host, { id: 'no-slash-here' })
+    assert.equal(malformed.ok, false)
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('a dry run forges the record and sizes the requests without touching the network', async () => {
+  const host = foreignHost()
+  const calls = []
+  try {
+    const payload = await withForeignFetch(
+      async (...args) => {
+        calls.push(args)
+        throw new Error('a dry run must not call fetch')
+      },
+      () =>
+        withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture', dryRun: true })),
+    )
+    assert.equal(payload.ok, true, String(payload.error))
+    assert.equal(payload.dryRun, true)
+    assert.equal(payload.truncated, false, 'a conversation read in full must not claim truncation')
+    // Three messages plus the provenance marker.
+    assert.equal(payload.events, 4, `expected 4 events, got ${payload.events}`)
+    assert.ok(payload.requests >= 1)
+    assert.ok(payload.bytes > 0)
+    assert.equal(calls.length, 0)
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('a real send forges a normal-looking DSH session with the provenance marker first', async () => {
+  const host = foreignHost()
+  const calls = []
+  const sent = []
+  try {
+    const result = await withForeignFetch(
+      async (url, options) => {
+        calls.push({ url, options })
+        sent.push(JSON.parse(options.body))
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+      () => withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture' })),
+    )
+    assert.equal(result.ok, true, String(result.error))
+    assert.equal(result.truncated, false, 'a complete read must not be reported as truncated')
+    assert.equal(result.requests, 1, `expected one POST, got ${result.requests}`)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, DEFAULT_ENDPOINT)
+    assert.equal(calls[0].options.headers['x-api-key'], 'sk-test', 'the send did not carry the resolved credential')
+    const field = sent[0].dsh_session_log
+    assert.ok(field !== undefined, 'the POST carried no dsh_session_log field')
+    assert.equal(field.version, 1)
+    assert.equal(field.sessionFormatVersion, 4)
+    assert.match(field.session.id, /^foreign-zcode-/)
+    assert.equal(field.session.cwd, 'F:\\fixture-repo')
+    assert.equal(field.throughSeq, 3)
+    const marker = field.events[0]
+    assert.equal(marker.type, 'system/message')
+    const markerText = marker.data.message.content[0].text
+    assert.ok(markerText.includes('harness=zcode'), `the marker does not name the harness: ${markerText}`)
+    assert.ok(markerText.includes('cline-pass'), `the marker does not name the original provider: ${markerText}`)
+    assert.ok(markerText.includes('deepseek-v4.1-flash'), `the marker does not name the original model: ${markerText}`)
+    // The forged session claims the official model, which is the user's explicit requirement.
+    const assistant = field.events.find((event) => event.type === 'assistant/message')
+    assert.equal(assistant.data.message.source.model, 'deepseek-flash')
+    assert.equal(assistant.data.message.source.provider, 'deepseek')
+    // And the original model appears nowhere except the marker.
+    const occurrences = JSON.stringify(field.events).split('deepseek-v4.1-flash').length - 1
+    assert.equal(occurrences, 1, `the original model leaked into ${occurrences} places`)
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('sending the same conversation twice resumes instead of duplicating it', async () => {
+  const host = foreignHost()
+  const sent = []
+  try {
+    const first = await withForeignFetch(
+      async (url, options) => {
+        sent.push(JSON.parse(options.body))
+        return new Response('{}', { status: 200 })
+      },
+      () => withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture' })),
+    )
+    assert.equal(first.ok, true)
+    assert.equal(sent.length, 1)
+    const second = await withForeignFetch(
+      async () => {
+        throw new Error('a fully-sent conversation must not be re-posted')
+      },
+      () => withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture' })),
+    )
+    assert.equal(second.ok, true, String(second.error))
+    assert.equal(second.requests, 0)
+    assert.equal(second.skipped, 'already-sent')
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('a failed send reports the failure and does not advance the watermark', async () => {
+  const host = foreignHost()
+  let attempts = 0
+  try {
+    const failed = await withForeignFetch(
+      async () => {
+        attempts += 1
+        return new Response('upstream is unhappy', { status: 500, headers: { 'content-type': 'text/plain' } })
+      },
+      () => withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture' })),
+    )
+    assert.equal(failed.ok, false)
+    assert.equal(typeof failed.error, 'string')
+    assert.equal(attempts, 1, 'a non-2xx response was retried inside one send')
+
+    // The next attempt starts from the same offset, which is what "the watermark did not advance" means.
+    const resent = []
+    const second = await withForeignFetch(
+      async (url, options) => {
+        resent.push(JSON.parse(options.body))
+        return new Response('{}', { status: 200 })
+      },
+      () => withForeignHome(FOREIGN_HOME, () => foreignSend(host, { id: 'zcode/sess_fixture' })),
+    )
+    assert.equal(second.ok, true, String(second.error))
+    assert.equal(resent[0].dsh_session_log.afterSeq, -1, 'the retry skipped the range that failed')
+    assert.equal(resent[0].dsh_session_log.throughSeq, 3)
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('the send route is a POST on the authenticated registry, never a raw web route', () => {
+  const source = readFileSync(join(root, 'index.js'), 'utf8')
+  assert.ok(source.includes("export const FOREIGN_SCAN_ROUTE_PATH = '/api/session-log-upload.foreign-scan'"))
+  assert.ok(source.includes("export const FOREIGN_UPLOAD_ROUTE_PATH = '/api/session-log-upload.foreign-upload'"))
+  assert.ok(source.includes("effect: 'session-log-upload: other-harness scan route'"), 'the scan route lost its wrapped effect')
+  assert.ok(source.includes("effect: 'session-log-upload: other-harness send route'"), 'the send route lost its wrapped effect')
+  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+})
+
+rmSync(FOREIGN_HOME, { recursive: true, force: true })
+
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks passed`)
 process.exit(failures === 0 ? 0 : 1)

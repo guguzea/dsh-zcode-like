@@ -105,5 +105,31 @@
     "noticeCheck": "I have read and understood the above",
     "noticeAccept": "Continue",
     "noticeBusy": "Recording…"
+  },
+  "foreign": {
+    "title": "Import from other HARNESSES",
+    "description": "Scan the conversations other agent harnesses recorded on this machine, tick the ones to send, then send them. Nothing is scanned until you click Scan.",
+    "scan": "Scan",
+    "scanning": "Scanning…",
+    "scanFailed": "The scan could not be read.",
+    "empty": "No conversations were found in any other harness.",
+    "groupEmpty": "No conversations found.",
+    "unavailable": "Not found on this machine.",
+    "harnessError": "Scan error:",
+    "untitled": "Untitled conversation",
+    "cwdUnknown": "No folder reported",
+    "modelUnknown": "Model not reported",
+    "messages": "messages",
+    "save": "Save ticks",
+    "send": "Send {count} selected sessions",
+    "statusWaiting": "Waiting",
+    "statusSending": "Sending…",
+    "statusOk": "Sent ({requests} requests)",
+    "statusOkTruncated": "Sent ({requests} requests; only the first part of this conversation was sent)",
+    "statusFailed": "Failed: {error}",
+    "statusUnknown": "unknown error",
+    "warnTitle": "Send these conversations to the destination?",
+    "warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
+    "warnConfirm": "Send"
   }
 }

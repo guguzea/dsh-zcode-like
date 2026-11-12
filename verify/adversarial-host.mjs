@@ -188,7 +188,7 @@ check('undefined / null / non-object inputs and every unknown-string spelling gi
   for (const raw of hostile) {
     const resolved = resolveConfig(raw)
     assert.equal(resolved.mode, 'official-only', `resolveConfig(${describe(raw)}) widened to ${resolved.mode}`)
-    assert.deepEqual(Object.keys(resolved).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
+    assert.deepEqual(Object.keys(resolved).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
   }
 })
 
@@ -241,7 +241,7 @@ check('RETARGETED: prototype pollution cannot widen the mode or redirect any fie
     assert.deepEqual(resolved.deepseekModelPatterns, ['deepseek'])
     assert.equal(resolved.credentialRef, 'DEEPSEEK_API_KEY')
     assert.equal(resolved.uploadModel, DEFAULT_UPLOAD_MODEL)
-    assert.equal(resolved.maxBytes, 8388608)
+    assert.equal(resolved.maxBytes, 20971520)
     // An inherited mode must not survive even next to an own, invalid one.
     assert.equal(resolveConfig({ mode: 'nonsense' }).mode, 'official-only')
     // An object that inherits `mode` from a custom prototype is equally refused.
@@ -370,7 +370,7 @@ check('RETARGETED: the anti-hijack guard is the scheme check — a non-http(s) e
 check('maxBytes is unwrapped live and still clamped to a positive integer', () => {
   assert.equal(resolveConfig({ maxBytes: { get: () => 512 } }).maxBytes, 512)
   for (const bad of [0, -1, 1.5, NaN, Infinity, '1024', null, {}, [], true, { get: () => -5 }]) {
-    assert.equal(resolveConfig({ maxBytes: bad }).maxBytes, 8388608, `maxBytes ${describe(bad)} was accepted`)
+    assert.equal(resolveConfig({ maxBytes: bad }).maxBytes, 20971520, `maxBytes ${describe(bad)} was accepted`)
   }
 })
 
@@ -561,7 +561,7 @@ await checkAsync('NEW: a live maxBytes change takes effect on the next build', a
     assert.equal(second.afterSeq, first.afterSeq, 'the range start must not move')
 
     // Through the real volatile protocol too, which is the shape production uses.
-    handle.state.rawConfig.maxBytes = makeVolatile(8388608)
+    handle.state.rawConfig.maxBytes = makeVolatile(20971520)
     await runStream(handle, { provider: 'pi-ai', model: 'gpt-4', sessionId: 'sess-mb' })
     await waitFor(() => handle.state.fetchCalls.length === 3, 'the third attempt')
     const third = JSON.parse(handle.state.fetchCalls[2][1].body).dsh_session_log
@@ -1643,13 +1643,14 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   // integer step and its `min(1)` and stays volatile, and that `endpoint` stays a pattern-free volatile
   // string — not that the default was typed out twice.
   assert.match(source, /maxBytes: z\.number\(\)\.step\(1\)\.min\(1\)\.default\(DEFAULT_MAX_BYTES\)\.volatile\(\)/)
-  // RETARGETED: five fields are volatile now — `mode` (the consent switch), the two editable lists
+  // RETARGETED: seven fields are volatile now — `mode` (the consent switch), the four editable lists
   // (`deepseekModelPatterns`, so a user can mark a proxy's renamed model as DeepSeek;
-  // `uploadDirectories`, the directory exclusion), `endpoint` (so the dialog can name a real
+  // `uploadDirectories`, the directory allowlist; `uploadSessionIds`, the per-Session allowlist;
+  // `foreignSessionIds`, the other-harness ticks), `endpoint` (so the dialog can name a real
   // destination) and `maxBytes` (so the page can report the cap). Those are exactly the `readLive`
   // unwraps; `uploadModel` and `credentialRef` must stay non-volatile.
   const volatileCount = [...source.matchAll(/\.volatile\(\)/g)].length
-  assert.equal(volatileCount, 6, `expected exactly six .volatile() fields, found ${volatileCount}`)
+  assert.equal(volatileCount, 7, `expected exactly seven .volatile() fields, found ${volatileCount}`)
   assert.match(source, /endpoint: z\.string\(\)\.default\(DEFAULT_ENDPOINT\)\.volatile\(\)/)
   const declaration = source.slice(source.indexOf('Config = z.object({'), source.indexOf('})', source.indexOf('Config = z.object({')))
   const volatileFields = declaration
@@ -1660,7 +1661,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   if (declaration.includes('mode: modeField(z)')) volatileFields.push('mode')
   assert.deepEqual(
     volatileFields.sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
     `volatile fields: ${volatileFields.join(', ')}`,
   )
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -1684,7 +1685,7 @@ check('FIXED: the schema now constrains `mode` to the four frozen ids', () => {
 // ══ 9. dependency-freedom ══════════════════════════════════════════════════════════════════════
 console.log('\n9. dependency-freedom')
 
-const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'client.js']
+const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'host/foreign-forge.js', 'host/foreign/index.js', 'host/foreign/shared.js', 'host/foreign/zcode.js', 'host/foreign/qoder.js', 'host/foreign/cursor.js', 'host/foreign/workbuddy.js', 'host/foreign/cline.js', 'client.js']
 
 check('every static import/require in every shipped file is node: or relative (react/react-dom excepted)', () => {
   const offenders = []
@@ -1886,7 +1887,7 @@ await checkAsync('the ledger route is registered exactly as Connection expects, 
   handle.cleanup()
   // Both routes are registered through their own `ctx.effect`, so an unload disposes both. The
   // property is that every registration has a disposer — not that there is exactly one of them.
-  assert.equal(state.routeDisposed, 3, `expected all three route registrations to be disposed, saw ${state.routeDisposed}`)
+  assert.equal(state.routeDisposed, 5, `expected all five route registrations to be disposed, saw ${state.routeDisposed}`)
 })
 
 await checkAsync('the ledger answers 200 JSON, no-store, and its handler is total', async () => {
@@ -2079,7 +2080,7 @@ await checkAsync('A6 NON-VACUITY: with the ledger wrapper removed, the very same
   // protects the ledger registration, and drive the identical harness against the clone.
   const source = readFileSync('index.js', 'utf8')
   const withUrl = source.replace(/from '\.\/([^']+)'/g, (_match, rest) => `from '${pathToFileURL(resolve(rest)).href}'`)
-  assert.equal((source.match(/from '\.\//g) ?? []).length, 7, 'the relative-import shape of index.js changed')
+  assert.equal((source.match(/from '\.\//g) ?? []).length, 9, 'the relative-import shape of index.js changed')
   assert.notEqual(withUrl, source)
   const structure = codeStructure(withUrl)
   // Excise the wrapper around exactly one registration: the `try {` … `} catch (…) { … }` that encloses

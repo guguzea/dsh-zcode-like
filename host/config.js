@@ -46,7 +46,7 @@ export const DEFAULT_UPLOAD_MODEL = 'deepseek-flash'
 export const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
 /** Default largest serialized `dsh_session_log` field, matching the shipped uploader. */
-export const DEFAULT_MAX_BYTES = 8388608
+export const DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 
 /**
  * Default directory allowlist: empty, meaning **every** Session is uploaded.
@@ -63,6 +63,19 @@ export const DEFAULT_UPLOAD_DIRECTORIES = []
  * not ticked, which is how a user picks one conversation out of a large workspace.
  */
 export const DEFAULT_UPLOAD_SESSION_IDS = []
+
+/**
+ * Default ticked set for the other-harness import: empty, meaning nothing is selected.
+ *
+ * Values are composite ids `harness/原始 id`, opaque here. This list is **not** an upload allowlist:
+ * the DSH allowlist governs whether a DSH Session's log may be uploaded, while this one only records
+ * which foreign conversations the user ticked on the import page. They are deliberately separate, so
+ * importing a ZCode conversation can never widen what the plugin does to a DSH Session, and vice versa.
+ *
+ * Same shape rule as the two lists above: permissive strings, because a schema constraint that rejects a
+ * patch value deactivates the whole row and the plugin silently stops loading.
+ */
+export const DEFAULT_FOREIGN_SESSION_IDS = []
 
 /** The credential-reference grammar accepted by the credentials service. */
 export const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -363,6 +376,7 @@ function defaults() {
     deepseekModelPatterns: [...DEFAULT_DEEPSEEK_MODEL_PATTERNS],
     uploadDirectories: [...DEFAULT_UPLOAD_DIRECTORIES],
     uploadSessionIds: [...DEFAULT_UPLOAD_SESSION_IDS],
+    foreignSessionIds: [...DEFAULT_FOREIGN_SESSION_IDS],
     endpoint: DEFAULT_ENDPOINT,
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -381,7 +395,7 @@ function defaults() {
  * visible immediately.
  *
  * @param raw the row's raw `config` value from the Loader (any type).
- * @returns `{mode, deepseekModelPatterns, endpoint, uploadModel, credentialRef, maxBytes, uploadDirectories, uploadSessionIds}`.
+ * @returns `{mode, deepseekModelPatterns, endpoint, uploadModel, credentialRef, maxBytes, uploadDirectories, uploadSessionIds, foreignSessionIds}`.
  */
 export function resolveConfig(raw) {
   try {
@@ -394,6 +408,9 @@ export function resolveConfig(raw) {
     resolved.deepseekModelPatterns = normalizePatterns(readLive(own(raw, 'deepseekModelPatterns')), resolved.deepseekModelPatterns)
     resolved.uploadDirectories = normalizeDirectories(readLive(own(raw, 'uploadDirectories')))
     resolved.uploadSessionIds = normalizeSessionIds(readLive(own(raw, 'uploadSessionIds')))
+    // Same opaque-list treatment as the DSH allowlist: a composite `harness/id` is only ever compared
+    // for equality, so folding case or separators would silently change which conversation was ticked.
+    resolved.foreignSessionIds = normalizeSessionIds(readLive(own(raw, 'foreignSessionIds')))
 
     const endpoint = normalizeEndpoint(readLive(own(raw, 'endpoint')))
     if (endpoint !== undefined) resolved.endpoint = endpoint

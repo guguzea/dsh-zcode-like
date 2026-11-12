@@ -26,6 +26,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -36,14 +37,17 @@ import {
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_UPLOAD_SESSION_IDS,
+  DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
   isUploadAllowed,
   resolveConfig,
 } from './host/config.js'
 import { decideUpload, suppressShipped } from './host/eligibility.js'
-import { buildLogField } from './host/logfield.js'
+import { buildLogField, jsonBytes } from './host/logfield.js'
 import { FailureStore } from './host/failure.js'
+import { scanAll, readForeignSession } from './host/foreign/index.js'
+import { forgeSession, buildForeignField } from './host/foreign-forge.js'
 import { NoticeStore } from './host/notice.js'
 import { WatermarkStore, defaultWatermarkDirectory } from './host/watermark.js'
 import { uploadLogField } from './host/upload.js'
@@ -155,6 +159,10 @@ try {
         deepseekModelPatterns: z.array(z.string()).default([...DEFAULT_DEEPSEEK_MODEL_PATTERNS]).volatile(),
         uploadDirectories: z.array(z.string()).default([...DEFAULT_UPLOAD_DIRECTORIES]).volatile(),
         uploadSessionIds: z.array(z.string()).default([...DEFAULT_UPLOAD_SESSION_IDS]).volatile(),
+        // Ticked other-harness conversations. A separate list on purpose: it records a choice on the
+        // import page and never widens what may be done to a DSH Session. Same permissive shape for the
+        // same coupling reason.
+        foreignSessionIds: z.array(z.string()).default([...DEFAULT_FOREIGN_SESSION_IDS]).volatile(),
         endpoint: z.string().default(DEFAULT_ENDPOINT).volatile(),
         uploadModel: z.string().default(DEFAULT_UPLOAD_MODEL),
         credentialRef: z.string().default(DEFAULT_CREDENTIAL_REF),
@@ -397,6 +405,32 @@ export const SCAN_ROUTE_PATH = '/api/session-log-upload.scan'
  * would let any local process dismiss the notice on the user's behalf.
  */
 export const NOTICE_ROUTE_PATH = '/api/session-log-upload.notice'
+
+/**
+ * The other-harness import: `GET` lists the conversations other agent harnesses stored on this machine,
+ * `POST` sends one of them.
+ *
+ * These live behind the same authenticated registry as the ledger. The scan reports conversation
+ * metadata only (titles, directories, model names, message counts); the POST is the one place in this
+ * plugin that reads a foreign conversation's content, and it only ever does so for the exact id the page
+ * asked for.
+ */
+export const FOREIGN_SCAN_ROUTE_PATH = '/api/session-log-upload.foreign-scan'
+
+/** The other-harness send route: `POST {id}` sends exactly one conversation, so progress and errors map
+ * to a row instead of to a batch that may have half-succeeded. */
+export const FOREIGN_UPLOAD_ROUTE_PATH = '/api/session-log-upload.foreign-upload'
+
+/**
+ * How much of one foreign conversation an import reads before giving up, in bytes.
+ *
+ * This is deliberately NOT `maxBytes`. `maxBytes` caps one *request*, and the send loop already splits a
+ * long conversation across several of them; using it as the read budget would silently cut every
+ * conversation at one request's worth and lose the tail with no error anywhere. 64 MiB covers the largest
+ * conversation measured on this machine (about 51 MB of JSON) with room to spare, while still bounding what
+ * one import can pull into memory.
+ */
+export const FOREIGN_READ_BYTES = 64 * 1024 * 1024
 
 /** Most ledger rows the `/session-log-upload uploaded` listing prints before it summarises the rest. */
 export const MAX_LEDGER_LINES = 50
@@ -1278,6 +1312,216 @@ export function apply(ctx, rawConfig) {
   }
 
   /**
+   * The other-harness scan: which conversations the adapters can see right now.
+   *
+   * Metadata only. The page needs enough for a person to recognise a row (title, directory, the model
+   * that produced it, how many messages) and nothing more, so no message content is read on this path —
+   * `readForeignSession` is only ever called by the POST, for one id at a time.
+   *
+   * The composite id (`harness/原始 id`) is composed by the registry; the fallback below exists only so a
+   * future adapter that forgets to compose cannot produce an unticktable row.
+   *
+   * @returns `{harnesses: [{harness, label, available, error, sessions: [...]}]}`; never throws.
+   */
+  async function foreignScanPayload() {
+    let entries
+    try {
+      entries = await scanAll({ home: homedir(), maxBytes: currentConfig().maxBytes })
+    } catch (error) {
+      return { harnesses: [], error: messageOf(error) }
+    }
+    const list = entries !== null && entries !== undefined && Array.isArray(entries.harnesses) ? entries.harnesses : []
+    const harnesses = []
+    for (const entry of list) {
+      if (entry === null || entry === undefined || typeof entry !== 'object') continue
+      const harness = typeof entry.harness === 'string' ? entry.harness : ''
+      if (harness.length === 0) continue
+      const sessions = []
+      for (const session of Array.isArray(entry.sessions) ? entry.sessions : []) {
+        if (session === null || session === undefined || typeof session !== 'object') continue
+        const rawId = typeof session.id === 'string' ? session.id : ''
+        if (rawId.length === 0) continue
+        // The registry may hand back a bare raw id or an already-composed one; prefixing only when the id
+        // does not already carry this harness keeps both acceptable without ever double-prefixing.
+        const prefix = `${harness}/`
+        sessions.push({
+          id: rawId.startsWith(prefix) ? rawId : `${prefix}${rawId}`,
+          title: typeof session.title === 'string' ? session.title : '',
+          cwd: typeof session.cwd === 'string' ? session.cwd : '',
+          createdAt: Number.isSafeInteger(session.createdAt) ? session.createdAt : 0,
+          updatedAt: Number.isSafeInteger(session.updatedAt) ? session.updatedAt : 0,
+          messageCount: Number.isSafeInteger(session.messageCount) ? session.messageCount : 0,
+          provider: typeof session.provider === 'string' ? session.provider : '',
+          model: typeof session.model === 'string' ? session.model : '',
+          bytes: Number.isSafeInteger(session.bytes) ? session.bytes : 0,
+        })
+      }
+      harnesses.push({
+        harness,
+        label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : harness,
+        available: entry.available === true,
+        error: typeof entry.error === 'string' ? entry.error : null,
+        sessions,
+      })
+    }
+    return { harnesses }
+  }
+
+  /**
+   * How many POSTs a forged conversation needs at the current cap, without sending anything.
+   *
+   * Used by the dry-run path so the page (and the tests) can size an import before a byte leaves the
+   * machine. Mirrors the real loop exactly, which is the point: a dry run that disagreed with the upload
+   * would be worse than no dry run.
+   */
+  function planForeignRequests(forged, maxBytes) {
+    let afterSeq = -1
+    let requests = 0
+    let bytes = 0
+    for (let guard = 0; guard < 100000; guard += 1) {
+      const built = buildForeignField({ forged, afterSeq, maxBytes })
+      if (built.field === null) {
+        return { requests, bytes, reason: typeof built.reason === 'string' ? built.reason : 'nothing-to-send' }
+      }
+      bytes += jsonBytes(built.field)
+      requests += 1
+      afterSeq = built.throughSeq
+      if (!Number.isSafeInteger(afterSeq) || afterSeq >= forged.events.length - 1) return { requests, bytes, reason: null }
+    }
+    return { requests, bytes, reason: 'too-many-requests' }
+  }
+
+  /**
+   * Send exactly one other-harness conversation, as a forged DSH session record.
+   *
+   * One conversation per call, so the page can attribute a failure to a row instead of to a batch. The
+   * watermark key is the forged Session id, which is deterministic, so re-sending resumes where the last
+   * accepted request stopped rather than duplicating the whole conversation.
+   *
+   * @param request the buffered Request; body `{id, dryRun?}`.
+   * @returns `{ok, id, requests, bytes, throughSeq, error}`; never throws.
+   */
+  async function foreignUploadPayload(request) {
+    let body
+    try {
+      body = await request.json()
+    } catch {
+      return { ok: false, id: null, error: 'the request body is not JSON' }
+    }
+    if (body === null || body === undefined || typeof body !== 'object') {
+      return { ok: false, id: null, error: 'the request body is not an object' }
+    }
+    const id = typeof body.id === 'string' ? body.id.trim() : ''
+    if (id.length === 0 || id.length > 300) return { ok: false, id, error: 'no conversation id' }
+
+    const live = currentConfig()
+    const read = await readForeignSession(id, { home: homedir(), maxBytes: FOREIGN_READ_BYTES })
+    if (read === null || read === undefined || read.raw === undefined || read.adapter === undefined) {
+      return { ok: false, id, error: typeof read?.error === 'string' ? read.error : 'that conversation could not be read' }
+    }
+    const forged = forgeSession({
+      harness: read.adapter.harness,
+      label: read.adapter.label,
+      // The adapter contract does not carry the raw id, but the forged Session id must be stable across
+      // re-reads: without this the forger falls back to hashing message content, and a re-read that was
+      // truncated differently would mint a different id, orphaning the watermark and re-sending the lot.
+      raw: { ...read.raw, id: id.includes('/') ? id.slice(id.indexOf('/') + 1) : id },
+    })
+    if (forged === null || forged === undefined || forged.base === null || forged.base === undefined) {
+      return { ok: false, id, error: typeof forged?.error === 'string' ? forged.error : 'the session record could not be built' }
+    }
+    const forgedId = forged.base.session.id
+    if (body.dryRun === true) {
+      const plan = planForeignRequests(forged, live.maxBytes)
+      return {
+        ok: plan.reason === null,
+        id,
+        dryRun: true,
+        forgedId,
+        events: forged.events.length,
+        requests: plan.requests,
+        bytes: plan.bytes,
+        truncated: read.raw.truncated === true,
+        error: plan.reason,
+      }
+    }
+
+    // Auth is resolved once per conversation, before any network call: when it does not resolve the
+    // caller gets a named failure and no watermark is written, so the next attempt re-reads from the same
+    // offset rather than skipping a range that never left.
+    const auth = await resolveAuth(live.endpoint)
+    if (auth === undefined) return { ok: false, id, error: `no credential resolved for ${live.credentialRef} at ${live.endpoint}` }
+
+    const version = forged.base.sessionFormatVersion
+    const stored = watermark.read(forgedId)
+    let afterSeq = stored !== undefined && stored.sessionFormatVersion === version ? stored.afterSeq : -1
+    if (afterSeq >= forged.events.length - 1) {
+      return { ok: true, id, forgedId, requests: 0, bytes: 0, throughSeq: afterSeq, error: null, skipped: 'already-sent' }
+    }
+
+    // Attribution is best-effort and total; a forged record has no live Session, so only the id header is
+    // derivable, which is exactly what `resolveAttributionHeaders` falls back to.
+    const attribution = await resolveAttributionHeaders(undefined, forgedId)
+    const source = {
+      provider: typeof read.raw.provider === 'string' && read.raw.provider.length > 0 ? read.raw.provider : read.adapter.harness,
+      model: read.raw.model,
+    }
+
+    let requests = 0
+    let bytes = 0
+    let throughSeq = afterSeq
+    for (let guard = 0; guard < 100000; guard += 1) {
+      const built = buildForeignField({ forged, afterSeq, maxBytes: live.maxBytes })
+      if (built.field === null) {
+        if (requests === 0) return { ok: false, id, forgedId, requests, bytes, error: String(built.reason ?? 'nothing to send') }
+        break
+      }
+      bytes += jsonBytes(built.field)
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => {
+        try {
+          controller.abort(new Error('other-harness upload timeout'))
+        } catch {
+          /* ignore */
+        }
+      }, UPLOAD_TIMEOUT_MS)
+      if (typeof timer.unref === 'function') timer.unref()
+      controllers.add(controller)
+
+      let result
+      try {
+        result = await uploadLogField({
+          fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
+          endpoint: live.endpoint,
+          auth,
+          source,
+          sessionId: forgedId,
+          field: built.field,
+          signal: controller.signal,
+          uploadModel: live.uploadModel,
+          headers: attribution,
+        })
+      } finally {
+        clearTimeout(timer)
+        controllers.delete(controller)
+      }
+
+      if (result.ok !== true) {
+        return { ok: false, id, forgedId, requests, bytes, throughSeq, error: String(result.error ?? 'upload failed') }
+      }
+      requests += 1
+      throughSeq = result.throughSeq
+      watermark.write(forgedId, { afterSeq: throughSeq, sessionFormatVersion: version })
+      afterSeq = throughSeq
+      if (!Number.isSafeInteger(afterSeq) || afterSeq >= forged.events.length - 1) break
+    }
+
+    log('debug', `session-log-upload: imported other-harness conversation "${id}" as "${forgedId}" through event ${String(throughSeq)}`)
+    return { ok: true, id, forgedId, requests, bytes, throughSeq, error: null, truncated: read.raw.truncated === true }
+  }
+
+  /**
    * Register the read-only ledger and scan routes on the connection service.
    *
    * `connection` is deliberately **not** in this row's `inject`: the plugin must stay active where
@@ -1331,6 +1575,21 @@ export function apply(ctx, rawConfig) {
           return notice.snapshot()
         },
         what: 'the Settings page cannot show or record the liability notice',
+      },
+      {
+        path: FOREIGN_SCAN_ROUTE_PATH,
+        effect: 'session-log-upload: other-harness scan route',
+        methods: ['GET'],
+        payload: () => foreignScanPayload(),
+        what: 'the Settings page cannot list conversations from other harnesses',
+      },
+      {
+        path: FOREIGN_UPLOAD_ROUTE_PATH,
+        effect: 'session-log-upload: other-harness send route',
+        methods: ['POST'],
+        // One conversation per request: the page drives it serially so a failure names a row.
+        payload: (request) => foreignUploadPayload(request),
+        what: 'the Settings page cannot send conversations from other harnesses',
       },
     ]
     for (const route of routes) {

@@ -129,7 +129,31 @@ window.__ModuleLoader__.load({
 				"upload.manualHint": "This browser could not write the setting. Add the configuration below to cordis.patch.yml, or run the command in a Session.",
 				"upload.manualPatchLabel": "cordis.patch.yml",
 				"upload.manualCommandLabel": "Command",
-				"upload.renderFailed": "This settings section could not be rendered."
+				"upload.renderFailed": "This settings section could not be rendered.",
+				"foreign.title": "Import from other HARNESSES",
+				"foreign.description": "Scan the conversations other agent harnesses recorded on this machine, tick the ones to send, then send them. Nothing is scanned until you click Scan.",
+				"foreign.scan": "Scan",
+				"foreign.scanning": "Scanning…",
+				"foreign.scanFailed": "The scan could not be read.",
+				"foreign.empty": "No conversations were found in any other harness.",
+				"foreign.groupEmpty": "No conversations found.",
+				"foreign.unavailable": "Not found on this machine.",
+				"foreign.harnessError": "Scan error:",
+				"foreign.untitled": "Untitled conversation",
+				"foreign.cwdUnknown": "No folder reported",
+				"foreign.modelUnknown": "Model not reported",
+				"foreign.messages": "messages",
+				"foreign.save": "Save ticks",
+				"foreign.send": "Send {count} selected sessions",
+				"foreign.statusWaiting": "Waiting",
+				"foreign.statusSending": "Sending…",
+				"foreign.statusOk": "Sent ({requests} requests)",
+		"foreign.statusOkTruncated": "Sent ({requests} requests; only the first part of this conversation was sent)",
+				"foreign.statusFailed": "Failed: {error}",
+				"foreign.statusUnknown": "unknown error",
+				"foreign.warnTitle": "Send these conversations to the destination?",
+				"foreign.warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
+				"foreign.warnConfirm": "Send"
 			},
 			"zh": {
 				"upload.sectionTitle": "会话日志上传",
@@ -220,7 +244,31 @@ window.__ModuleLoader__.load({
 				"upload.manualHint": "这个浏览器无法写入该设置。请把下面的配置加进 cordis.patch.yml，或在会话里运行这条命令。",
 				"upload.manualPatchLabel": "cordis.patch.yml",
 				"upload.manualCommandLabel": "命令",
-				"upload.renderFailed": "这个设置区块无法渲染。"
+				"upload.renderFailed": "这个设置区块无法渲染。",
+				"foreign.title": "从其他 HARNESS 导入",
+				"foreign.description": "扫描其他 agent harness 在这台机器上记录下的会话，勾选要发送的，然后发送。只有点击「扫描」之后才会开始扫描。",
+				"foreign.scan": "扫描",
+				"foreign.scanning": "正在扫描…",
+				"foreign.scanFailed": "扫描结果读取失败。",
+				"foreign.empty": "其他 harness 里没有找到会话。",
+				"foreign.groupEmpty": "没有会话。",
+				"foreign.unavailable": "这台机器上没有找到。",
+				"foreign.harnessError": "扫描出错：",
+				"foreign.untitled": "未命名会话",
+				"foreign.cwdUnknown": "未提供目录",
+				"foreign.modelUnknown": "未提供模型",
+				"foreign.messages": "条消息",
+				"foreign.save": "保存勾选",
+				"foreign.send": "发送选中的 {count} 个会话",
+				"foreign.statusWaiting": "等待中",
+				"foreign.statusSending": "发送中…",
+				"foreign.statusOk": "发送成功（{requests} 次请求）",
+		"foreign.statusOkTruncated": "发送成功（{requests} 次请求，只发送了这段对话的前一部分）",
+				"foreign.statusFailed": "失败：{error}",
+				"foreign.statusUnknown": "未知错误",
+				"foreign.warnTitle": "要把这些会话发送到下面的目标吗？",
+				"foreign.warnBody": "这些不是 DSH 会话。发出去的内容会被包装成一段 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
+				"foreign.warnConfirm": "发送"
 			}
 		};
 		//#endregion
@@ -259,7 +307,7 @@ window.__ModuleLoader__.load({
 			// Kept in step with host/config.js DEFAULT_UPLOAD_MODEL by verify/host-unit.mjs §15.
 			uploadModel: "deepseek-flash",
 			credentialRef: "DEEPSEEK_API_KEY",
-			maxBytes: 8388608
+			maxBytes: 20971520
 		});
 		/** Host route serving the upload ledger (docs/state-channel.md §4). */
 		const LEDGER_PATH = "/api/session-log-upload.ledger";
@@ -276,6 +324,15 @@ window.__ModuleLoader__.load({
 		/** Host route reporting and recording the liability-notice acknowledgement. */
 		const NOTICE_PATH = "/api/session-log-upload.notice";
 		const NOTICE_ROUTE = NOTICE_PATH.slice(1);
+		/**
+		 * Host routes for the other-harness import (docs/foreign-import.md §路由契约). These mirror
+		 * `FOREIGN_SCAN_ROUTE_PATH` / `FOREIGN_UPLOAD_ROUTE_PATH` as index.js exports them; the page
+		 * fetches the document-relative form, exactly like the ledger route above.
+		 */
+		const FOREIGN_SCAN_PATH = "/api/session-log-upload.foreign-scan";
+		const FOREIGN_SCAN_ROUTE = FOREIGN_SCAN_PATH.slice(1);
+		const FOREIGN_UPLOAD_PATH = "/api/session-log-upload.foreign-upload";
+		const FOREIGN_UPLOAD_ROUTE = FOREIGN_UPLOAD_PATH.slice(1);
 		/** Session ids longer than this are shortened in the middle; the full value stays in `title`. */
 		const LEDGER_ID_LIMIT = 28;
 		/** The state a ledger read publishes when nothing at all could be read. */
@@ -382,6 +439,20 @@ window.__ModuleLoader__.load({
 @media (hover:hover){.slu-btn:hover{border-color:var(--dsw-alias-border-l4);background-color:var(--dsw-alias-interactive-bg-hover)}}
 .slu-btn:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:2px}
 .slu-btnPrimary{border-color:var(--dsw-alias-label-primary);background-color:var(--dsw-alias-interactive-bg-hover)}
+/* The other-harness import: its own panel, groups and rows. Rows reuse the chooser's .slu-check
+   base so the two pickers look like the same control; the text column is what is new. */
+.slu-foreign{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}
+.slu-foreignTitle{margin:0;font-size:14px;line-height:20px;font-weight:600}
+.slu-foreignGroups{display:flex;flex-direction:column;gap:12px}
+.slu-foreignGroup{display:flex;flex-direction:column;gap:4px}
+.slu-foreignGroupTitle{color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;font-weight:600}
+.slu-foreignRows{display:flex;flex-direction:column;gap:2px}
+.slu-foreignRow{align-items:flex-start}
+.slu-foreignText{display:flex;flex:1;flex-direction:column;gap:2px;min-width:0}
+.slu-foreignName{font-size:14px;line-height:20px;overflow-wrap:anywhere}
+.slu-foreignMeta{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+.slu-foreignStatus{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+.slu-foreignStatus.slu-error{color:var(--dsw-alias-state-error-primary)}
 `;
 
 		//#region style registration
@@ -462,9 +533,11 @@ window.__ModuleLoader__.load({
 			return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 		}
 		/**
-		 * The only fields the settings page edits directly. `mode` is deliberately absent: it has
-		 * its own consent-gated path, and this list is what makes it impossible for the field
-		 * editor to widen the mode by accident.
+		 * The only fields the generic settings field editor edits directly. `mode` is deliberately
+		 * absent: it has its own consent-gated path, and this list is what makes it impossible for
+		 * the field editor to widen the mode by accident. The other-harness tick set is written by
+		 * the import block's own Save control, so it is not listed here either (see `writeField`) —
+		 * the generic editor must never offer a control for it.
 		 */
 		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories", "uploadSessionIds" ]);
 		/**
@@ -652,6 +725,108 @@ window.__ModuleLoader__.load({
 			} catch (_error) {
 				return null;
 			}
+		}
+		/**
+		 * Turn one other-harness scan payload into the groups the section renders.
+		 *
+		 * The payload is untrusted: a group needs a name (a row without one could not be labelled),
+		 * and a session needs a composite id (without one it could not be ticked or sent), so
+		 * anything else is dropped instead of becoming an invented row. Every other field is
+		 * optional and is kept as `null` when the Host did not report it, so the renderer can say
+		 * "not reported" rather than printing the word "undefined".
+		 *
+		 * @param body - the parsed GET payload.
+		 * @returns `{harnesses, error}`, or null when the payload has no harness list at all.
+		 */
+		function normalizeForeignScan(body) {
+			const root = asObject(body);
+			if (root === null || !Array.isArray(root.harnesses)) return null;
+			const harnesses = [];
+			for (const rawGroup of root.harnesses) {
+				const group = asObject(rawGroup);
+				if (group === null) continue;
+				const harness = firstString(group.harness);
+				const label = firstString(group.label, harness);
+				if (label === null) continue;
+				const sessions = [];
+				if (Array.isArray(group.sessions)) {
+					for (const rawSession of group.sessions) {
+						const record = asObject(rawSession);
+						if (record === null) continue;
+						const id = firstString(record.id);
+						if (id === null) continue;
+						const messageCount = numberOrNull(record.messageCount);
+						sessions.push({
+							id: id,
+							// A session with no title is still a row; the renderer substitutes readable copy.
+							title: firstString(record.title),
+							cwd: firstString(record.cwd),
+							provider: firstString(record.provider),
+							model: firstString(record.model),
+							messageCount: messageCount !== null && messageCount >= 0 ? messageCount : null
+						});
+					}
+				}
+				harnesses.push({
+					harness: harness === null ? label : harness,
+					label: label,
+					available: group.available === true,
+					error: firstString(group.error),
+					sessions: sessions
+				});
+			}
+			return { harnesses: harnesses, error: firstString(root.error) };
+		}
+		/**
+		 * The second line of one scanned-session row: folder, provider/model, message count.
+		 * Each absent fact is named as unreported instead of being printed as an empty string.
+		 * @param session - one normalized session.
+		 * @param t - bound dictionary lookup.
+		 */
+		function foreignRowMeta(session, t) {
+			const parts = [ session.cwd === null ? t("foreign.cwdUnknown") : session.cwd ];
+			if (session.provider !== null && session.model !== null) parts.push(session.provider + "/" + session.model);
+			else if (session.model !== null) parts.push(session.model);
+			else if (session.provider !== null) parts.push(session.provider);
+			else parts.push(t("foreign.modelUnknown"));
+			parts.push(session.messageCount === null
+				? t("upload.valueUnknown")
+				: String(session.messageCount) + " " + t("foreign.messages"));
+			return parts.join(" · ");
+		}
+		/**
+		 * The placeholder text of one row's send state: waiting / sending / sent with a request
+		 * count / failed with the reason. A row the current send has not touched has no state and
+		 * therefore no line, which is different from the waiting state.
+		 * @param status - the row's state, or undefined.
+		 * @param t - bound dictionary lookup.
+		 * @returns the text, or null when there is nothing to report yet.
+		 */
+		function foreignStatusText(status, t) {
+			const state = asObject(status);
+			if (state === null) return null;
+			if (state.kind === "waiting") return t("foreign.statusWaiting");
+			if (state.kind === "sending") return t("foreign.statusSending");
+			if (state.kind === "ok") {
+				const requests = numberOrNull(state.requests);
+				// A truncated import is still a success, but saying only "sent" would hide that the tail of
+				// the conversation never left the machine. The two readings must differ.
+				const template = state.truncated === true ? "foreign.statusOkTruncated" : "foreign.statusOk";
+				return t(template).replace("{requests}", requests === null ? t("upload.valueUnknown") : String(requests));
+			}
+			const detail = firstString(state.error);
+			if (detail !== null) return t("foreign.statusFailed").replace("{error}", detail);
+			if (numberOrNull(state.status) !== null) return t("foreign.statusFailed").replace("{error}", "HTTP " + String(state.status));
+			return t("foreign.statusFailed").replace("{error}", t("foreign.statusUnknown"));
+		}
+		/**
+		 * The send label with the number of ticked sessions substituted. The locale files carry
+		 * the sentence, so both languages keep their own word order around the number.
+		 * @param t - bound dictionary lookup.
+		 * @param count - how many sessions are ticked.
+		 */
+		function foreignSendLabel(t, count) {
+			return t("foreign.send").replace("{count}", String(count));
 		}
 		/**
 		 * Turn one Host ledger payload into the rows the section renders.
@@ -1214,6 +1389,84 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Read what the other-harness adapters can see right now.
+			 *
+			 * Total: the section normalizes the payload and turns every failure into one error
+			 * line, so a missing route, a refused credential, an unreadable body and a transport
+			 * failure all resolve to `null` here rather than throwing out of a component.
+			 *
+			 * @returns the parsed GET payload, or null when it could not be read.
+			 */
+			async function readForeignScan() {
+				const fetcher = pageFetcher();
+				if (fetcher === null) return null;
+				let response;
+				try {
+					response = await fetcher(FOREIGN_SCAN_ROUTE, { headers: { accept: "application/json" } });
+				} catch (_error) {
+					return null;
+				}
+				if (response === null || response === undefined || response.ok !== true) return null;
+				try {
+					return await response.json();
+				} catch (_error) {
+					return null;
+				}
+			}
+
+			/**
+			 * Send exactly one other-harness conversation, as a forged DSH session record.
+			 *
+			 * One POST per id on purpose: the page drives the loop serially so a failure can be
+			 * attributed to one row. The request body is exactly `{id}` (docs/foreign-import.md
+			 * §路由契约); no other field is invented.
+			 *
+			 * Never throws: a transport failure, a non-2xx answer and an unreadable body each
+			 * become a result record the row can display.
+			 *
+			 * @param id - the composite id from the scan payload.
+			 * @returns `{ok, id, requests, bytes, truncated, error, status}`.
+			 */
+			async function uploadForeign(id) {
+				const failed = function (status) {
+					return { ok: false, id: typeof id === "string" && id.length > 0 ? id : null, requests: null, bytes: null, error: null, status: numberOrNull(status) };
+				};
+				if (typeof id !== "string" || id.length === 0) return failed(null);
+				const fetcher = pageFetcher();
+				if (fetcher === null) return failed(null);
+				let response;
+				try {
+					response = await fetcher(FOREIGN_UPLOAD_ROUTE, {
+						method: "POST",
+						headers: { accept: "application/json", "content-type": "application/json" },
+						body: JSON.stringify({ id: id })
+					});
+				} catch (_error) {
+					return failed(null);
+				}
+				const status = response !== null && response !== undefined && typeof response.status === "number" ? response.status : null;
+				let body = null;
+				try {
+					body = response !== null && response !== undefined && typeof response.json === "function" ? await response.json() : null;
+				} catch (_error) {
+					body = null;
+				}
+				const record = asObject(body);
+				if (record === null) return failed(status);
+				return {
+					ok: record.ok === true && response.ok === true,
+					id: firstString(record.id, id),
+					requests: numberOrNull(record.requests),
+					bytes: numberOrNull(record.bytes),
+					// The Host reports whether the read budget cut the conversation short. Dropping this flag
+					// here would make a partial import read as a complete one on the row.
+					truncated: record.truncated === true,
+					error: firstString(record.error),
+					status: status
+				};
+			}
+
+			/**
 			 * Read whether the liability notice has been acknowledged.
 			 *
 			 * Total: an absent route, a refused credential, an unreadable body and a transport failure
@@ -1275,6 +1528,11 @@ window.__ModuleLoader__.load({
 			 * @returns `{ok, path, doc}`.
 			 */
 			async function writeField(field, value) {
+				// The other-harness tick set is owned by the import block's own control, not by the
+				// generic field editor, so it is admitted here instead of in EDITABLE_FIELDS. It still
+				// goes through the one persist path, and `mode`/`uploadModel`/`credentialRef` stay
+				// unreachable from both.
+				if (field === "foreignSessionIds") return persistField(field, value);
 				if (EDITABLE_FIELDS.indexOf(field) < 0) return { ok: false, path: "none", doc: null };
 				return persistField(field, value);
 			}
@@ -1288,7 +1546,7 @@ window.__ModuleLoader__.load({
 				return persistField("mode", nextMode);
 			}
 
-			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, readNotice: readNotice, writeNotice: writeNotice, writeField: writeField, writeMode: writeMode };
+			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, readForeignScan: readForeignScan, uploadForeign: uploadForeign, readNotice: readNotice, writeNotice: writeNotice, writeField: writeField, writeMode: writeMode };
 		}
 		//#endregion
 
@@ -1713,6 +1971,16 @@ window.__ModuleLoader__.load({
 				const [ picked, setPicked ] = React.useState(function () { return Object.create(null); });
 				const [ pickedSessions, setPickedSessions ] = React.useState(function () { return Object.create(null); });
 				const [ scanning, setScanning ] = React.useState(false);
+				// The other-harness import. `foreignScan` is null until the user clicks Scan, so the
+				// block shows only the button and its explanation before that. Ticks are a local
+				// draft; `foreignStatus` is per row, so the section keeps rendering during a send.
+				const [ foreignScan, setForeignScan ] = React.useState(null);
+				const [ foreignScanning, setForeignScanning ] = React.useState(false);
+				const [ foreignScanFailed, setForeignScanFailed ] = React.useState(false);
+				const [ foreignPicked, setForeignPicked ] = React.useState(function () { return Object.create(null); });
+				const [ foreignStatus, setForeignStatus ] = React.useState(function () { return Object.create(null); });
+				const [ foreignConfirm, setForeignConfirm ] = React.useState(null);
+				const [ foreignSending, setForeignSending ] = React.useState(false);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
@@ -1790,6 +2058,21 @@ window.__ModuleLoader__.load({
 				// The per-Session allowlist. Read the same way as the directory one: an array of opaque
 				// ids, reported as `null` when nothing described the namespace.
 				const uploadSessionIds = servedValue === null ? null : sessionIdsInUse(fieldValue(servedValue.uploadSessionIds));
+				// The other-harness allowlist, read the same way. It is the value the draft starts from.
+				const savedForeignIds = servedValue === null ? null : sessionIdsInUse(fieldValue(servedValue.foreignSessionIds));
+				// Every scanned session, in the Host's own group order, and the ticked subset of it.
+				const foreignGroups = foreignScan === null ? [] : foreignScan.harnesses;
+				const foreignIds = [];
+				const selectedForeign = [];
+				const seenForeign = Object.create(null);
+				for (const group of foreignGroups) {
+					for (const session of group.sessions) {
+						if (seenForeign[session.id] === true) continue;
+						seenForeign[session.id] = true;
+						foreignIds.push(session.id);
+						if (foreignPicked[session.id] === true) selectedForeign.push(session.id);
+					}
+				}
 
 				/**
 				 * Validate one draft and, when the Host would accept it, write it. The write goes
@@ -2096,6 +2379,131 @@ window.__ModuleLoader__.load({
 				};
 
 				/**
+				 * Scan the other harnesses. This is the ONLY trigger: the section never scans on
+				 * mount, so opening the page costs nothing. The result is normalized here, and a
+				 * missing bridge method, an unreadable body and a transport failure all degrade to
+				 * one error line instead of throwing out of the component.
+				 */
+				const scanForeign = function () {
+					setForeignScanning(true);
+					setForeignScanFailed(false);
+					if (typeof bridge.readForeignScan !== "function") {
+						setForeignScanning(false);
+						setForeignScanFailed(true);
+						return;
+					}
+					let attempt;
+					try {
+						attempt = Promise.resolve(bridge.readForeignScan());
+					} catch (_error) {
+						attempt = Promise.resolve(null);
+					}
+					void attempt.then(function (raw) {
+						setForeignScanning(false);
+						const normalized = normalizeForeignScan(raw);
+						if (normalized === null) {
+							setForeignScan(null);
+							setForeignScanFailed(true);
+							return;
+						}
+						setForeignScan(normalized);
+						// Seed the draft from the saved allowlist, but only for sessions this scan
+						// actually lists: an id this scan cannot see must not be counted or sent from
+						// a row the user cannot inspect.
+						const saved = savedForeignIds === null ? [] : savedForeignIds;
+						setForeignPicked(function (previous) {
+							const next = Object.assign(Object.create(null), previous);
+							for (const group of normalized.harnesses) {
+								for (const session of group.sessions) {
+									if (saved.indexOf(session.id) >= 0) next[session.id] = true;
+								}
+							}
+							return next;
+						});
+					}, function () {
+						setForeignScanning(false);
+						setForeignScan(null);
+						setForeignScanFailed(true);
+					});
+				};
+
+				/**
+				 * Tick or untick one row in the local draft. Each row keys on its OWN id, so ticking
+				 * one conversation never moves another (they are independent boxes, not a shared key).
+				 * @param id - the composite session id.
+				 * @param on - whether the box is now ticked.
+				 */
+				const toggleForeign = function (id, on) {
+					setForeignPicked(function (previous) {
+						const next = Object.assign(Object.create(null), previous);
+						if (on === true) next[id] = true;
+						else delete next[id];
+						return next;
+					});
+				};
+
+				/** Write the whole tick set into `foreignSessionIds` through the shared field path. */
+				const saveForeign = function () {
+					saveField("foreignSessionIds", selectedForeign.slice(), null);
+				};
+
+				/** Open the consent gate for the current tick set. Nothing is sent here. */
+				const startForeignSend = function () {
+					if (foreignSending === true || selectedForeign.length === 0) return;
+					setForeignConfirm(selectedForeign.slice());
+				};
+
+				const cancelForeignSend = function () {
+					setForeignConfirm(null);
+				};
+
+				/**
+				 * Send the confirmed tick set serially, one POST per id, writing each row's state as
+				 * it goes. A failed row does not stop the loop, so one bad conversation cannot hide
+				 * the rest. The section is never unmounted, so the page keeps rendering during the
+				 * send instead of going blank.
+				 */
+				const confirmForeignSend = function () {
+					const ids = foreignConfirm === null ? [] : foreignConfirm;
+					setForeignConfirm(null);
+					if (ids.length === 0 || foreignSending === true) return;
+					setForeignSending(true);
+					const waiting = Object.create(null);
+					for (const id of ids) waiting[id] = { kind: "waiting" };
+					setForeignStatus(waiting);
+					void (async function () {
+						for (const id of ids) {
+							setForeignStatus(function (previous) {
+								const next = Object.assign(Object.create(null), previous);
+								next[id] = { kind: "sending" };
+								return next;
+							});
+							let result = null;
+							try {
+								result = typeof bridge.uploadForeign === "function" ? await bridge.uploadForeign(id) : null;
+							} catch (_error) {
+								result = null;
+							}
+							const outcome = asObject(result);
+							setForeignStatus(function (previous) {
+								const next = Object.assign(Object.create(null), previous);
+								if (outcome !== null && outcome.ok === true) {
+									next[id] = { kind: "ok", requests: numberOrNull(outcome.requests), truncated: outcome.truncated === true };
+								} else {
+									next[id] = {
+										kind: "failed",
+										error: outcome === null ? null : firstString(outcome.error),
+										status: outcome === null ? null : numberOrNull(outcome.status)
+									};
+								}
+								return next;
+							});
+						}
+						setForeignSending(false);
+					})();
+				};
+
+				/**
 				 * Build one editable field: the value in use (read-only, already narrowed) plus an
 				 * input and a Save action for it.
 				 * @param field - `endpoint` or `maxBytes`.
@@ -2332,6 +2740,108 @@ window.__ModuleLoader__.load({
 				// first, and narrowing it is an explicit act of ticking folders.
 				children.push(directoryChooser(directories, uploadSessionIds));
 
+				// ── other-harness import ───────────────────────────────────────────────────────
+				// Scan other agent harnesses on this machine, tick the conversations to send, save the
+				// tick set into `foreignSessionIds`, and send the ticked ones one POST at a time. Until
+				// the user clicks Scan the block is just the title, one explanation line and the button.
+				const foreignChildren = [];
+				foreignChildren.push(React.createElement("h3", { key: "title", className: "slu-foreignTitle" }, t("foreign.title")));
+				foreignChildren.push(React.createElement("p", { key: "description", className: "slu-description" }, t("foreign.description")));
+				const foreignActions = [
+					React.createElement("button", {
+						key: "scan",
+						type: "button",
+						className: "slu-btn slu-foreignScan",
+						"data-foreign-action": "scan",
+						disabled: foreignScanning === true ? true : undefined,
+						onClick: function () { scanForeign(); }
+					}, t(foreignScanning === true ? "foreign.scanning" : "foreign.scan"))
+				];
+				if (foreignScan !== null) {
+					foreignActions.push(React.createElement("button", {
+						key: "save",
+						type: "button",
+						className: "slu-btn slu-foreignSave",
+						"data-foreign-action": "save",
+						disabled: !live || fieldBusy !== null || foreignSending === true ? true : undefined,
+						onClick: function () { saveForeign(); }
+					}, t("foreign.save")));
+					foreignActions.push(React.createElement("button", {
+						key: "send",
+						type: "button",
+						className: "slu-btn slu-btnPrimary slu-foreignSend",
+						"data-foreign-action": "send",
+						disabled: foreignSending === true || selectedForeign.length === 0 ? true : undefined,
+						onClick: function () { startForeignSend(); }
+					}, foreignSendLabel(t, selectedForeign.length)));
+				}
+				foreignChildren.push(React.createElement("div", { key: "actions", className: "slu-fieldRow" }, foreignActions));
+				if (foreignScanFailed === true) {
+					foreignChildren.push(React.createElement("div", { key: "scanFailed", className: "slu-error", role: "alert" }, t("foreign.scanFailed")));
+				}
+				if (foreignScan !== null) {
+					if (foreignScan.error !== null) {
+						foreignChildren.push(React.createElement("div", { key: "hostError", className: "slu-error", role: "alert" }, t("foreign.scanFailed") + " " + foreignScan.error));
+					}
+					if (foreignIds.length === 0) {
+						foreignChildren.push(React.createElement("div", { key: "empty", className: "slu-note" }, t("foreign.empty")));
+					}
+					const foreignGroupNodes = foreignGroups.map(function (group, groupIndex) {
+						const rowNodes = group.sessions.map(function (session, sessionIndex) {
+							const status = foreignStatus[session.id] !== undefined ? asObject(foreignStatus[session.id]) : null;
+							const statusText = foreignStatusText(status, t);
+							const isFailed = status !== null && status.kind === "failed";
+							return React.createElement("label", {
+								key: "foreign-row-" + groupIndex + "-" + sessionIndex,
+								className: "slu-check slu-foreignRow",
+								"data-foreign-row": session.id
+							},
+								React.createElement("input", {
+									type: "checkbox",
+									"data-foreign-id": session.id,
+									checked: foreignPicked[session.id] === true,
+									disabled: !live || foreignSending === true ? true : undefined,
+									onChange: function (event) {
+										const target = event !== null && event !== undefined ? event.target : null;
+										toggleForeign(session.id, target !== null && target !== undefined && target.checked === true);
+									}
+								}),
+								React.createElement("span", { className: "slu-foreignText" },
+									// A missing title is a readable fallback, never the string "undefined".
+									React.createElement("span", { className: "slu-foreignName" }, session.title === null ? t("foreign.untitled") : session.title),
+									React.createElement("span", { className: "slu-foreignMeta" }, foreignRowMeta(session, t)),
+									statusText === null
+										? null
+										: React.createElement("span", {
+											className: isFailed ? "slu-error slu-foreignStatus" : "slu-foreignStatus",
+											"data-foreign-status": session.id
+										}, statusText)
+								)
+							);
+						});
+						const groupNodes = [
+							React.createElement("div", { key: "heading", className: "slu-foreignGroupTitle", "data-foreign-group": group.harness },
+								group.label + " · " + String(group.sessions.length)),
+							group.error === null ? null : React.createElement("div", { key: "error", className: "slu-error" }, t("foreign.harnessError") + " " + group.error),
+							group.available === true ? null : React.createElement("div", { key: "unavailable", className: "slu-note" }, t("foreign.unavailable")),
+							rowNodes.length === 0
+								? React.createElement("div", { key: "groupEmpty", className: "slu-note" }, t("foreign.groupEmpty"))
+								: React.createElement("div", { key: "rows", className: "slu-foreignRows" }, rowNodes)
+						];
+						return React.createElement("div", { key: "foreign-group-" + groupIndex, className: "slu-foreignGroup" }, groupNodes);
+					});
+					foreignChildren.push(React.createElement("div", { key: "groups", className: "slu-foreignGroups" }, foreignGroupNodes));
+				}
+				const foreignState = fieldState !== null && fieldState.field === "foreignSessionIds" ? fieldState : null;
+				if (foreignState !== null) {
+					foreignChildren.push(React.createElement("div", {
+						key: "state",
+						className: (foreignState.kind === "saved" ? "slu-saved" : "slu-error") + " slu-fieldState",
+						role: foreignState.kind === "saved" ? "status" : "alert"
+					}, t(foreignState.key)));
+				}
+				children.push(React.createElement("div", { key: "foreign", className: "slu-foreign" }, foreignChildren));
+
 				// ── upload ledger ──────────────────────────────────────────────────────────────
 				// Which Session logs this plugin has uploaded: Host-side state read over its own
 				// route. Metadata only, and every outcome is stated: empty is explained, and each
@@ -2429,6 +2939,22 @@ window.__ModuleLoader__.load({
 					onCancel: cancelPending
 				});
 
+				// The other-harness send gate. It is the existing consent dialog (data-dialog="consent"),
+				// and its endpoint line is read exactly the way the mode gate reads it: the endpoint
+				// the Host will actually POST to, never the stored value and never an unsaved draft.
+				// The dialog's copy states that these are not DSH sessions and that each is wrapped as
+				// a DSH session record. No POST happens until this dialog is confirmed.
+				const foreignDialog = foreignConfirm === null ? null : React.createElement(ConfirmDialog, {
+					title: t("foreign.warnTitle"),
+					body: t("foreign.warnBody"),
+					endpointLabel: t("upload.destinationLabel"),
+					endpoint: endpoint === null ? t("upload.endpointUnknown") : endpoint,
+					confirmLabel: t("foreign.warnConfirm"),
+					cancelLabel: t("upload.warnCancel"),
+					["onConfirm"]: confirmForeignSend,
+					["onCancel"]: cancelForeignSend
+				});
+
 				// The liability notice. Shown whenever the Host has NOT recorded an acknowledgement —
 				// including while the read is still in flight as `null`? No: `null` renders nothing, so
 				// the dialog never flashes for a user who already accepted on a previous visit. A failed
@@ -2457,6 +2983,7 @@ window.__ModuleLoader__.load({
 				return React.createElement(React.Fragment, null,
 					React.createElement("div", { className: "slu-section" }, children),
 					dialog,
+					foreignDialog,
 					noticeDialog
 				);
 			}

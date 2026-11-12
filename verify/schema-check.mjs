@@ -27,6 +27,7 @@ import {
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_UPLOAD_SESSION_IDS,
+  DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
   MODES,
@@ -104,6 +105,7 @@ const build = new Function(
   'DEFAULT_ENDPOINT',
   'DEFAULT_UPLOAD_DIRECTORIES',
   'DEFAULT_UPLOAD_SESSION_IDS',
+  'DEFAULT_FOREIGN_SESSION_IDS',
   'DEFAULT_MAX_BYTES',
   'DEFAULT_UPLOAD_MODEL',
   `${region}\nreturn { schema: ${literal.replace('Config = ', '')}, MODE_PATTERN, modeField };`,
@@ -116,6 +118,7 @@ const built = build(
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_UPLOAD_SESSION_IDS,
+  DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
 )
@@ -123,7 +126,7 @@ const schema = built.schema
 
 check('the plugin declaration builds a real schemastery object schema', () => {
   assert.equal(schema.type, 'object')
-  assert.deepEqual(Object.keys(schema.dict).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
+  assert.deepEqual(Object.keys(schema.dict).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
 })
 
 check('H2: MODE_PATTERN is an exact anchored alternation of the four frozen ids', () => {
@@ -145,6 +148,7 @@ check('H2: the pattern escapes regex metacharacters when MODES is hostile', () =
     DEFAULT_ENDPOINT,
     DEFAULT_UPLOAD_DIRECTORIES,
     DEFAULT_UPLOAD_SESSION_IDS,
+    DEFAULT_FOREIGN_SESSION_IDS,
     DEFAULT_MAX_BYTES,
     DEFAULT_UPLOAD_MODEL,
   )
@@ -239,7 +243,7 @@ check('H2 FIXED: an unknown mode STRING is now REJECTED by the schema', () => {
   assert.equal(resolveConfig({ mode: 'offf' }).mode, 'official-only')
 })
 
-check('exactly five fields carry the volatile marker: `mode`, the two lists, `endpoint`, `maxBytes`', () => {
+check('exactly seven fields carry the volatile marker: `mode`, the four lists, `endpoint`, `maxBytes`', () => {
   // `schema.toJSON()` is a uid/refs graph: {uid, refs:{id: node}, ...}. The live Config inspect
   // projection re-renders the same marker as `x-cordis.volatile` (observed: Config.listConfigs
   // entry `include:session-log-upload`).
@@ -248,9 +252,9 @@ check('exactly five fields carry the volatile marker: `mode`, the two lists, `en
   const volatileIds = Object.entries(json.refs)
     .filter(([, node]) => node?.meta?.volatile === true)
     .map(([id]) => id)
-  assert.equal(volatileIds.length, 6, `expected exactly six volatile nodes, found ${volatileIds.length}`)
-  // The five volatile nodes are exactly the ids these keys point at.
-  const VOLATILE_KEYS = [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]
+  assert.equal(volatileIds.length, 7, `expected exactly seven volatile nodes, found ${volatileIds.length}`)
+  // The volatile nodes are exactly the ids these keys point at.
+  const VOLATILE_KEYS = [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]
   const volatileKeys = VOLATILE_KEYS.filter((key) => volatileIds.includes(String(root.dict[key])))
   assert.deepEqual(volatileKeys.sort(), [...VOLATILE_KEYS].sort(), `volatile fields: ${volatileKeys.join(', ')}`)
   for (const key of VOLATILE_KEYS) {
@@ -263,7 +267,7 @@ check('exactly five fields carry the volatile marker: `mode`, the two lists, `en
   assert.equal(modeNode.meta.pattern.source, '^(?:off|official-only|deepseek-any-provider|any-model)$')
   assert.equal(json.refs[root.dict.endpoint].meta.default, 'https://api.deepseek.com/anthropic/v1/messages')
   assert.equal(json.refs[root.dict.endpoint].type, 'string')
-  assert.equal(json.refs[root.dict.maxBytes].meta.default, 8388608)
+  assert.equal(json.refs[root.dict.maxBytes].meta.default, 20971520)
   assert.equal(json.refs[root.dict.maxBytes].type, 'number')
   // The two stay non-volatile and carry no constraint beyond their type: they decide which credential
   // is used and which model this plugin spends money on, so the settings wire must not write them.
@@ -355,12 +359,12 @@ check('the schema declares no secret fields (so the redaction stub above is exac
 
 // RETARGETED (was: "the settings FORM projects exactly one field — mode"). That WAS the reported
 // bug: a non-volatile field never reaches the browser, so the page could not show the destination.
-check('RETARGETED: the settings FORM projects exactly the five volatile fields', () => {
+check('RETARGETED: the settings FORM projects exactly the seven volatile fields', () => {
   const form = projection.volatileForm(schema)
   assert.ok(form !== undefined, 'no form is projected at all')
   assert.deepEqual(
     Object.keys(form.dict).sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
     `the form exposed ${Object.keys(form.dict).join(', ')}`,
   )
 })
@@ -370,8 +374,8 @@ check('RETARGETED: the settings FORM projects exactly the five volatile fields',
 // are refused, because they decide which credential is used and which model this plugin spends money
 // on. `deepseekModelPatterns` moved to the writable side on purpose: it is how a user says that a
 // proxy's renamed model (`dfmodel`) is DeepSeek.
-check('RETARGETED: the write guard admits exactly the five volatile fields, refuses the other two', () => {
-  for (const key of [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]) {
+check('RETARGETED: the write guard admits exactly the seven volatile fields, refuses the other two', () => {
+  for (const key of [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]) {
     assert.equal(projection.isVolatilePath(schema, [key]), true, `${key} is not writable — the page could not save it`)
   }
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -383,12 +387,12 @@ check('RETARGETED: the write guard admits exactly the five volatile fields, refu
     settingsSource,
     /for \(const path of paths\) if \(path\.length && !isVolatilePath\(schema, path\)\) throw new Error\(`Config field "\$\{path\.join\("\."\)\}" is not volatile`\)/,
   )
-  console.log('        dsh-settings/lib/index.js:507 is the host-side guard; the wire admits five fields and refuses two')
+  console.log('        dsh-settings/lib/index.js:507 is the host-side guard; the wire admits seven fields and refuses two')
 })
 
 // RETARGETED: the projection now carries the five volatile fields, and nothing else — no
 // `uploadModel`, no `credentialRef`.
-check('RETARGETED: projectForm exposes the five volatile fields and never the whole config', () => {
+check('RETARGETED: projectForm exposes the seven volatile fields and never the whole config', () => {
   const form = projection.volatileForm(schema)
   const value = validate({
     endpoint: 'https://api.deepseek.com/anthropic/v1/messages',
@@ -399,7 +403,7 @@ check('RETARGETED: projectForm exposes the five volatile fields and never the wh
   const projected = projection.projectForm(form, value)
   assert.deepEqual(
     Object.keys(projected).sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
   )
   for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(key in projected, false, `${key} leaked into the browser projection`)
@@ -436,12 +440,12 @@ check('DESIGN: the schema stores a non-http(s) `endpoint` by design; `resolveCon
 
 check('maxBytes stays clamped by the schema: a live reference round-trips, 0 and 1.5 are refused', () => {
   assert.equal(validate({ maxBytes: 1024 }).maxBytes.get(), 1024)
-  assert.equal(validate({}).maxBytes.get(), 8388608)
+  assert.equal(validate({}).maxBytes.get(), 20971520)
   for (const bad of [0, -1, 1.5, NaN, Infinity, '1024', null, true]) {
     const result = standard.validate({ maxBytes: bad })
     if (bad === null) {
       assert.equal(result.issues, undefined, 'null should take the default')
-      assert.equal(result.value.maxBytes.get(), 8388608)
+      assert.equal(result.value.maxBytes.get(), 20971520)
       continue
     }
     assert.ok(result.issues !== undefined, `maxBytes ${String(bad)} was accepted`)
