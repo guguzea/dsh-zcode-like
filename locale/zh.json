@@ -96,6 +96,14 @@
     "directoriesScan": "扫描目录",
     "directoriesScanning": "正在扫描…",
     "directoriesNoSessions": "没有可选的会话。",
-    "directoriesChoose": "选择指定目录"
+    "directoriesChoose": "选择指定目录",
+    "noticeTitle": "使用前请阅读",
+    "noticeP1": "本插件默认把会话日志发送到 DeepSeek 官方 API，或发送到下方设置里写明的那一个目标。什么时候发送由你决定；默认设置下，除了 DSH 本来就会发的，不会多发任何东西。",
+    "noticeP2": "勾选下面的选项并继续，表示你明白本插件在做什么，并为你自己选择发送的数据负责。",
+    "noticeP3": "在法律允许的范围内，你放弃就这一选择造成的后果，向 DeepSeek、你所配置目标的运营方，或本插件作者追责的权利。",
+    "noticeP4": "如果你不同意，请关闭此页面并不要使用本插件。",
+    "noticeCheck": "我已阅读并理解以上内容",
+    "noticeAccept": "继续",
+    "noticeBusy": "正在记录…"
   }
 }

@@ -12,3 +12,5 @@ verify/.tmp-modules/
 .DS_Store
 Thumbs.db
 *.log
+# Commit-message scratch; the message lives in git history, not the tree.
+.git-commit-msg.txt

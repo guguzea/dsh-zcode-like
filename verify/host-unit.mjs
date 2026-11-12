@@ -479,6 +479,7 @@ await check('every shipped host file is present', () => {
     join('host', 'eligibility.js'),
     join('host', 'failure.js'),
     join('host', 'logfield.js'),
+    join('host', 'notice.js'),
     join('host', 'upload.js'),
     join('host', 'watermark.js'),
   ])
@@ -2009,8 +2010,8 @@ await check('a throwing optional registration cannot take the "off" exclusion do
     ],
     // Two routes register now (the ledger and the scan), each in its own wrapped effect. A throw from
     // one must not prevent the other, so the assertion is "the OTHER route is present", not a count.
-    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 2, 'both routes must still register')],
-    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 2, 'later registrations must still run')],
+    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 3, 'all three routes must still register')],
+    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 3, 'later registrations must still run')],
   ]
   for (const [what, options, after] of cases) {
     // The throw must not escape `apply`.
@@ -2864,6 +2865,123 @@ await check('subagent Sessions are excluded, by either Harness marker', async ()
   assert.equal(payload.workspaces.filter((workspace) => workspace.path === 'E:\\loose').length, 1, 'the loose grouping is wrong')
   const loose = payload.workspaces.find((workspace) => workspace.path === 'E:\\loose')
   assert.deepEqual(loose.sessions.map((session) => session.id), ['session-loose'], 'a loose subagent was listed')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+section('18. the liability notice: shown until acknowledged, then never again')
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+const { NoticeStore } = await import('../host/notice.js')
+
+/** The notice route's handler, driven through the plugin's own registration. */
+async function noticeRequest(method, options) {
+  const host = fakeHost({ raw: { mode: 'official-only' }, ...options })
+  try {
+    const route = host.state.routes.find((candidate) => candidate.path === indexNamespace.NOTICE_ROUTE_PATH)
+    assert.ok(route !== undefined, 'the notice route was not registered')
+    assert.deepEqual(route.methods, ['GET', 'POST'], 'the notice route must accept a read and a write')
+    const response = await route.fetch(new Request(`http://127.0.0.1${route.path}`, { method }))
+    return { status: response.status, body: await response.json() }
+  } finally {
+    host.cleanup()
+  }
+}
+
+await check('an absent record means "not acknowledged", so the notice shows', async () => {
+  const directory = join(root, 'verify', '.host-unit-notice-absent')
+  rmSync(directory, { recursive: true, force: true })
+  const store = new NoticeStore(directory)
+  assert.deepEqual(store.snapshot(), { acknowledged: false, at: null })
+  // Reading must not create anything.
+  assert.equal(existsSync(directory), false, 'reading the notice record created its directory')
+})
+
+await check('acknowledging is durable, and survives a fresh store', async () => {
+  const directory = join(root, 'verify', '.host-unit-notice-roundtrip')
+  rmSync(directory, { recursive: true, force: true })
+  const written = new NoticeStore(directory).acknowledge()
+  assert.equal(written.acknowledged, true)
+  assert.equal(typeof written.at, 'string')
+  // A NEW store (as the next process would build) reads the same answer back.
+  const reread = new NoticeStore(directory).snapshot()
+  assert.equal(reread.acknowledged, true)
+  assert.equal(reread.at, written.at, 'the recorded time changed between reads')
+  // Metadata only: the file holds a version, a boolean and a timestamp.
+  const raw = JSON.parse(readFileSync(join(directory, 'notice-acknowledged.json'), 'utf8'))
+  assert.deepEqual(Object.keys(raw).sort(), ['acknowledged', 'at', 'version'].sort(), `unexpected fields: ${Object.keys(raw).join(', ')}`)
+  rmSync(directory, { recursive: true, force: true })
+})
+
+await check('only a literal true counts, and a corrupt record shows the notice', async () => {
+  const directory = join(root, 'verify', '.host-unit-notice-corrupt')
+  rmSync(directory, { recursive: true, force: true })
+  mkdirSync(directory, { recursive: true })
+  const file = join(directory, 'notice-acknowledged.json')
+  // A hand-edited file cannot fake consent with a truthy string, a number or a nested value.
+  for (const hostile of ['{"acknowledged":"yes"}', '{"acknowledged":1}', '{"acknowledged":{}}', 'not json at all', '[]', 'null', '']) {
+    writeFileSync(file, hostile, 'utf8')
+    assert.equal(new NoticeStore(directory).snapshot().acknowledged, false, `${hostile} was accepted as consent`)
+  }
+  // The safe direction: a record that cannot be read shows the notice again.
+  assert.equal(existsSync(file), true)
+  rmSync(directory, { recursive: true, force: true })
+})
+
+await check('a throwing filesystem does not throw out of the store', async () => {
+  // A directory path that cannot be created (a file sits where the directory would go).
+  const blocked = join(root, 'verify', '.host-unit-notice-blocked')
+  rmSync(blocked, { recursive: true, force: true })
+  writeFileSync(blocked, 'not a directory', 'utf8')
+  const store = new NoticeStore(join(blocked, 'nested'), { log: () => {} })
+  // Reading reports "not acknowledged"; writing reports success without claiming durability.
+  assert.deepEqual(store.snapshot(), { acknowledged: false, at: null })
+  const written = store.acknowledge()
+  assert.equal(written.acknowledged, true, 'a failed write must still return the intended state')
+  assert.equal(store.lastError !== undefined, true, 'the write failure was not recorded for diagnostics')
+  rmSync(blocked, { force: true })
+})
+
+await check('the route reports unacknowledged, then acknowledged after a POST', async () => {
+  // GET first: nothing recorded.
+  const before = await noticeRequest('GET')
+  assert.equal(before.status, 200)
+  assert.equal(before.body.acknowledged, false, 'a fresh home must not report the notice as acknowledged')
+  // The POST records it. Both requests share the injected home, so the second sees the first's write.
+  const home = join(root, 'verify', '.host-unit-notice-route')
+  rmSync(home, { recursive: true, force: true })
+  const first = await noticeRequest('GET', { home })
+  assert.equal(first.body.acknowledged, false)
+  const posted = await noticeRequest('POST', { home })
+  assert.equal(posted.status, 200)
+  assert.equal(posted.body.acknowledged, true, 'the POST did not record the acknowledgement')
+  const after = await noticeRequest('GET', { home })
+  assert.equal(after.body.acknowledged, true, 'the acknowledgement did not survive to the next read')
+  // And it stays acknowledged across a fresh registration of the whole row.
+  const again = await noticeRequest('GET', { home })
+  assert.equal(again.body.acknowledged, true)
+  rmSync(home, { recursive: true, force: true })
+})
+
+await check('the notice route is authenticated by inheritance, not by a raw web route', () => {
+  const source = readFileSync(join(root, 'index.js'), 'utf8')
+  // Find the route ENTRY (the last mention of the constant), not its declaration at the top.
+  let at = -1
+  let from = 0
+  for (;;) {
+    const next = source.indexOf('NOTICE_ROUTE_PATH', from)
+    if (next < 0) break
+    at = next
+    from = next + 1
+  }
+  assert.ok(at >= 0, 'NOTICE_ROUTE_PATH is undeclared')
+  const routeBlock = source.slice(Math.max(0, at - 200), at + 900)
+  assert.ok(routeBlock.includes("methods: ['GET', 'POST']"), 'the notice route does not accept a read and a write')
+  assert.ok(routeBlock.includes('notice.acknowledge()'), 'the POST no longer records the acknowledgement')
+  assert.ok(routeBlock.includes('notice.snapshot()'), 'the GET no longer reads the record')
+  // It must live on the authenticated Connection Fetch registry, never on the raw web server.
+  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+  // And it is registered in its own wrapped effect, like the other two.
+  assert.ok(source.includes("effect: 'session-log-upload: liability notice route'"), 'the notice route lost its wrapped effect')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

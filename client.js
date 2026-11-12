@@ -59,6 +59,14 @@ window.__ModuleLoader__.load({
 				"upload.warnBody": "The log is sent to the destination below. That includes your messages, tool output, file paths, and conversations you held with other model providers. It leaves this machine, it may be used to improve and train models, and it cannot be undone.",
 				"upload.warnConfirm": "Enable upload",
 				"upload.warnCancel": "Cancel",
+				"upload.noticeTitle": "Before you use this plugin",
+				"upload.noticeP1": "This plugin sends your Session logs to DeepSeek’s official API by default, or to whatever destination is shown in the settings below. You decide when that happens; on the default setting it sends nothing beyond what DSH already sends.",
+				"upload.noticeP2": "By ticking the box and continuing, you confirm that you understand what this plugin does and that you take responsibility for the data you choose to send.",
+				"upload.noticeP3": "To the extent the law allows, you waive any right to hold DeepSeek, the operator of the destination you configured, or the author of this plugin liable for the consequences of that choice.",
+				"upload.noticeP4": "If you do not agree, close this page and do not use the plugin.",
+				"upload.noticeCheck": "I have read and understood the above",
+				"upload.noticeAccept": "Continue",
+				"upload.noticeBusy": "Recording…",
 				"upload.byteCapLabel": "Byte cap per request",
 				"upload.patternsLabel": "Models to treat as DeepSeek",
 				"upload.patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
@@ -142,6 +150,14 @@ window.__ModuleLoader__.load({
 				"upload.warnBody": "会话日志会发送到下面写明的目标，包括你的消息、工具输出、文件路径，以及你与其他模型供应商的对话。它会离开这台机器，可能被用于改进和训练模型，且无法撤回。",
 				"upload.warnConfirm": "开启上传",
 				"upload.warnCancel": "取消",
+				"upload.noticeTitle": "使用前请阅读",
+				"upload.noticeP1": "本插件默认把会话日志发送到 DeepSeek 官方 API，或发送到下方设置里写明的那一个目标。什么时候发送由你决定；默认设置下，除了 DSH 本来就会发的，不会多发任何东西。",
+				"upload.noticeP2": "勾选下面的选项并继续，表示你明白本插件在做什么，并为你自己选择发送的数据负责。",
+				"upload.noticeP3": "在法律允许的范围内，你放弃就这一选择造成的后果，向 DeepSeek、你所配置目标的运营方，或本插件作者追责的权利。",
+				"upload.noticeP4": "如果你不同意，请关闭此页面并不要使用本插件。",
+				"upload.noticeCheck": "我已阅读并理解以上内容",
+				"upload.noticeAccept": "继续",
+				"upload.noticeBusy": "正在记录…",
 				"upload.byteCapLabel": "每次请求的字节上限",
 				"upload.patternsLabel": "把这些模型当作 DeepSeek",
 				"upload.patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
@@ -257,6 +273,9 @@ window.__ModuleLoader__.load({
 		/** Host route reporting the live Sessions' working directories, for the folder chooser. */
 		const SCAN_PATH = "/api/session-log-upload.scan";
 		const SCAN_ROUTE = SCAN_PATH.slice(1);
+		/** Host route reporting and recording the liability-notice acknowledgement. */
+		const NOTICE_PATH = "/api/session-log-upload.notice";
+		const NOTICE_ROUTE = NOTICE_PATH.slice(1);
 		/** Session ids longer than this are shortened in the middle; the full value stays in `title`. */
 		const LEDGER_ID_LIMIT = 28;
 		/** The state a ledger read publishes when nothing at all could be read. */
@@ -342,6 +361,12 @@ window.__ModuleLoader__.load({
 .slu-checkPath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .slu-checkWorkspace{font-weight:600;color:var(--dsw-alias-label-primary)}
 .slu-checkSession{padding-left:24px;color:var(--dsw-alias-label-secondary)}
+/* The liability notice: wider than the consent dialog and scrolling, because it is four paragraphs
+   a user is meant to actually read. */
+.slu-noticePanel{width:min(560px,calc(100vw - 48px))}
+.slu-noticeBody{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto}
+.slu-noticeCheck{display:flex;align-items:flex-start;gap:8px;padding:10px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);font-size:14px;line-height:20px;cursor:pointer}
+.slu-noticeCheck input{flex:none;margin:2px 0 0;cursor:pointer}
 .slu-fieldState{font-size:12px;line-height:18px}
 .slu-saved{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .slu-pre{margin:0;padding:12px;box-sizing:border-box;border-radius:var(--dsw-radius-sm);background-color:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:220px}
@@ -1189,6 +1214,60 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Read whether the liability notice has been acknowledged.
+			 *
+			 * Total: an absent route, a refused credential, an unreadable body and a transport failure
+			 * all resolve to `false`, because the safe direction is to SHOW the notice again. The cost
+			 * of showing it twice is one click; the cost of not showing it is a user who never saw it.
+			 *
+			 * @returns `true` only when the Host positively says it was acknowledged.
+			 */
+			async function readNotice() {
+				const fetcher = pageFetcher();
+				if (fetcher === null) return false;
+				let response;
+				try {
+					response = await fetcher(NOTICE_ROUTE, { headers: { accept: "application/json" } });
+				} catch (_error) {
+					return false;
+				}
+				if (response === null || response === undefined || response.ok !== true) return false;
+				let body;
+				try {
+					body = await response.json();
+				} catch (_error) {
+					return false;
+				}
+				const root = asObject(body);
+				return root !== null && root.acknowledged === true;
+			}
+
+			/**
+			 * Record the acknowledgement. A POST, so it is not a cacheable read and cannot be replayed
+			 * by a prefetch.
+			 * @returns `true` only when the Host confirms it stored the acknowledgement.
+			 */
+			async function writeNotice() {
+				const fetcher = pageFetcher();
+				if (fetcher === null) return false;
+				let response;
+				try {
+					response = await fetcher(NOTICE_ROUTE, { method: "POST", headers: { accept: "application/json" } });
+				} catch (_error) {
+					return false;
+				}
+				if (response === null || response === undefined || response.ok !== true) return false;
+				let body;
+				try {
+					body = await response.json();
+				} catch (_error) {
+					return false;
+				}
+				const root = asObject(body);
+				return root !== null && root.acknowledged === true;
+			}
+
+			/**
 			 * Write one editable field. Anything outside {@link EDITABLE_FIELDS} is refused without
 			 * touching the host, so this path cannot write `mode` and cannot bypass the consent gate.
 			 * @param field - the field the user edited.
@@ -1209,7 +1288,7 @@ window.__ModuleLoader__.load({
 				return persistField("mode", nextMode);
 			}
 
-			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, writeField: writeField, writeMode: writeMode };
+			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, readNotice: readNotice, writeNotice: writeNotice, writeField: writeField, writeMode: writeMode };
 		}
 		//#endregion
 
@@ -1382,6 +1461,7 @@ window.__ModuleLoader__.load({
 				ref: panelRef,
 				className: "slu-panel",
 				role: "dialog",
+				"data-dialog": "consent",
 				"aria-modal": "true",
 				"aria-labelledby": titleId,
 				"aria-describedby": bodyId,
@@ -1414,6 +1494,127 @@ window.__ModuleLoader__.load({
 
 			// Portal when react-dom is on the module table and offers createPortal; otherwise
 			// render in place, which still shows a usable dialog.
+			if (ReactDOM !== null && typeof ReactDOM.createPortal === "function" && typeof document !== "undefined" && document !== null && document.body) {
+				try {
+					return ReactDOM.createPortal(overlay, document.body);
+				} catch (_error) {}
+			}
+			return overlay;
+		}
+		//#endregion
+
+		//#region liability notice
+		/**
+		 * The liability notice, shown on every visit until the user acknowledges it.
+		 *
+		 * Deliberately NOT a variant of {@link ConfirmDialog}: that one is cancellable, and this one must
+		 * not be. There is no backdrop dismiss and no Escape handler — the only controls are the
+		 * checkbox and the acknowledge button, which stays disabled until the box is ticked. A dialog
+		 * you can click away is a dialog you can dismiss without reading, which is exactly the
+		 * acknowledgement this is asking for.
+		 */
+		function NoticeDialog(props) {
+			const panelRef = React.useRef(null);
+			const checkRef = React.useRef(null);
+			const buttonRef = React.useRef(null);
+			const titleId = useStableId();
+			const bodyId = useStableId();
+			const [ checked, setChecked ] = React.useState(false);
+			const [ busy, setBusy ] = React.useState(false);
+
+			React.useEffect(function () {
+				const target = checkRef.current;
+				if (target !== null && target !== undefined && typeof target.focus === "function") {
+					try {
+						target.focus();
+					} catch (_error) {}
+				}
+			}, []);
+
+			// Contain focus inside the dialog: there is nothing behind it the user may operate.
+			const onPanelKeyDown = function (event) {
+				if (event.key !== "Tab") return;
+				const focusables = [ checkRef.current, buttonRef.current ].filter(function (node) {
+					return node !== null && node !== undefined;
+				});
+				if (focusables.length === 0) return;
+				const active = typeof document !== "undefined" && document !== null ? document.activeElement : null;
+				const first = focusables[0];
+				const last = focusables[focusables.length - 1];
+				if (event.shiftKey && (active === first || focusables.indexOf(active) < 0)) {
+					event.preventDefault();
+					try { last.focus(); } catch (_error) {}
+					return;
+				}
+				if (!event.shiftKey && active === last) {
+					event.preventDefault();
+					try { first.focus(); } catch (_error) {}
+				}
+			};
+
+			const accept = function () {
+				if (checked !== true || busy) return;
+				setBusy(true);
+				let attempt;
+				try {
+					attempt = Promise.resolve(props.onAccept());
+				} catch (_error) {
+					attempt = Promise.resolve(false);
+				}
+				void attempt.then(function (ok) {
+					// On failure the dialog stays up and the button returns, so the user is never left
+					// believing they acknowledged something the Host did not record.
+					if (ok !== true) setBusy(false);
+				}, function () {
+					setBusy(false);
+				});
+			};
+
+			const panel = React.createElement("div", {
+				ref: panelRef,
+				className: "slu-panel slu-noticePanel",
+				role: "dialog",
+				"data-dialog": "notice",
+				"aria-modal": "true",
+				"aria-labelledby": titleId,
+				"aria-describedby": bodyId,
+				tabIndex: -1,
+				onKeyDown: onPanelKeyDown
+			},
+				React.createElement("h2", { id: titleId, className: "slu-panelTitle" }, props.title),
+				React.createElement("div", { id: bodyId, className: "slu-noticeBody" }, props.paragraphs.map(function (text, index) {
+					return React.createElement("p", { key: "p" + index, className: "slu-panelBody" }, text);
+				})),
+				React.createElement("label", { className: "slu-noticeCheck" },
+					React.createElement("input", {
+						ref: checkRef,
+						type: "checkbox",
+						"data-notice-ack": "true",
+						checked: checked === true,
+						onChange: function (event) {
+							const target = event !== null && event !== undefined ? event.target : null;
+							setChecked(target !== null && target !== undefined && target.checked === true);
+						}
+					}),
+					React.createElement("span", null, props.checkboxLabel)
+				),
+				React.createElement("div", { className: "slu-panelActions" },
+					React.createElement("button", {
+						ref: buttonRef,
+						type: "button",
+						className: "slu-btn slu-btnPrimary slu-noticeAccept",
+						disabled: checked !== true || busy,
+						onClick: accept
+					}, busy ? props.busyLabel : props.acceptLabel)
+				)
+			);
+
+			const overlay = React.createElement("div", { className: "slu-overlay", role: "presentation" },
+				// No onClick: the mask is decorative and dismisses nothing.
+				React.createElement("div", { className: "slu-mask", "aria-hidden": "true" }),
+				panel
+			);
+
 			if (ReactDOM !== null && typeof ReactDOM.createPortal === "function" && typeof document !== "undefined" && document !== null && document.body) {
 				try {
 					return ReactDOM.createPortal(overlay, document.body);
@@ -1515,6 +1716,28 @@ window.__ModuleLoader__.load({
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
+				// The liability notice. `null` means "not read yet"; the dialog only appears once the
+				// Host has answered `false`, so it never flashes up before the acknowledgement is known.
+				const [ noticeAcknowledged, setNoticeAcknowledged ] = React.useState(null);
+
+				React.useEffect(function () {
+					let alive = true;
+					let attempt;
+					try {
+						attempt = Promise.resolve(bridge.readNotice());
+					} catch (_error) {
+						attempt = Promise.resolve(false);
+					}
+					void attempt.then(function (acknowledged) {
+						if (alive) setNoticeAcknowledged(acknowledged === true);
+					}, function () {
+						// A failed read shows the notice: the safe direction.
+						if (alive) setNoticeAcknowledged(false);
+					});
+					return function () {
+						alive = false;
+					};
+				}, [ bridge ]);
 
 				React.useEffect(function () {
 					let alive = true;
@@ -2206,9 +2429,35 @@ window.__ModuleLoader__.load({
 					onCancel: cancelPending
 				});
 
+				// The liability notice. Shown whenever the Host has NOT recorded an acknowledgement —
+				// including while the read is still in flight as `null`? No: `null` renders nothing, so
+				// the dialog never flashes for a user who already accepted on a previous visit. A failed
+				// read resolves to `false` and therefore does show it.
+				const noticeDialog = noticeAcknowledged === false ? React.createElement(NoticeDialog, {
+					title: t("upload.noticeTitle"),
+					paragraphs: [ t("upload.noticeP1"), t("upload.noticeP2"), t("upload.noticeP3"), t("upload.noticeP4") ],
+					checkboxLabel: t("upload.noticeCheck"),
+					acceptLabel: t("upload.noticeAccept"),
+					busyLabel: t("upload.noticeBusy"),
+					onAccept: async function () {
+						let ok = false;
+						try {
+							ok = (await bridge.writeNotice()) === true;
+						} catch (_error) {
+							ok = false;
+						}
+						// Only dismiss on a confirmed write. Otherwise the dialog stays up, because a
+						// dismissed dialog over an unrecorded acknowledgement would show the notice again
+						// on the next visit with no explanation.
+						if (ok) setNoticeAcknowledged(true);
+						return ok;
+					}
+				}) : null;
+
 				return React.createElement(React.Fragment, null,
 					React.createElement("div", { className: "slu-section" }, children),
-					dialog
+					dialog,
+					noticeDialog
 				);
 			}
 

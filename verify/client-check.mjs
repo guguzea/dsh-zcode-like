@@ -783,7 +783,26 @@ const SERVED_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
 function ledgerFetch(replies) {
 	const queue = replies.slice();
 	const calls = [];
+	// The notice route is answered from its own queue, never from the ledger's. Both go through the
+	// same page fetcher, so a URL-blind stub would let the notice read consume a ledger reply (and the
+	// ledger then look "fetched twice"). `notice` defaults to "already acknowledged" so the liability
+	// dialog stays out of the way of the ledger checks; pass `{ status: 404 }` to exercise it showing.
+	const noticeReplies = (arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : { acknowledged: true });
+	const noticeQueue = Array.isArray(noticeReplies) ? noticeReplies.slice() : [ noticeReplies ];
 	const stub = function (input, init) {
+		const url = typeof input === "string" ? input : String(input);
+		if (url.indexOf("session-log-upload.notice") >= 0) {
+			const reply = noticeQueue.length > 1 ? noticeQueue.shift() : noticeQueue[0];
+			const status = typeof reply.status === "number" ? reply.status : 200;
+			const hasBody = reply !== undefined && Object.prototype.hasOwnProperty.call(reply, "body") ? true : reply !== undefined && reply.acknowledged !== undefined;
+			const body = reply !== undefined && reply.acknowledged !== undefined && !hasBody ? { acknowledged: reply.acknowledged } : reply.body;
+			return Promise.resolve({
+				ok: status >= 200 && status < 300,
+				status: status,
+				json: function () { return hasBody ? Promise.resolve(JSON.parse(JSON.stringify(body))) : Promise.reject(new SyntaxError("no body")); },
+				text: function () { return Promise.resolve(hasBody ? JSON.stringify(body) : ""); }
+			});
+		}
 		calls.push({ input: input, init: init });
 		const reply = queue.length > 1 ? queue.shift() : queue[0];
 		if (reply === undefined || reply.reject !== undefined) {
@@ -1020,8 +1039,10 @@ function clickButton(runtime, label) {
 	node.props.onClick({});
 }
 
+// The CONSENT dialog specifically. Both it and the liability notice carry `role="dialog"`, and these
+// checks are about the consent gate, so matching on the role alone would count the notice as one.
 function dialog(runtime) {
-	return runtime.findAll(function (node) { return node.props.role === "dialog"; })[0];
+	return runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "consent"; })[0];
 }
 
 /**
@@ -1095,7 +1116,7 @@ await checkAsync("render-fallback", "no served form: controls disabled, no bare 
 	await settle(runtime);
 	assert(saveFailureAlerts(runtime).length === 0, "a bare save failure was shown although there is no write path");
 	assert(textOf(runtime.tree()).includes("The Host has not reported the current mode."), "the not-served explanation disappeared after a click");
-	assert(runtime.findAll(function (node) { return node.props.role === "dialog"; }).length === 0, "off must never open the confirm dialog");
+	assert(runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "consent"; }).length === 0, "off must never open the confirm dialog");
 	return "2 registrations, 4 disabled radios, not-served explanation, collapsed manual route";
 });
 
@@ -2207,6 +2228,110 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 	assert(optInAfter.props.checked === true, "a non-empty allowlist must show the restriction as active");
 
 	return "both lists write through the served form and read back from a live reference";
+});
+
+// 28 ─ the liability notice is a gate, not a toast ────────────────────────────────────────────
+// The requirement: shown every time the page opens until the user ticks "I have read this", and not
+// shown afterwards. A dismissible dialog would satisfy "shown" while defeating the point, so the
+// checks below drive the parts that make it a gate: no backdrop dismiss, the button dead until the box
+// is ticked, and dismissal only after the Host confirms it stored the acknowledgement.
+await checkAsync("notice-gate", "the notice blocks until acknowledged, then never reappears", async () => {
+	const NOTICE = "session-log-upload.notice";
+
+	const renderNotice = async function (noticeReply, acknowledgeOk) {
+		const posted = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = async function (input, init) {
+			const url = typeof input === "string" ? input : String(input);
+			const method = init !== undefined && init !== null && init.method !== undefined ? init.method : "GET";
+			if (url.indexOf(NOTICE) >= 0) {
+				if (method === "POST") {
+					posted.push(true);
+					return { ok: acknowledgeOk !== false, status: acknowledgeOk === false ? 500 : 200, async json() { return { acknowledged: acknowledgeOk !== false }; } };
+				}
+				return { ok: noticeReply.ok !== false, status: noticeReply.status === undefined ? 200 : noticeReply.status, async json() { return noticeReply.body; } };
+			}
+			return { ok: false, status: 404, async json() { return {}; } };
+		};
+		try {
+			const runtime = createHookRuntime();
+			// `fetch` in the module scope is the function itself (that is how `pageFetcher` probes it),
+			// not a wrapper object.
+			applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: 8388608 }) }), fetch: globalThis.fetch }, runtime);
+			await settle(runtime);
+			return { runtime, posted };
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	};
+
+	// ── not acknowledged: the dialog is up ───────────────────────────────────────────────────
+	{
+		const { runtime } = await renderNotice({ body: { acknowledged: false } });
+		const notice = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(notice !== undefined, "no notice dialog was rendered for an unacknowledged install");
+
+		const button = runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+		assert(button !== undefined, "the notice has no accept button");
+		assert(button.props.disabled === true, "the accept button is live before the box is ticked");
+
+		// There is no backdrop dismiss: the notice mask carries no onClick. (The consent dialog's mask
+		// does, so match the one inside the notice panel's overlay by checking all masks with onClick
+		// absent — the notice renders exactly one mask and it must be inert.)
+		const masks = runtime.findAll(function (node) { return typeof node.props.className === "string" && node.props.className.indexOf("slu-mask") >= 0; });
+		assert(masks.length >= 1, "the notice has no mask");
+		assert(masks.every(function (node) { return node.props.onClick === undefined; }), "the notice can be dismissed by clicking the backdrop");
+
+		const box = runtime.findAll(function (node) { return node.props["data-notice-ack"] === "true"; })[0];
+		assert(box !== undefined, "the notice has no acknowledgement checkbox");
+		box.props.onChange({ target: { checked: true } });
+		runtime.flush();
+		const enabled = runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+		assert(enabled.props.disabled === false, "ticking the box did not enable the accept button");
+	}
+
+	// ── acknowledged already: no dialog at all ──────────────────────────────────────────────
+	{
+		const { runtime } = await renderNotice({ body: { acknowledged: true } });
+		const notice = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(notice === undefined, "the notice reappeared on an install that already acknowledged it");
+	}
+
+	// ── a failed read shows the notice (the safe direction) ─────────────────────────────────
+	{
+		const { runtime } = await renderNotice({ ok: false, status: 500, body: {} });
+		const notice = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(notice !== undefined, "a failed acknowledgement read did not show the notice");
+	}
+
+	// ── accepting POSTs, and a confirmed write dismisses ────────────────────────────────────
+	{
+		const { runtime, posted } = await renderNotice({ body: { acknowledged: false } });
+		const box = runtime.findAll(function (node) { return node.props["data-notice-ack"] === "true"; })[0];
+		box.props.onChange({ target: { checked: true } });
+		runtime.flush();
+		const button = runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+		button.props.onClick({});
+		await settle(runtime);
+		assert(posted.length === 1, `accepting must POST exactly once, saw ${posted.length}`);
+		const after = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(after === undefined, "a confirmed acknowledgement did not dismiss the notice");
+	}
+
+	// ── a refused write keeps the dialog up ─────────────────────────────────────────────────
+	{
+		const { runtime } = await renderNotice({ body: { acknowledged: false } }, false);
+		const box = runtime.findAll(function (node) { return node.props["data-notice-ack"] === "true"; })[0];
+		box.props.onChange({ target: { checked: true } });
+		runtime.flush();
+		const button = runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+		button.props.onClick({});
+		await settle(runtime);
+		const still = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(still !== undefined, "the notice closed even though the Host refused to record the acknowledgement");
+	}
+
+	return "blocks until ticked, no backdrop dismiss, hides only after the Host confirms, stays up when the write fails";
 });
 
 // 27 ─ the folder chooser renders, and a Session can be chosen alone ─────────────────────────

@@ -1123,6 +1123,11 @@ async function renderWithLedger(handler, body, extraProps = {}) {
     handler === null
       ? undefined
       : async (input, init) => {
+          // The liability notice is read from its own route on mount. Answer it here so it never
+          // consumes a ledger reply (which made the ledger look "read twice") and so the notice dialog
+          // stays out of the way of these checks — they are about the ledger, not about consent.
+          const url = typeof input === 'string' ? input : String(input)
+          if (url.indexOf('session-log-upload.notice') >= 0) return jsonResponse({ acknowledged: true })
           calls.push({ input, init })
           return handler(input, init)
         }
@@ -1616,12 +1621,14 @@ check('CONSENT COPY: the dialog names the live destination and makes no brand cl
       value !== null && typeof value === 'object' ? flatten(value, `${prefix}${key}.`) : [[`${prefix}${key}`, value]],
     )
   // Membership bar: a string belongs on this allowlist only if it names the brand as the OFFICIAL
-  // MODEL/API — never as where the data goes. `upload.patterns*` qualifies that way ("Models to treat
-  // as DeepSeek" is about recognising which model a provider serves, the same category as
-  // `modes.deepseekAnyProvider.label`) and says nothing about the destination.
+  // MODEL/API, or as a party to a waiver — never as "the place your data definitely goes".
+  // `upload.patterns*` qualifies the first way ("Models to treat as DeepSeek" is about recognising
+  // which model a provider serves). `upload.noticeP1`/`P3` qualify the second: P1 names DeepSeek as the
+  // DEFAULT destination and points at the settings for the real one, and P3's whole purpose is to name
+  // who is released from liability, which it cannot do without naming them.
   const ALLOWED = {
-    en: ['meta.description', 'upload.modes.officialOnly.label', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.ledger.empty', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty'],
-    zh: ['meta.description', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty'],
+    en: ['meta.description', 'upload.modes.officialOnly.label', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.ledger.empty', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty', 'upload.noticeP1', 'upload.noticeP3'],
+    zh: ['meta.description', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty', 'upload.noticeP1', 'upload.noticeP3'],
   }
   for (const [label, dictionary] of [['en', en], ['zh', zh]]) {
     const naming = flatten(dictionary)

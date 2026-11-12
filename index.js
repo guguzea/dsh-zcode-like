@@ -44,6 +44,7 @@ import {
 import { decideUpload, suppressShipped } from './host/eligibility.js'
 import { buildLogField } from './host/logfield.js'
 import { FailureStore } from './host/failure.js'
+import { NoticeStore } from './host/notice.js'
 import { WatermarkStore, defaultWatermarkDirectory } from './host/watermark.js'
 import { uploadLogField } from './host/upload.js'
 
@@ -389,6 +390,14 @@ export const LEDGER_ROUTE_PATH = '/api/session-log-upload.ledger'
  */
 export const SCAN_ROUTE_PATH = '/api/session-log-upload.scan'
 
+/**
+ * The liability-notice route: `GET` reports whether the acknowledgement is on file, `POST` records it.
+ *
+ * Authenticated like the others, which matters more here than anywhere else: an unauthenticated POST
+ * would let any local process dismiss the notice on the user's behalf.
+ */
+export const NOTICE_ROUTE_PATH = '/api/session-log-upload.notice'
+
 /** Most ledger rows the `/session-log-upload uploaded` listing prints before it summarises the rest. */
 export const MAX_LEDGER_LINES = 50
 
@@ -538,6 +547,13 @@ export function apply(ctx, rawConfig) {
   // directory (so `DSH_HOME` cannot be resolved twice and disagree) and keeps tests that inject a
   // directory from spilling into the real home.
   const failures = new FailureStore(watermark.directory, {
+    log: (message) => log('warn', message),
+  })
+
+  // The "I have read this" record for the liability notice. Kept in the same directory as the other
+  // owned artifacts, and outside `Config` on purpose: consent is not configuration, and a settings
+  // write must not be able to toggle it.
+  const notice = new NoticeStore(watermark.directory, {
     log: (message) => log('warn', message),
   })
 
@@ -1290,14 +1306,31 @@ export function apply(ctx, rawConfig) {
       {
         path: LEDGER_ROUTE_PATH,
         effect: 'session-log-upload: upload ledger route',
+        methods: ['GET'],
         payload: () => ledgerPayload(),
         what: 'the Settings page will not show the detailed log',
       },
       {
         path: SCAN_ROUTE_PATH,
         effect: 'session-log-upload: session directory scan route',
+        methods: ['GET'],
         payload: () => scanPayload(),
         what: 'the Settings page cannot offer a folder list (typing a path still works)',
+      },
+      {
+        path: NOTICE_ROUTE_PATH,
+        effect: 'session-log-upload: liability notice route',
+        // POST is how the page records "I have read this". It is authenticated like the GETs; an
+        // unauthenticated POST would let any local process dismiss the notice for the user.
+        methods: ['GET', 'POST'],
+        payload: async (request) => {
+          if (request !== undefined && request !== null && request.method === 'POST') {
+            const recorded = notice.acknowledge()
+            return { acknowledged: recorded.acknowledged, at: recorded.at }
+          }
+          return notice.snapshot()
+        },
+        what: 'the Settings page cannot show or record the liability notice',
       },
     ]
     for (const route of routes) {
@@ -1307,14 +1340,14 @@ export function apply(ctx, rawConfig) {
             () =>
               connection.fetch.register({
                 path: route.path,
-                methods: ['GET'],
+                methods: route.methods,
                 requestBody: 'buffered',
                 // Authentication is inherited, not implemented here: Connection dispatches this only
                 // after its browser-credential check, so a request without the page cookie is refused
                 // with 401 before this handler runs. Registering on the raw web server instead would
                 // expose Session data to any local process (docs/state-channel.md §2.3-§2.4).
-                fetch: async () =>
-                  new Response(JSON.stringify(await route.payload()), {
+                fetch: async (request) =>
+                  new Response(JSON.stringify(await route.payload(request)), {
                     status: 200,
                     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
                   }),

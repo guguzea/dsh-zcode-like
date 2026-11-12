@@ -1684,7 +1684,7 @@ check('FIXED: the schema now constrains `mode` to the four frozen ids', () => {
 // ══ 9. dependency-freedom ══════════════════════════════════════════════════════════════════════
 console.log('\n9. dependency-freedom')
 
-const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/upload.js', 'host/watermark.js', 'client.js']
+const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'client.js']
 
 check('every static import/require in every shipped file is node: or relative (react/react-dom excepted)', () => {
   const offenders = []
@@ -1886,7 +1886,7 @@ await checkAsync('the ledger route is registered exactly as Connection expects, 
   handle.cleanup()
   // Both routes are registered through their own `ctx.effect`, so an unload disposes both. The
   // property is that every registration has a disposer — not that there is exactly one of them.
-  assert.equal(state.routeDisposed, 2, `expected both route registrations to be disposed, saw ${state.routeDisposed}`)
+  assert.equal(state.routeDisposed, 3, `expected all three route registrations to be disposed, saw ${state.routeDisposed}`)
 })
 
 await checkAsync('the ledger answers 200 JSON, no-store, and its handler is total', async () => {
@@ -2079,7 +2079,7 @@ await checkAsync('A6 NON-VACUITY: with the ledger wrapper removed, the very same
   // protects the ledger registration, and drive the identical harness against the clone.
   const source = readFileSync('index.js', 'utf8')
   const withUrl = source.replace(/from '\.\/([^']+)'/g, (_match, rest) => `from '${pathToFileURL(resolve(rest)).href}'`)
-  assert.equal((source.match(/from '\.\//g) ?? []).length, 6, 'the relative-import shape of index.js changed')
+  assert.equal((source.match(/from '\.\//g) ?? []).length, 7, 'the relative-import shape of index.js changed')
   assert.notEqual(withUrl, source)
   const structure = codeStructure(withUrl)
   // Excise the wrapper around exactly one registration: the `try {` … `} catch (…) { … }` that encloses
@@ -2192,7 +2192,7 @@ check('ATTRIBUTION PROBE: the ledger reports resolvability as booleans, and neve
   assert.match(code, /return \{ userAgent: userAgent === true, userId: userId === true \}/, 'the probe no longer narrows to booleans')
   // `ledgerPayload` and `ledgerText` must both await the probe; a dropped `await` serialises a Promise,
   // which `JSON.stringify` renders as `{}` — the exact transient breakage this suite caught mid-edit.
-  assert.match(code, /JSON\.stringify\(await route\.payload\(\)\)/, 'the route no longer awaits the payload')
+  assert.match(code, /JSON\.stringify\(await route\.payload\(request\)\)/, 'the route no longer awaits the payload')
   assert.match(code, /const resolvable = await attributionResolvable\(\)/)
   console.log('        probe: imports only, booleans only, memoised; both consumers await it')
 })
