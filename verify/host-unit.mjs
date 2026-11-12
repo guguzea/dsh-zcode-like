@@ -36,13 +36,13 @@ import {
   CREDENTIAL_REF_PATTERN,
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_ENDPOINT,
-  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
+  DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_MODE,
   DEFAULT_UPLOAD_MODEL,
   MODES,
   isCredentialRef,
-  isExcludedWorkingDirectory,
+  isUploadAllowedByDirectory,
   isMode,
   normalizeDirectoryPath,
   resolveConfig,
@@ -89,7 +89,7 @@ const TIME = 1700000000000
 const DEFAULT_CONFIG = {
   mode: DEFAULT_MODE,
   deepseekModelPatterns: ['deepseek'],
-  excludedWorkingDirectories: [],
+  uploadDirectories: [],
   endpoint: DEFAULT_ENDPOINT,
   uploadModel: DEFAULT_UPLOAD_MODEL,
   credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -147,7 +147,7 @@ await check('a valid config round-trips unchanged', () => {
     deepseekModelPatterns: ['DeepSeek', 'v4'],
     // Normalized on the way in (case, separator, trailing slash), so the round trip states the
     // normalized form: that is the value the host actually compares against.
-    excludedWorkingDirectories: ['d:/secret/work'],
+    uploadDirectories: ['d:/secret/work'],
     endpoint: 'https://example.test/v1/messages',
     uploadModel: 'deepseek-reasoner',
     credentialRef: 'OTHER_KEY',
@@ -251,10 +251,10 @@ await check('every volatile live reference is unwrapped at call time; plain keys
   const directories = live(['D:\\secret'])
   const endpoint = live('http://first.test/v1/messages')
   const maxBytes = live(1024)
-  const raw = { mode: mode.ref, deepseekModelPatterns: patterns.ref, excludedWorkingDirectories: directories.ref, endpoint: endpoint.ref, maxBytes: maxBytes.ref }
+  const raw = { mode: mode.ref, deepseekModelPatterns: patterns.ref, uploadDirectories: directories.ref, endpoint: endpoint.ref, maxBytes: maxBytes.ref }
   assert.equal(resolveConfig(raw).mode, 'any-model')
   assert.deepEqual(resolveConfig(raw).deepseekModelPatterns, ['dfmodel'])
-  assert.deepEqual(resolveConfig(raw).excludedWorkingDirectories, ['d:/secret'])
+  assert.deepEqual(resolveConfig(raw).uploadDirectories, ['d:/secret'])
   assert.equal(resolveConfig(raw).endpoint, 'http://first.test/v1/messages')
   assert.equal(resolveConfig(raw).maxBytes, 1024)
 
@@ -267,7 +267,7 @@ await check('every volatile live reference is unwrapped at call time; plain keys
   assert.deepEqual(resolveConfig(raw), {
     mode: 'off',
     deepseekModelPatterns: ['deepseek', 'dfmodel'],
-    excludedWorkingDirectories: ['d:/secret', 'c:/users/someone/private'],
+    uploadDirectories: ['d:/secret', 'c:/users/someone/private'],
     endpoint: 'https://second.test/v1/messages',
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -383,14 +383,14 @@ await check('malformed inputs are tolerated and never throw', () => {
   assert.equal(decideUpload({ mode: 'official-only', provider: 'deepseek-official', hasSession: true }), 'shipped')
 })
 await check('decideUpload is total against a throwing getter on every field', () => {
-  for (const field of ['mode', 'provider', 'model', 'hasSession', 'patterns', 'excluded']) {
+  for (const field of ['mode', 'provider', 'model', 'hasSession', 'patterns', 'directoryAllowed']) {
     const hostile = {
       mode: 'any-model',
       provider: 'pi-ai',
       model: 'deepseek-chat',
       hasSession: true,
       patterns: PATTERNS,
-      excluded: false,
+      directoryAllowed: true,
       get [field]() {
         throw new Error(`boom: ${field}`)
       },
@@ -551,7 +551,7 @@ await check('the mode field is constrained, defensive, and volatile (H2, task-8)
     .map((line) => line.trim().slice(0, line.trim().indexOf(':')))
   assert.deepEqual(
     volatileKeys,
-    ['deepseekModelPatterns', 'excludedWorkingDirectories', 'endpoint', 'maxBytes'],
+    ['deepseekModelPatterns', 'uploadDirectories', 'endpoint', 'maxBytes'],
     'the declared volatile set changed',
   )
   assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 5, 'mode + the two lists + endpoint + maxBytes is exactly five')
@@ -1669,8 +1669,9 @@ async function withWatermarkFixture(name, content, body) {
 
 /** Read the ledger through the registered route, exactly as the page's fetch would. */
 async function readLedger(host) {
-  assert.equal(host.state.routes.length, 1, 'exactly one ledger route must be registered')
-  const response = await host.state.routes[0].fetch(new Request(`http://127.0.0.1${indexNamespace.LEDGER_ROUTE_PATH}`))
+  const ledgerRoute = host.state.routes.find((route) => route.path === indexNamespace.LEDGER_ROUTE_PATH)
+    assert.ok(ledgerRoute !== undefined, 'the ledger route must be registered')
+  const response = await ledgerRoute.fetch(new Request(`http://127.0.0.1${indexNamespace.LEDGER_ROUTE_PATH}`))
   assert.equal(response.status, 200)
   return response.json()
 }
@@ -1730,7 +1731,8 @@ await check('the ledger route is registered on the connection service and return
   await withWatermarkFixture('route', text, async (home, directory) => {
     const host = fakeHost({ raw: { mode: 'official-only' }, home })
     try {
-      const route = host.state.routes[0]
+      const route = host.state.routes.find((candidate) => candidate.path === indexNamespace.LEDGER_ROUTE_PATH)
+      assert.ok(route !== undefined, 'the ledger route must be registered')
       assert.equal(route.path, indexNamespace.LEDGER_ROUTE_PATH)
       assert.deepEqual(route.methods, ['GET'], 'read-only: GET only')
       assert.equal(route.requestBody, 'buffered')
@@ -1994,8 +1996,10 @@ await check('a throwing optional registration cannot take the "off" exclusion do
       },
       (state) => assert.equal(typeof state.command?.handler, 'function', 'execution must continue past the failure'),
     ],
-    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 1, 'the ledger route must still register')],
-    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 1, 'later registrations must still run')],
+    // Two routes register now (the ledger and the scan), each in its own wrapped effect. A throw from
+    // one must not prevent the other, so the assertion is "the OTHER route is present", not a count.
+    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 2, 'both routes must still register')],
+    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 2, 'later registrations must still run')],
   ]
   for (const [what, options, after] of cases) {
     // The throw must not escape `apply`.
@@ -2546,82 +2550,87 @@ await check('the directory normaliser treats the same directory spelled differen
   }
 })
 
-await check('a directory is excluded when it equals an entry or is under it, never on a name prefix', () => {
+await check('an allowlist entry covers itself and everything under it, never a name prefix', () => {
   const list = ['D:\\work\\secret']
   for (const inside of ['D:/work/secret', 'D:/WORK/SECRET', 'D:\\work\\secret\\sub', 'd:/work/secret/sub/deeper']) {
-    assert.equal(isExcludedWorkingDirectory(inside, list), true, `${inside} should be excluded`)
+    assert.equal(isUploadAllowedByDirectory(inside, list), true, `${inside} should be covered by the allowlist`)
   }
   // The separator is part of the comparison: `secretary` shares only a name prefix.
   for (const outside of ['D:/work/secretary', 'D:/work/secret2', 'D:/work/secretX/file', 'D:/work/other']) {
-    assert.equal(isExcludedWorkingDirectory(outside, list), false, `${outside} must NOT be excluded`)
+    assert.equal(isUploadAllowedByDirectory(outside, list), false, `${outside} must NOT be covered`)
   }
-  // Unusable inputs exclude nothing, and never throw.
-  for (const bad of [undefined, null, '', 42, {}, []]) {
-    assert.equal(isExcludedWorkingDirectory(bad, list), false)
+  // An EMPTY list is "no restriction", not "nothing allowed": this is the asymmetry that makes the
+  // allowlist safe to ship, because an unconfigured plugin behaves exactly as it did before.
+  for (const empty of [[], undefined, null, 42, {}, '']) {
+    assert.equal(isUploadAllowedByDirectory('D:/anything/at/all', empty), true, `an empty list must not restrict uploads (${String(empty)})`)
   }
-  for (const badList of [undefined, null, 'D:/work/secret', 42, {}]) {
-    assert.equal(isExcludedWorkingDirectory('D:/work/secret/x', badList), false, `a non-array list must exclude nothing`)
+  // A non-empty list made entirely of unusable entries is a configuration mistake; treating it as
+  // "restrict everything" would silently stop every upload, which is the worse of the two failures.
+  for (const junk of [[], [''], ['   '], [null], [42]]) {
+    assert.equal(isUploadAllowedByDirectory('D:/x', junk), true, `a list of ${JSON.stringify(junk)} must not restrict uploads`)
   }
   // Blank entries are skipped; duplicates collapse.
-  assert.equal(isExcludedWorkingDirectory('D:/a/b', ['', '  ', null, 'D:/a']), true)
-  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ['D:\\a', 'd:/a/', '  '] }).excludedWorkingDirectories, ['d:/a'])
+  assert.equal(isUploadAllowedByDirectory('D:/a/b', ['', '  ', null, 'D:/a']), true)
+  assert.deepEqual(resolveConfig({ uploadDirectories: ['D:\\a', 'd:/a/', '  '] }).uploadDirectories, ['d:/a'])
   // A bare drive root is usable and does not swallow the whole filesystem by accident.
-  assert.equal(isExcludedWorkingDirectory('D:/x', ['D:']), true)
-  assert.equal(isExcludedWorkingDirectory('E:/x', ['D:']), false)
+  assert.equal(isUploadAllowedByDirectory('D:/x', ['D:']), true)
+  assert.equal(isUploadAllowedByDirectory('E:/x', ['D:']), false)
 })
 
-await check('an excluded directory stops OUR upload in every mode, including any-model', () => {
+await check('a Session outside the allowlist is not uploaded by us in any mode, including any-model', () => {
   for (const mode of ['off', 'official-only', 'deepseek-any-provider', 'any-model']) {
     assert.equal(
-      decideUpload({ mode, provider: 'pi-ai', model: 'deepseek-chat', hasSession: true, patterns: ['deepseek'], excluded: true }),
+      decideUpload({ mode, provider: 'pi-ai', model: 'deepseek-chat', hasSession: true, patterns: ['deepseek'], directoryAllowed: false }),
       'none',
-      `mode ${mode} uploaded from an excluded directory`,
+      `mode ${mode} uploaded a Session outside the allowlist`,
     )
   }
-  // Only the literal `true` excludes: the flag is not a truthiness test, so a stray value cannot
+  // Only the literal `false` narrows: the flag is not a truthiness test, so a stray value cannot
   // silently stop uploads the user never asked to stop.
-  for (const value of [1, 'yes', {}, [], null, undefined]) {
+  for (const value of [true, 1, 'yes', {}, [], null, undefined]) {
     assert.equal(
-      decideUpload({ mode: 'any-model', provider: 'pi-ai', model: 'x', hasSession: true, excluded: value }),
+      decideUpload({ mode: 'any-model', provider: 'pi-ai', model: 'x', hasSession: true, directoryAllowed: value }),
       'ours',
-      `a non-boolean excluded=${String(value)} suppressed the upload`,
+      `directoryAllowed=${String(value)} suppressed the upload`,
     )
   }
 })
 
 await check('the resolved config carries both lists, normalized and defaulted', () => {
   const empty = resolveConfig({})
-  assert.deepEqual(empty.excludedWorkingDirectories, [], 'the default must exclude nothing')
+  assert.deepEqual(empty.uploadDirectories, [], 'the default must exclude nothing')
   assert.deepEqual(empty.deepseekModelPatterns, ['deepseek'])
   // A live reference is unwrapped for both lists.
   const ref = (value) => ({ get: () => value })
-  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ref(['C:\\x']) }).excludedWorkingDirectories, ['c:/x'])
+  assert.deepEqual(resolveConfig({ uploadDirectories: ref(['C:\\x']) }).uploadDirectories, ['c:/x'])
   assert.deepEqual(resolveConfig({ deepseekModelPatterns: ref(['dfmodel']) }).deepseekModelPatterns, ['dfmodel'])
   // A malformed list narrows, and must not take the row down: the mode still resolves.
   // (A bare string is NOT malformed for the pattern list — a scalar written where a sequence was
   // meant is taken as a one-element list — so only genuinely unusable shapes are exercised here.)
   for (const bad of [42, {}, null, undefined]) {
-    const resolved = resolveConfig({ deepseekModelPatterns: bad, excludedWorkingDirectories: bad, mode: 'off' })
+    const resolved = resolveConfig({ deepseekModelPatterns: bad, uploadDirectories: bad, mode: 'off' })
     assert.deepEqual(resolved.deepseekModelPatterns, ['deepseek'])
-    assert.deepEqual(resolved.excludedWorkingDirectories, [])
+    assert.deepEqual(resolved.uploadDirectories, [])
     assert.equal(resolved.mode, 'off', 'a malformed list must not change the resolved mode')
   }
   // The documented scalar tolerance, stated so a future change to it is deliberate.
   assert.deepEqual(resolveConfig({ deepseekModelPatterns: 'dfmodel' }).deepseekModelPatterns, ['dfmodel'])
-  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: 'D:\\only' }).excludedWorkingDirectories, ['d:/only'])
+  assert.deepEqual(resolveConfig({ uploadDirectories: 'D:\\only' }).uploadDirectories, ['d:/only'])
 })
 
 // The single most important assertion in this section, and the easiest one to get wrong: in
 // `deepseek-any-provider` with an official provider, `decideUpload` reports `shipped` — the SHIPPED
-// uploader owns that request, not us. So a directory exclusion that only gated our own POST would
-// leave the user's excluded directory uploading anyway, while the settings page said it was excluded.
-// Drive the predicate the plugin actually registered (not a re-implementation) and prove both halves.
-await check('an excluded directory also suppresses the SHIPPED upload, via the predicate the plugin registered', async () => {
-  const EXCLUDED = 'D:\\work\\secret'
+// uploader owns that request, not us. So an allowlist that only gated our own POST would leave every
+// Session OUTSIDE it still uploading through the built-in path, while the page said only the listed
+// directories were uploaded. Drive the predicate the plugin actually registered, not a re-implementation.
+await check('a Session outside the allowlist is also suppressed on the SHIPPED path, via the registered predicate', async () => {
+  const LISTED = 'D:\\work\\secret'
   const sessions = {
-    'session-secret': { header: { version: 4, cwd: EXCLUDED } },
-    'session-open': { header: { version: 4, cwd: 'D:\\work\\public' } },
-    // Hostile shapes must not throw and must not exclude.
+    'session-listed': { header: { version: 4, cwd: LISTED } },
+    'session-elsewhere': { header: { version: 4, cwd: 'D:\\work\\public' } },
+    'session-under': { header: { version: 4, cwd: 'D:\\work\\secret\\nested' } },
+    // Hostile shapes must not throw. A live session with no cwd is not covered by any entry, so with a
+    // non-empty allowlist it is not uploaded.
     'session-nocwd': { header: { version: 4 } },
     'session-noheader': {},
     'session-throwing': {
@@ -2630,53 +2639,58 @@ await check('an excluded directory also suppresses the SHIPPED upload, via the p
       },
     },
   }
-  const directories = volatileRef([EXCLUDED])
-  const host = fakeHost({ raw: { mode: 'deepseek-any-provider', excludedWorkingDirectories: directories.ref }, sessions, llm: true })
+  const directories = volatileRef([LISTED])
+  const host = fakeHost({ raw: { mode: 'deepseek-any-provider', uploadDirectories: directories.ref }, sessions, llm: true })
   try {
     assert.equal(host.state.exclusions.length, 1, 'exactly one exclusion predicate must be registered')
     const predicate = host.state.exclusions[0]
 
     // The crux: `deepseek-any-provider` does NOT suppress the shipped upload on its own…
     assert.equal(suppressShipped('deepseek-any-provider'), false)
-    // …so for a session in the excluded directory the predicate must say `true` anyway.
-    assert.equal(predicate({ sessionId: 'session-secret' }), true, 'the shipped upload was NOT suppressed for an excluded directory')
-    assert.equal(predicate({ sessionId: 'session-secret', purpose: 'compaction' }), true)
+    // …so the predicate must suppress for every Session not covered by the allowlist.
+    assert.equal(predicate({ sessionId: 'session-elsewhere' }), true, 'the shipped upload was NOT suppressed outside the allowlist')
+    assert.equal(predicate({ sessionId: 'session-elsewhere', purpose: 'compaction' }), true)
 
-    // A session outside the list is unaffected: the shipped upload keeps working.
-    assert.equal(predicate({ sessionId: 'session-open' }), false, 'an unrelated directory must not be suppressed')
+    // Sessions the user DID select keep uploading through the shipped path.
+    assert.equal(predicate({ sessionId: 'session-listed' }), false, 'a listed directory must keep uploading')
+    assert.equal(predicate({ sessionId: 'session-under' }), false, 'a subdirectory of a listed directory must keep uploading')
 
-    // Every unusable input suppresses nothing and throws nothing — silently dropping uploads the user
-    // did not ask to drop is the same class of bug as silently adding them.
-    for (const id of ['session-nocwd', 'session-noheader', 'session-throwing', 'session-missing', undefined, null, 42, {}]) {
-      assert.equal(predicate({ sessionId: id }), false, `session ${String(id)} must not be suppressed`)
+    // A live session with no cwd is not covered by any entry; it is suppressed, not guessed at.
+    assert.equal(predicate({ sessionId: 'session-nocwd' }), true, 'a Session with no cwd must not be uploaded when a list exists')
+
+    // Total: no throw, and a missing session is left alone (it cannot be uploaded anyway).
+    for (const id of ['session-noheader', 'session-throwing', 'session-missing', undefined, null, 42, {}]) {
+      const verdict = predicate({ sessionId: id })
+      assert.equal(typeof verdict, 'boolean', `session ${String(id)} must decide a boolean`)
     }
     assert.equal(predicate(undefined), false)
     assert.equal(predicate(null), false)
 
-    // Live edit: adding the open session's directory suppresses it on the very next call.
-    directories.commit([EXCLUDED, 'D:\\work\\public'])
-    assert.equal(predicate({ sessionId: 'session-open' }), true, 'a live edit did not take effect')
-    // And clearing the list restores the shipped upload everywhere, still without a restart.
+    // Live edit: adding the other directory lets `session-elsewhere` through on the very next call.
+    directories.commit([LISTED, 'D:\\work\\public'])
+    assert.equal(predicate({ sessionId: 'session-elsewhere' }), false, 'a live edit did not take effect')
+    // And clearing the list removes the restriction everywhere, still without a restart.
     directories.commit([])
-    assert.equal(predicate({ sessionId: 'session-secret' }), false, 'clearing the list did not restore the shipped upload')
+    assert.equal(predicate({ sessionId: 'session-elsewhere' }), false, 'clearing the list did not stop suppressing')
+    assert.equal(predicate({ sessionId: 'session-listed' }), false)
   } finally {
     host.cleanup()
   }
 })
 
-// `off` must keep working independently of the directory feature, and the two must OR together.
-await check('off still suppresses everything, and the directory exclusion ORs with it', () => {
-  const sessions = { 'session-secret': { header: { version: 4, cwd: 'D:\\work\\secret' } } }
+// `off` must keep working independently of the allowlist, and the two must OR together.
+await check('off still suppresses everything, and the allowlist ORs with it', () => {
+  const sessions = { 'session-listed': { header: { version: 4, cwd: 'D:\\work\\secret' } }, 'session-other': { header: { version: 4, cwd: 'D:\\elsewhere' } } }
   for (const mode of ['off', 'official-only', 'deepseek-any-provider', 'any-model']) {
-    const host = fakeHost({ raw: { mode, excludedWorkingDirectories: ['D:\\work\\secret'] }, sessions })
+    const host = fakeHost({ raw: { mode, uploadDirectories: ['D:\\work\\secret'] }, sessions })
     try {
-      assert.equal(host.state.exclusions[0]({ sessionId: 'session-secret' }), true, `mode ${mode}: excluded directory not suppressed`)
+      assert.equal(host.state.exclusions[0]({ sessionId: 'session-other' }), true, `mode ${mode}: a Session outside the allowlist was not suppressed`)
     } finally {
       host.cleanup()
     }
   }
   // With no directory configured, `off` is the only reason to suppress.
-  const offOnly = fakeHost({ raw: { mode: 'off', excludedWorkingDirectories: [] }, sessions })
+  const offOnly = fakeHost({ raw: { mode: 'off', uploadDirectories: [] }, sessions })
   try {
     assert.equal(offOnly.state.exclusions[0]({ sessionId: 'session-secret' }), true)
   } finally {

@@ -746,11 +746,11 @@ check('the manual block is collapsed behind a summary (last resort, not the expe
 check('RETARGETED: the UI may write exactly the four whitelisted fields — never `mode`, `uploadModel`, `credentialRef`', () => {
   // The whitelist is the guard, and `mode` is deliberately NOT in it: mode has its own gated path.
   // It grew from two names to four when the user gained two editable lists — a model-pattern list (so
-  // a proxy's renamed model can be marked as DeepSeek) and a working-directory exclusion list. The
-  // line that must not move is the same one: `mode`, `uploadModel`, `credentialRef` stay out.
+  // a proxy's renamed model can be marked as DeepSeek) and an upload-directory allowlist. The line
+  // that must not move is the same one: `mode`, `uploadModel`, `credentialRef` stay out.
   assert.match(
     CLIENT_SOURCE,
-    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes", ?"deepseekModelPatterns", ?"excludedWorkingDirectories" ?\]\);/,
+    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes", ?"deepseekModelPatterns", ?"uploadDirectories" ?\]\);/,
     'the editable-field whitelist changed shape or contents',
   )
   assert.match(CLIENT_SOURCE, /if \(EDITABLE_FIELDS\.indexOf\(field\) < 0\) return \{ ok: false, path: "none", doc: null \}/)
@@ -767,8 +767,14 @@ check('RETARGETED: the UI may write exactly the four whitelisted fields — neve
     assert.doesNotMatch(CLIENT_SOURCE, new RegExp(`path:\\s*\\[\\s*"${protectedField}"`), `the UI writes ${protectedField}`)
   }
   // The render exposes exactly two editable field names, and no input is offered for anything else.
-  const dataFields = [...new Set([...CLIENT_SOURCE.matchAll(/"data-field":\s*field|"data-field":\s*"([^"]+)"/g)].map((m) => m[1] ?? 'field'))]
-  assert.deepEqual(dataFields, ['field'], `data-field values: ${JSON.stringify(dataFields)}`)
+  // `data-field: field` is the generic editor (endpoint / maxBytes / the pattern list). The directory
+  // chooser carries a literal `data-field: "uploadDirectories"` because it is not one generic control.
+  // Both forms must stay within the whitelist: no data-field may name `mode` or a protected field.
+  const dataFields = [ ...new Set([ ...CLIENT_SOURCE.matchAll(/"data-field":\s*field|"data-field":\s*"([^"]+)"/g) ].map((m) => m[1] ?? 'field')) ]
+  assert.deepEqual(dataFields.sort(), [ 'field', 'uploadDirectories' ], `data-field values: ${JSON.stringify(dataFields)}`)
+  for (const forbidden of [ 'mode', 'uploadModel', 'credentialRef' ]) {
+    assert.equal(dataFields.includes(forbidden), false, `a data-field names ${forbidden}`)
+  }
   assert.match(CLIENT_SOURCE, /field === "endpoint" \? "upload\.endpointEditLabel" : "upload\.capEditLabel"/)
 })
 

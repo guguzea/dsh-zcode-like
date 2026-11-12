@@ -72,18 +72,23 @@ export function matchesDeepseekModel(model, patterns) {
  * @param request.model the served model id.
  * @param request.hasSession whether the request carries a Live Session id.
  * @param request.patterns configured model-id patterns (mode `deepseek-any-provider` only).
- * @param request.excluded whether the Session's working directory is excluded. Checked **first** and
- *   in every mode: the user's directory exclusion is absolute, and it is the one input here that can
- *   only ever remove an upload. The shipped-upload side of the same exclusion lives in `index.js`
- *   (its predicate), because in some modes the shipped uploader — not this plugin — owns the request.
+ * @param request.directoryAllowed whether the Session's working directory is inside the configured
+ *   upload allowlist. An empty allowlist means "no restriction" and is computed by the caller, so this
+ *   flag is `true` unless the user actually narrowed it. Checked **first** and in every mode: it is the
+ *   one input here that can only ever remove an upload, and it must apply before the mode matrix so a
+ *   Session outside the allowlist is never ours in any mode. The shipped-upload side of the same
+ *   allowlist lives in `index.js` (its exclusion predicate), because in some modes the shipped
+ *   uploader — not this plugin — owns the request.
  * @returns `'shipped'` (the shipped plugin owns it), `'ours'` (this plugin uploads), or `'none'`.
  */
 export function decideUpload(request) {
   try {
-    const { mode, provider, model, hasSession, patterns, excluded } = request === null || request === undefined ? {} : request
+    const { mode, provider, model, hasSession, patterns, directoryAllowed } = request === null || request === undefined ? {} : request
 
-    // Absolute, and ahead of every other rule: an excluded directory stops our upload in any mode.
-    if (excluded === true) return 'none'
+    // Absolute, and ahead of every other rule: outside the allowlist, nothing of ours is uploaded in
+    // any mode. Only a literal `false` narrows — an absent flag means the caller had no allowlist to
+    // apply, and must not be read as "not allowed" or every upload would stop.
+    if (directoryAllowed === false) return 'none'
 
     if (hasSession !== true) return 'none'
     if (mode === 'off') return 'none'

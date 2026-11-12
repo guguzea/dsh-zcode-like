@@ -49,12 +49,12 @@ export const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 export const DEFAULT_MAX_BYTES = 8388608
 
 /**
- * Default excluded-working-directory list: nothing excluded.
+ * Default directory allowlist: empty, meaning **every** Session is uploaded.
  *
- * A Session whose working directory matches an entry here is never uploaded — not by this plugin,
- * and not by the shipped official-API uploader either (see `index.js`'s exclusion predicate).
+ * Listing directories here restricts uploads to those directories (and their subdirectories). An
+ * empty list is "no restriction", never "nothing" — see {@link isUploadAllowedByDirectory}.
  */
-export const DEFAULT_EXCLUDED_WORKING_DIRECTORIES = []
+export const DEFAULT_UPLOAD_DIRECTORIES = []
 
 /** The credential-reference grammar accepted by the credentials service. */
 export const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -155,9 +155,7 @@ function normalizeMaxBytes(value) {
  * Normalize one directory path into the form both halves compare on.
  *
  * Windows paths differ by separator, case and trailing slash, so a raw `===` on two spellings of the
- * same directory silently never matches — which for an upload *exclusion* is the dangerous direction:
- * the user would believe a directory is excluded while it is still uploading. Every entry and every
- * candidate therefore goes through this first.
+ * same directory silently never matches. Every entry and every candidate goes through this first.
  *
  * @param value candidate path.
  * @returns the normalized form, or `undefined` when unusable.
@@ -175,23 +173,23 @@ export function normalizeDirectoryPath(value) {
 }
 
 /**
- * The excluded-working-directory rule, stated exactly (the settings page's copy mirrors it).
+ * Whether a working directory is covered by one of the configured directories.
  *
- * A candidate working directory is excluded when, after {@link normalizeDirectoryPath}, it **equals**
- * a listed directory or lies **under** one (the listed form plus `/` is a prefix). So `D:/work/secret`
- * excludes `D:/work/secret` and `D:/work/secret/sub/deeper`, but **not** `D:/work/secretary` — the
- * separator is part of the comparison precisely so a name-prefix cannot over-match.
+ * MATCHING RULE (the settings page's copy mirrors it): a candidate is covered when, after
+ * {@link normalizeDirectoryPath}, it **equals** a listed directory or lies **under** one (the listed
+ * form plus `/` is a prefix). So `D:/work/secret` covers `D:/work/secret` and
+ * `D:/work/secret/sub/deeper`, but **not** `D:/work/secretary` — the separator is part of the
+ * comparison precisely so a name prefix cannot over-match.
  *
- * Anything unusable — no candidate, no list, a non-string, a blank entry — excludes nothing. This is a
- * privacy control that only ever removes uploads, so failing to match leaves the previous behaviour;
- * but note the converse: it must never *throw*, because it runs inside the shipped uploader's prepare
- * callback where an exception fails the contribution.
+ * Total: anything unusable (no candidate, no list, a non-string, a blank entry) covers nothing, and it
+ * never throws, because it runs inside the shipped uploader's prepare callback where an exception
+ * fails the contribution.
  *
  * @param cwd the Session's working directory, or anything else.
  * @param directories the configured list, or anything else.
- * @returns `true` only when the directory is genuinely covered by the list.
+ * @returns `true` only when the directory is genuinely covered.
  */
-export function isExcludedWorkingDirectory(cwd, directories) {
+export function isDirectoryCovered(cwd, directories) {
   try {
     const candidate = normalizeDirectoryPath(cwd)
     if (candidate === undefined) return false
@@ -209,11 +207,44 @@ export function isExcludedWorkingDirectory(cwd, directories) {
 }
 
 /**
- * Normalize the excluded-directory list.
+ * Whether a Session may be uploaded at all, given the configured directory allowlist.
+ *
+ * THE SENTENCE THIS IMPLEMENTS, and the one the page must say: *by default every Session is uploaded,
+ * whichever workspace it came from. List directories and only Sessions in those directories (or under
+ * them) are uploaded.* An empty list therefore means "no restriction", **not** "nothing".
+ *
+ * That asymmetry is the whole point of the allowlist shape: an unconfigured plugin behaves exactly as
+ * it did before, and turning it on is a visible, deliberate act. A denylist would have the opposite
+ * failure mode — a user reading "these directories are excluded" has no way to tell what is still
+ * being sent.
+ *
+ * An unusable cwd (a Session with no working directory) is not covered by any allowlist, so it is not
+ * uploaded once the list is non-empty; with an empty list it is uploaded as before.
+ *
+ * @param cwd the Session's working directory, or anything else.
+ * @param directories the configured allowlist, or anything else.
+ * @returns `true` when the Session may be uploaded.
+ */
+export function isUploadAllowedByDirectory(cwd, directories) {
+  try {
+    if (!Array.isArray(directories) || directories.length === 0) return true
+    // A non-empty list that normalizes to nothing usable is treated as "no restriction" rather than
+    // "nothing is allowed": a list of blank lines is a configuration mistake, and silently stopping
+    // every upload is the more surprising of the two failures.
+    const usable = directories.filter((entry) => normalizeDirectoryPath(entry) !== undefined)
+    if (usable.length === 0) return true
+    return isDirectoryCovered(cwd, usable)
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Normalize the directory allowlist.
  *
  * Same shape tolerance as {@link normalizePatterns} (a scalar string is a one-element list), but the
  * entries are normalized rather than kept verbatim, so the page and the host agree on what matches.
- * Duplicates collapse — the same directory listed twice is one exclusion.
+ * Duplicates collapse — the same directory listed twice is one entry.
  *
  * @param value raw value.
  * @returns a fresh array of normalized directories; empty when nothing usable was given.
@@ -263,7 +294,7 @@ function defaults() {
   return {
     mode: DEFAULT_MODE,
     deepseekModelPatterns: [...DEFAULT_DEEPSEEK_MODEL_PATTERNS],
-    excludedWorkingDirectories: [...DEFAULT_EXCLUDED_WORKING_DIRECTORIES],
+    uploadDirectories: [...DEFAULT_UPLOAD_DIRECTORIES],
     endpoint: DEFAULT_ENDPOINT,
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -293,7 +324,7 @@ export function resolveConfig(raw) {
     const mode = readLive(own(raw, 'mode'))
     if (isMode(mode)) resolved.mode = mode
     resolved.deepseekModelPatterns = normalizePatterns(readLive(own(raw, 'deepseekModelPatterns')), resolved.deepseekModelPatterns)
-    resolved.excludedWorkingDirectories = normalizeDirectories(readLive(own(raw, 'excludedWorkingDirectories')))
+    resolved.uploadDirectories = normalizeDirectories(readLive(own(raw, 'uploadDirectories')))
 
     const endpoint = normalizeEndpoint(readLive(own(raw, 'endpoint')))
     if (endpoint !== undefined) resolved.endpoint = endpoint

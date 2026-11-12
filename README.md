@@ -73,13 +73,13 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 |---|---|---|---|
 | `mode` | enum | `official-only` | 见上表 |
 | `deepseekModelPatterns` | `string[]` | `['deepseek']` | 大小写不敏感的子串，只匹配模型 id。见下面「反代改了模型名怎么办」。 |
-| `excludedWorkingDirectories` | `string[]` | `[]` | 这些目录下的会话永不上传，并且 DSH 自带的上传也一并停掉。见下面「排除整个目录」。 |
+| `uploadDirectories` | `string[]` | `[]` | 空 = 所有工作区的会话都上传。填了目录就只上传这些目录（含子目录）里的会话。见下面「只上传指定目录」。 |
 | `endpoint` | string | DeepSeek 官方端点 | 只带日志的那条请求发往哪里。必须是绝对 `http(s)` URL，否则回落到默认值。 |
 | `uploadModel` | string | `deepseek-flash` | 那条请求的 `model` 字段。必须是官方 API 认识的名字（`deepseek-flash` 或 `deepseek-v4-pro`）。 |
 | `credentialRef` | string | `DEEPSEEK_API_KEY` | 通过 `ctx.credentials.resolve(ref)` 解析。 |
 | `maxBytes` | int ≥ 1 | `8388608` | 单次请求里 `dsh_session_log` 字段的最大字节数。 |
 
-`mode`、`deepseekModelPatterns`、`excludedWorkingDirectories`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
+`mode`、`deepseekModelPatterns`、`uploadDirectories`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
 
 ### 反代改了模型名怎么办
 
@@ -89,11 +89,11 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 
 在设置页的「把这些模型当作 DeepSeek」里加一行 `dfmodel` 就行。这个名单只在 `deepseek-any-provider` 下出现，其他模式看不到它。
 
-### 排除整个目录
+### 只上传指定目录
 
-「这些目录下的会话永不上传」里每行写一个路径。工作目录是这个路径、或在这个路径下的会话不会上传。DSH 自带的官方 API 上传也一并停掉。
+**默认所有工作区的会话都上传。** 想收窄，在设置页勾上「选择指定目录」，点扫描，然后勾选你要的目录。
 
-不区分大小写，`\` 和 `/` 视为相同。
+勾了之后只上传这些目录（含子目录）里的会话，DSH 自带的上传也一并受限。不区分大小写，`\` 和 `/` 视为相同。清空选择就回到默认的「全部上传」。
 
 ## 不用界面切换模式
 

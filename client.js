@@ -63,9 +63,13 @@ window.__ModuleLoader__.load({
 				"upload.patternsLabel": "Models to treat as DeepSeek",
 				"upload.patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
 				"upload.patternsEmpty": "Nothing added yet. Only the default deepseek pattern is used.",
-				"upload.directoriesLabel": "Never upload sessions from these folders",
-				"upload.directoriesHelp": "One path per line. Sessions in these folders or their subfolders are not uploaded. DSH’s own official upload is stopped for them too.",
-				"upload.directoriesEmpty": "Nothing excluded.",
+				"upload.directoriesLabel": "Only upload sessions from these folders",
+				"upload.directoriesHelp": "By default every session is uploaded, whichever workspace it came from. Tick folders to upload only those; subfolders are included.",
+				"upload.directoriesEmpty": "Everything is uploaded (no restriction).",
+				"upload.directoriesScan": "Scan folders",
+				"upload.directoriesScanning": "Scanning…",
+				"upload.directoriesNoSessions": "No sessions found to choose from.",
+				"upload.directoriesChoose": "Choose specific folders",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "bytes",
@@ -142,9 +146,13 @@ window.__ModuleLoader__.load({
 				"upload.patternsLabel": "把这些模型当作 DeepSeek",
 				"upload.patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
 				"upload.patternsEmpty": "还没有添加。只使用默认的 deepseek 匹配。",
-				"upload.directoriesLabel": "这些目录下的会话永不上传",
-				"upload.directoriesHelp": "每行一个路径。这些目录及其子目录里的会话不会上传。DSH 自带的上传也一并停掉。",
-				"upload.directoriesEmpty": "没有排除任何目录。",
+				"upload.directoriesLabel": "只上传这些目录下的会话",
+				"upload.directoriesHelp": "默认所有工作区的会话都会上传。勾选目录后，只上传这些目录（含子目录）里的会话。",
+				"upload.directoriesEmpty": "全部上传（没有限制）。",
+				"upload.directoriesScan": "扫描目录",
+				"upload.directoriesScanning": "正在扫描…",
+				"upload.directoriesNoSessions": "没有可选的会话。",
+				"upload.directoriesChoose": "选择指定目录",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "字节",
@@ -246,6 +254,9 @@ window.__ModuleLoader__.load({
 		 * origin *is* the Host web server, and the route sits behind its browser authentication.
 		 */
 		const LEDGER_ROUTE = LEDGER_PATH.slice(1);
+		/** Host route reporting the live Sessions' working directories, for the folder chooser. */
+		const SCAN_PATH = "/api/session-log-upload.scan";
+		const SCAN_ROUTE = SCAN_PATH.slice(1);
 		/** Session ids longer than this are shortened in the middle; the full value stays in `title`. */
 		const LEDGER_ID_LIMIT = 28;
 		/** The state a ledger read publishes when nothing at all could be read. */
@@ -368,7 +379,7 @@ window.__ModuleLoader__.load({
 		 * as-is would silently lose the current value.
 		 *
 		 * Arrays are returned as-is, NOT treated as "not a plain value": a list field
-		 * (`deepseekModelPatterns`, `excludedWorkingDirectories`) is legitimately an array, and the
+		 * (`deepseekModelPatterns`, `uploadDirectories`) is legitimately an array, and the
 		 * earlier `return null` for every object turned a successfully-saved list into "nothing
 		 * reported" on the page — the write went through and the control still showed the old value.
 		 * @returns the plain value, or null when this is a reference that cannot be read.
@@ -419,7 +430,7 @@ window.__ModuleLoader__.load({
 		 * its own consent-gated path, and this list is what makes it impossible for the field
 		 * editor to widen the mode by accident.
 		 */
-		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "excludedWorkingDirectories" ]);
+		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories" ]);
 		/**
 		 * The destination the Host will actually POST to, for one reported value.
 		 *
@@ -1091,6 +1102,49 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Fetch the working directories of the live Sessions, for the folder chooser.
+			 *
+			 * Best-effort and total: an absent route, a refused credential, an unreadable body and a
+			 * transport failure all resolve to an empty list, and the chooser then offers only what is
+			 * already selected. A scan is a convenience; it must never make the section fail, and it
+			 * must never be read as "there are no directories to upload" — the page's copy is what says
+			 * an empty list means "everything".
+			 *
+			 * @returns `[{path, sessions}]`, possibly empty.
+			 */
+			async function readDirectoryScan() {
+				const fetcher = pageFetcher();
+				if (fetcher === null) return [];
+				let response;
+				try {
+					response = await fetcher(SCAN_ROUTE, { headers: { accept: "application/json" } });
+				} catch (_error) {
+					return [];
+				}
+				if (response === null || response === undefined || response.ok !== true) return [];
+				let body;
+				try {
+					body = await response.json();
+				} catch (_error) {
+					return [];
+				}
+				const root = asObject(body);
+				if (root === null || !Array.isArray(root.directories)) return [];
+				const out = [];
+				for (const entry of root.directories) {
+					const record = asObject(entry);
+					if (record === null) continue;
+					const path = typeof record.path === "string" ? record.path : null;
+					if (path === null || path.length === 0) continue;
+					out.push({
+						path: path,
+						sessions: typeof record.sessions === "number" && Number.isSafeInteger(record.sessions) ? record.sessions : null
+					});
+				}
+				return out;
+			}
+
+			/**
 			 * Write one editable field. Anything outside {@link EDITABLE_FIELDS} is refused without
 			 * touching the host, so this path cannot write `mode` and cannot bypass the consent gate.
 			 * @param field - the field the user edited.
@@ -1111,7 +1165,7 @@ window.__ModuleLoader__.load({
 				return persistField("mode", nextMode);
 			}
 
-			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, writeField: writeField, writeMode: writeMode };
+			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, writeField: writeField, writeMode: writeMode };
 		}
 		//#endregion
 
@@ -1407,6 +1461,12 @@ window.__ModuleLoader__.load({
 				const [ capDraft, setCapDraft ] = React.useState(null);
 				const [ patternsDraft, setPatternsDraft ] = React.useState(null);
 				const [ directoriesDraft, setDirectoriesDraft ] = React.useState(null);
+				// The directory chooser: whether the "choose folders" panel is open, the folders the
+				// Host's scan reported, the boxes the user has ticked, and whether a scan is in flight.
+				const [ pickerOpen, setPickerOpen ] = React.useState(false);
+				const [ directoryOptions, setDirectoryOptions ] = React.useState([]);
+				const [ picked, setPicked ] = React.useState(function () { return Object.create(null); });
+				const [ scanning, setScanning ] = React.useState(false);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
@@ -1458,7 +1518,7 @@ window.__ModuleLoader__.load({
 				const endpoint = servedValue === null ? null : endpointInUse(fieldValue(servedValue.endpoint));
 				const maxBytes = servedValue === null ? null : maxBytesInUse(fieldValue(servedValue.maxBytes));
 				const patterns = servedValue === null ? null : patternsInUse(fieldValue(servedValue.deepseekModelPatterns));
-				const directories = servedValue === null ? null : directoriesInUse(fieldValue(servedValue.excludedWorkingDirectories));
+				const directories = servedValue === null ? null : directoriesInUse(fieldValue(servedValue.uploadDirectories));
 
 				/**
 				 * Validate one draft and, when the Host would accept it, write it. The write goes
@@ -1494,7 +1554,7 @@ window.__ModuleLoader__.load({
 						if (field === "endpoint") setEndpointDraft(null);
 						else if (field === "maxBytes") setCapDraft(null);
 						else if (field === "deepseekModelPatterns") setPatternsDraft(null);
-						else if (field === "excludedWorkingDirectories") setDirectoriesDraft(null);
+						else if (field === "uploadDirectories") setDirectoriesDraft(null);
 					}, function () {
 						setFieldBusy(null);
 						setFieldState({ field: field, kind: "failed", key: "upload.saveFailed" });
@@ -1563,6 +1623,157 @@ window.__ModuleLoader__.load({
 							t(state.key)
 						)
 					);
+				};
+
+				/**
+				 * The directory chooser: "everything is uploaded by default; tick the folders you want".
+				 *
+				 * Why a chooser rather than a text box. A list of *excluded* paths reads as "everything
+				 * except these is being sent", which is the wrong thing to make a user work out — and it
+				 * was, in an earlier revision, misread exactly that way. This shape states the default
+				 * first ("all of it"), then lets the user narrow it by ticking folders, which is the
+				 * mental model that matches what the Host actually does with a non-empty list.
+				 *
+				 * The folder options come from the Host's scan route (live Sessions only). A path the
+				 * user typed but no live Session is in is kept as an option too, so a saved choice never
+				 * silently disappears from the list just because that workspace is not open right now.
+				 *
+				 * @param effective - the allowlist the Host will use, or null when nothing reported one.
+				 */
+				const directoryChooser = function (effective) {
+					const selected = effective === null ? [] : effective;
+					const restricted = selected.length > 0;
+					const state = fieldState !== null && fieldState.field === "uploadDirectories" ? fieldState : null;
+					// The options: every directory the scan found, plus any already-selected entry that
+					// the scan did not report (its workspace is closed, but the choice still counts).
+					const options = [];
+					const seen = Object.create(null);
+					for (const entry of selected) {
+						const key = normalizeDirectoryPath(entry);
+						if (key !== null) { seen[key] = true; options.push({ path: entry, sessions: null }); }
+					}
+					for (const found of directoryOptions) {
+						const key = normalizeDirectoryPath(found.path);
+						if (key === null || seen[key] === true) continue;
+						seen[key] = true;
+						options.push(found);
+					}
+					options.sort(function (left, right) { return left.path < right.path ? -1 : left.path > right.path ? 1 : 0; });
+
+					const children = [
+						React.createElement("div", { key: "label", className: "slu-fieldLabel" }, t("upload.directoriesLabel")),
+						// Read-only: the allowlist the Host will actually apply.
+						React.createElement("code", { key: "value", className: "slu-value slu-listValue", "data-field": "uploadDirectories" },
+							effective === null ? t("upload.valueUnknown") : restricted ? selected.join(", ") : t("upload.directoriesEmpty")),
+						React.createElement("div", { key: "help", className: "slu-help" }, t("upload.directoriesHelp"))
+					];
+
+					// The opt-in itself. Ticking it switches to "only the selected folders"; clearing it
+					// restores the default (everything), which is one write of an empty list.
+					children.push(React.createElement("div", { key: "choose", className: "slu-toggle" },
+						React.createElement("label", { className: "slu-toggleLabel" },
+							React.createElement("input", {
+								type: "checkbox",
+								"data-toggle": "restrict-directories",
+								checked: restricted,
+								disabled: !live ? true : undefined,
+								onChange: function (event) {
+									const target = event !== null && event !== undefined ? event.target : null;
+									const on = target !== null && target !== undefined && target.checked === true;
+									// Turning it on selects nothing yet, so the list is still "no restriction";
+									// the user then ticks folders. Turning it off clears the list, which is
+									// exactly "upload everything" on the Host side.
+									if (!on) saveField("uploadDirectories", [], null);
+									else setPickerOpen(true);
+								}
+							}),
+							React.createElement("span", null, t("upload.directoriesChoose"))
+						)
+					));
+
+					if (pickerOpen) {
+						children.push(React.createElement("div", { key: "picker", className: "slu-picker" },
+							React.createElement("div", { key: "actions", className: "slu-fieldRow" },
+								React.createElement("button", {
+									key: "scan",
+									type: "button",
+									className: "slu-btn slu-ledgerRefresh",
+									disabled: !live || scanning ? true : undefined,
+									onClick: function () { refreshScan(); }
+								}, t(scanning ? "upload.directoriesScanning" : "upload.directoriesScan")),
+								React.createElement("button", {
+									key: "save",
+									type: "button",
+									className: "slu-btn slu-fieldSave",
+									"data-field": "uploadDirectories",
+									disabled: !live || fieldBusy !== null ? true : undefined,
+									onClick: function () {
+										const chosen = options.filter(function (option) { return picked[normalizeDirectoryPath(option.path)] === true; })
+											.map(function (option) { return option.path; });
+										saveField("uploadDirectories", chosen, null);
+									}
+								}, t("upload.fieldSave"))
+							),
+							options.length === 0
+								? React.createElement("div", { key: "none", className: "slu-note" }, t("upload.directoriesNoSessions"))
+								: React.createElement("div", { key: "list", className: "slu-checks" }, options.map(function (option) {
+									const key = normalizeDirectoryPath(option.path);
+									return React.createElement("label", { key: String(key), className: "slu-check" },
+										React.createElement("input", {
+											type: "checkbox",
+											"data-directory": String(key),
+											checked: picked[key] === true,
+											disabled: !live ? true : undefined,
+											onChange: function (event) {
+												const target = event !== null && event !== undefined ? event.target : null;
+												const on = target !== null && target !== undefined && target.checked === true;
+												setPicked(function (previous) {
+													const next = Object.assign(Object.create(null), previous);
+													if (on) next[key] = true;
+													else delete next[key];
+													return next;
+												});
+											}
+										}),
+										React.createElement("span", { className: "slu-checkPath" }, option.path),
+										option.sessions === null
+											? null
+											: React.createElement("span", { className: "slu-checkCount" }, String(option.sessions))
+									);
+								}))
+						));
+					}
+
+					if (state !== null) {
+						children.push(React.createElement("div", {
+							key: "state",
+							className: state.kind === "failed" || state.kind === "invalid" ? "slu-error slu-fieldState" : "slu-note slu-fieldState",
+							role: state.kind === "failed" ? "alert" : "status"
+						}, t(state.key)));
+					}
+					return React.createElement("div", { key: "uploadDirectories", className: "slu-field" }, children);
+				};
+
+				/**
+				 * Scan for live Session directories and refresh the chooser's options. Also seeds the
+				 * ticked set from the current allowlist, so opening the chooser shows what is already
+				 * selected rather than an empty panel over a restricted Host state.
+				 */
+				const refreshScan = function () {
+					setScanning(true);
+					let attempt;
+					try {
+						attempt = Promise.resolve(bridge.readScan());
+					} catch (_error) {
+						attempt = Promise.resolve([]);
+					}
+					void attempt.then(function (result) {
+						setScanning(false);
+						setDirectoryOptions(Array.isArray(result) ? result : []);
+					}, function () {
+						setScanning(false);
+						setDirectoryOptions([]);
+					});
 				};
 
 				/**
@@ -1798,14 +2009,9 @@ window.__ModuleLoader__.load({
 				}
 
 				// The excluded working directories apply in every mode, so this one is always shown.
-				children.push(listField(
-					"excludedWorkingDirectories",
-					t("upload.directoriesLabel"),
-					t("upload.directoriesHelp"),
-					directories,
-					directoriesDraft,
-					setDirectoriesDraft
-				));
+				// It is a chooser, not a text box: the default ("everything is uploaded") is stated
+				// first, and narrowing it is an explicit act of ticking folders.
+				children.push(directoryChooser(directories));
 
 				// ── upload ledger ──────────────────────────────────────────────────────────────
 				// Which Session logs this plugin has uploaded: Host-side state read over its own

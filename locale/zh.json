@@ -36,9 +36,9 @@
     "patternsLabel": "把这些模型当作 DeepSeek",
     "patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
     "patternsEmpty": "还没有添加。只使用默认的 deepseek 匹配。",
-    "directoriesLabel": "这些目录下的会话永不上传",
-    "directoriesHelp": "每行一个路径。这些目录及其子目录里的会话不会上传。DSH 自带的上传也一并停掉。",
-    "directoriesEmpty": "没有排除任何目录。",
+    "directoriesLabel": "只上传这些目录下的会话",
+    "directoriesHelp": "默认所有工作区的会话都会上传。勾选目录后，只上传这些目录（含子目录）里的会话。",
+    "directoriesEmpty": "全部上传（没有限制）。",
     "unitMiB": "MiB",
     "unitKiB": "KiB",
     "unitBytes": "字节",
@@ -92,6 +92,10 @@
     "manualHint": "这个浏览器无法写入该设置。请把下面的配置加进 cordis.patch.yml，或在会话里运行这条命令。",
     "manualPatchLabel": "cordis.patch.yml",
     "manualCommandLabel": "命令",
-    "renderFailed": "这个设置区块无法渲染。"
+    "renderFailed": "这个设置区块无法渲染。",
+    "directoriesScan": "扫描目录",
+    "directoriesScanning": "正在扫描…",
+    "directoriesNoSessions": "没有可选的会话。",
+    "directoriesChoose": "选择指定目录"
   }
 }

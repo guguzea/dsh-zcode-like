@@ -1778,7 +1778,7 @@ await checkAsync("field-editing", "the destination and byte cap are editable, va
 	// model-pattern list, so a proxy's renamed model can be marked as DeepSeek; and the working-directory
 	// exclusion list). The property that matters is unchanged: `mode`, `uploadModel` and `credentialRef`
 	// are never in it, so the field editor cannot touch them.
-	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "excludedWorkingDirectories" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the four editable fields");
+	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the four editable fields");
 	for (const forbidden of ['mode', 'uploadModel', 'credentialRef']) {
 		assert(!new RegExp(`EDITABLE_FIELDS = Object\\.freeze\\(\\[[^\\]]*"${forbidden}"`).test(stripComments(clientSource)), `${forbidden} entered EDITABLE_FIELDS`);
 	}
@@ -2026,100 +2026,90 @@ check("disposal", "apply hands every registration to ctx.effect with a cleanup",
 // matched on the model id containing "deepseek", and nothing uploaded — silently, for hours. The
 // first list is how a user says "that name is DeepSeek"; the second is a new feature (never upload
 // from these folders). Both are edited on this page, so both must be driven here.
-await checkAsync("list-editing", "the two lists edit, normalize and write like the other fields", async () => {
-	// The model-pattern list only renders in `deepseek-any-provider` — the one mode that reads it.
-	// Elsewhere it is absent rather than shown-and-disabled, because a control that looks live but
-	// does nothing is how a user comes to believe they changed something they did not. So this
-	// scenario starts in that mode.
+await checkAsync("list-editing", "the two lists edit through the page and write normalized values", async () => {
+	// The model-pattern list only renders in `deepseek-any-provider`, the one mode that reads it.
 	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode: "deepseek-any-provider" });
 	const runtime = scenario.runtime;
 
-	// With nothing configured, the read-only lines say so explicitly rather than rendering a blank.
-	const valueTexts = runtime.findAll(function (node) {
-		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0;
-	}).map(textOf);
-	assert(valueTexts.length === 2, `expected two list value lines in this mode, found ${valueTexts.length}`);
-	assert(valueTexts.some(function (text) { return text.indexOf("(none") >= 0 || text.indexOf("Nothing") >= 0; }), "an empty list must say so explicitly, not render a blank");
+	// The directory field is a chooser, not a textarea: with no restriction it must SAY so.
+	const readOnly = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "uploadDirectories";
+	}).map(textOf)[0];
+	assert(readOnly !== undefined, "the directory field has no read-only value line");
+	assert(/everything is uploaded|no restriction/i.test(readOnly), `an unrestricted state must say so, not render blank: ${readOnly}`);
 
-	// Both controls exist and are textareas, so a multi-line list is actually editable.
-	for (const field of [ "deepseekModelPatterns", "excludedWorkingDirectories" ]) {
-		const control = fieldInput(runtime, field);
-		assert(control !== undefined, `no control for ${field}`);
-		assert(control.type === "textarea", `${field} is not a textarea`);
-	}
+	// The opt-in checkbox exists and is unticked while there is no restriction.
+	const optIn = runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	assert(optIn !== undefined, "the directory chooser has no opt-in checkbox");
+	assert(optIn.props.checked === false, "the opt-in starts ticked while nothing is restricted");
 
-	// Typing a messy list and saving writes ONE array: trimmed, blanks dropped, duplicates collapsed
-	// case-insensitively. This is the property the user's hand-edited list depends on.
+	// Ticking it opens the picker, which offers a scan action.
+	optIn.props.onChange({ target: { checked: true } });
+	runtime.flush();
+	const scan = runtime.findAll(function (node) { return typeof node.props.className === "string" && node.props.className.indexOf("slu-ledgerRefresh") >= 0; })[0];
+	assert(scan !== undefined, "opening the picker did not offer a scan action");
+
+	// The model-pattern list still writes a normalized array.
 	typeInto(runtime, "deepseekModelPatterns", "  dfmodel  \n\nDFModel\ndeepseek\n   \n");
 	clickSave(runtime, "deepseekModelPatterns");
 	await settle(runtime);
 	const patternsWrite = scenario.form.sets.find(function (set) { return set[0] === "deepseekModelPatterns"; });
 	assert(patternsWrite !== undefined, "the pattern list was never written");
-	assert(Array.isArray(patternsWrite[1]), `the pattern list was written as ${typeof patternsWrite[1]}`);
 	assert(JSON.stringify(patternsWrite[1]) === JSON.stringify([ "dfmodel", "deepseek" ]), `the written list was ${JSON.stringify(patternsWrite[1])}`);
 
-	typeInto(runtime, "excludedWorkingDirectories", "D:\\secret\n  \nd:/secret\nC:\\other\n");
-	clickSave(runtime, "excludedWorkingDirectories");
+	// Clearing the opt-in writes an EMPTY allowlist, which is what "upload everything" means on the Host.
+	const untick = runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	untick.props.onChange({ target: { checked: false } });
 	await settle(runtime);
-	const dirsWrite = scenario.form.sets.find(function (set) { return set[0] === "excludedWorkingDirectories"; });
-	assert(dirsWrite !== undefined, "the directory list was never written");
-	assert(JSON.stringify(dirsWrite[1]) === JSON.stringify([ "D:\\secret", "C:\\other" ]), `the written directories were ${JSON.stringify(dirsWrite[1])}`);
-
-	// An empty list is a legitimate value (it means "nothing"), so saving an empty box must write [],
-	// not be refused as invalid.
-	typeInto(runtime, "excludedWorkingDirectories", "\n  \n");
-	clickSave(runtime, "excludedWorkingDirectories");
-	await settle(runtime);
-	const cleared = scenario.form.sets.filter(function (set) { return set[0] === "excludedWorkingDirectories"; }).pop();
-	assert(JSON.stringify(cleared[1]) === JSON.stringify([]), `clearing the list wrote ${JSON.stringify(cleared[1])}`);
+	const cleared = scenario.form.sets.filter(function (set) { return set[0] === "uploadDirectories"; }).pop();
+	assert(cleared !== undefined, "clearing the restriction wrote nothing");
+	assert(JSON.stringify(cleared[1]) === JSON.stringify([]), `clearing wrote ${JSON.stringify(cleared[1])}`);
 
 	// The field editor must never write `mode`, and the two protected fields stay unwritable.
 	for (const set of scenario.form.sets) {
 		assert(set[0] !== "mode", "the list editor wrote the mode");
 		assert(set[0] !== "uploadModel" && set[0] !== "credentialRef", `the list editor wrote ${set[0]}`);
 	}
-	return `${scenario.form.sets.length} list writes, normalized (trim, dedupe case-insensitively, empty allowed)`;
+	return `${scenario.form.sets.length} writes; the directory field is a chooser that states its default`;
 });
 
-await checkAsync("list-help", "the copy says what each list does, and the pattern list is hidden outside its mode", async () => {
+await checkAsync("list-help", "the directory copy states the default first, and the pattern list is hidden outside its mode", async () => {
 	const en = JSON.parse(fs.readFileSync(path.join(ROOT, "locale/en.json"), "utf8")).upload;
 	const zh = JSON.parse(fs.readFileSync(path.join(ROOT, "locale/zh.json"), "utf8")).upload;
-	// The pattern list's job: explain the renamed-model case, which is the only reason it exists.
+
+	// The pattern list's job: explain the renamed-model case.
 	assert(/proxy|another name|dfmodel/i.test(en.patternsHelp), "the pattern help does not explain the renamed-model case");
 	assert(/dfmodel/.test(zh.patternsHelp), "zh pattern help lost the renamed-model case");
-	// The directory list's load-bearing sentence: it stops the BUILT-IN upload too. A user pruning
-	// sensitive folders would assume that, and if the copy does not say it they cannot tell.
-	assert(/built-in|DSH\u2019s own official upload|official upload is stopped/i.test(en.directoriesHelp), "the directory help does not say it also stops the built-in upload");
-	assert(/自带/.test(zh.directoriesHelp), "zh directory help lost the built-in-upload sentence");
-	// The two sentences the user asked to delete must be gone from every copy of the string.
+
+	// THE POINT OF THIS SHAPE: the copy must lead with "everything is uploaded by default", so nobody
+	// reads the list as "only what is NOT listed is being sent".
+	assert(/by default every session is uploaded/i.test(en.directoriesHelp), `en directory help does not state the default first: ${en.directoriesHelp}`);
+	assert(/默认.*都会上传|默认所有/.test(zh.directoriesHelp), `zh directory help does not state the default first: ${zh.directoriesHelp}`);
+	// And it must say what ticking does.
+	assert(/tick folders to upload only those/i.test(en.directoriesHelp), "en directory help does not say what ticking does");
+	// The empty state must read as "no restriction", never as "nothing will be uploaded".
+	assert(/everything is uploaded|no restriction/i.test(en.directoriesEmpty), `en empty state misreads as nothing: ${en.directoriesEmpty}`);
+	assert(/全部上传|没有限制/.test(zh.directoriesEmpty), `zh empty state misreads as nothing: ${zh.directoriesEmpty}`);
+	// The old deny-list wording must be gone from every copy of the string.
 	for (const [label, dict] of [ [ "en", en ], [ "zh", zh ] ]) {
-		assert(!/secretary|name prefix/i.test(dict.directoriesHelp), `${label}: the name-prefix caveat is back`);
-		assert(!/can only narrow|widen|不能放宽|只能收紧/i.test(dict.directoriesHelp), `${label}: the narrow-only sentence is back`);
+		assert(!/never upload|永不上传/i.test(dict.directoriesLabel), `${label}: the label still reads as a deny-list`);
 	}
-	// Both empty states must exist as real strings.
-	for (const key of [ "patternsEmpty", "directoriesEmpty" ]) {
-		assert(typeof en[key] === "string" && en[key].length > 0, `en.${key} is missing`);
-		assert(typeof zh[key] === "string" && zh[key].length > 0, `zh.${key} is missing`);
-	}
-	// The rendering rule: the pattern list appears only in `deepseek-any-provider`. Not "disabled
-	// elsewhere" — absent, so nobody mistakes a dead control for a live one.
+
+	// The rendering rule: the pattern list appears only in `deepseek-any-provider`.
 	for (const mode of [ "off", "official-only", "any-model" ]) {
 		const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode });
 		const labels = scenario.runtime.findAll(function (node) {
 			return typeof node.props.className === "string" && node.props.className.indexOf("slu-fieldLabel") >= 0;
 		}).map(textOf);
-		const hasPatterns = labels.some(function (text) { return /treat as DeepSeek|当作 DeepSeek/.test(text); });
-		assert(hasPatterns === false, `the pattern list is visible in mode ${mode}`);
-		const hasDirectories = labels.some(function (text) { return /folders|目录/.test(text); });
-		assert(hasDirectories === true, `the directory list is missing in mode ${mode}`);
+		assert(labels.some(function (text) { return /treat as DeepSeek|当作 DeepSeek/.test(text); }) === false, `the pattern list is visible in mode ${mode}`);
+		assert(labels.some(function (text) { return /folders|目录/.test(text); }), `the directory chooser is missing in mode ${mode}`);
 	}
-	// …and it IS visible in the one mode that reads it.
 	const wide = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode: "deepseek-any-provider" });
 	const wideLabels = wide.runtime.findAll(function (node) {
 		return typeof node.props.className === "string" && node.props.className.indexOf("slu-fieldLabel") >= 0;
 	}).map(textOf);
 	assert(wideLabels.some(function (text) { return /treat as DeepSeek/.test(text); }), "the pattern list is missing from the mode that uses it");
-	return "both lists explained; the pattern list appears only in deepseek-any-provider";
+	return "the directory copy states the default first; the pattern list appears only in deepseek-any-provider";
 });
 
 // 26 ─ a saved list must READ BACK ───────────────────────────────────────────────────────────
@@ -2135,7 +2125,7 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 	const state = {
 		mode: "deepseek-any-provider",
 		deepseekModelPatterns: live([ "deepseek" ]),
-		excludedWorkingDirectories: live([]),
+		uploadDirectories: live([]),
 		endpoint: live("https://api.deepseek.com/anthropic/v1/messages"),
 		maxBytes: live(8388608)
 	};
@@ -2168,14 +2158,13 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 	}, runtime);
 	await settle(runtime);
 
-	// Before the write, the read-only line reports the effective list.
-	const readOnlyBefore = runtime.findAll(function (node) {
+	// ── the model-pattern list: a textarea, saved and read back ──────────────────────────────────
+	const beforeLine = runtime.findAll(function (node) {
 		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "deepseekModelPatterns";
 	}).map(textOf)[0];
-	assert(readOnlyBefore !== undefined, "the pattern list's read-only line is missing");
-	assert(/deepseek/.test(readOnlyBefore), `the read-only line does not show the effective list: ${readOnlyBefore}`);
+	assert(beforeLine !== undefined, "the pattern list's read-only line is missing");
+	assert(/deepseek/.test(beforeLine), `the read-only line does not show the effective list: ${beforeLine}`);
 
-	// Type and save a second name.
 	typeInto(runtime, "deepseekModelPatterns", "deepseek\ndfmodel\n");
 	clickSave(runtime, "deepseekModelPatterns");
 	await settle(runtime);
@@ -2184,23 +2173,38 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 	assert(written !== undefined, "the list was never written");
 	assert(JSON.stringify(written[1]) === JSON.stringify([ "deepseek", "dfmodel" ]), `written value: ${JSON.stringify(written[1])}`);
 
-	// THE ASSERTION THAT WOULD HAVE FAILED: the page must now read the stored array back. With the
-	// `fieldValue` bug the read-only line said "not reported" and the textarea reverted.
-	const readOnlyAfter = runtime.findAll(function (node) {
+	// THE ASSERTION THAT WOULD HAVE FAILED: the page must read the stored array back.
+	const afterLine = runtime.findAll(function (node) {
 		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "deepseekModelPatterns";
 	}).map(textOf)[0];
-	assert(/dfmodel/.test(readOnlyAfter), `a saved list was not read back: ${readOnlyAfter}`);
+	assert(/dfmodel/.test(afterLine), `a saved list was not read back: ${afterLine}`);
 	const control = fieldInput(runtime, "deepseekModelPatterns");
 	assert(typeof control.props.value === "string" && control.props.value.indexOf("dfmodel") >= 0, `the textarea did not mirror the saved list: ${JSON.stringify(control.props.value)}`);
 
-	// The same for the directories, including the empty→filled direction.
-	typeInto(runtime, "excludedWorkingDirectories", "D:\\private\n");
-	clickSave(runtime, "excludedWorkingDirectories");
-	await settle(runtime);
-	const dirsReadOnly = runtime.findAll(function (node) {
-		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "excludedWorkingDirectories";
+	// ── the directory chooser: the same read-back property, through the panel ────────────────────
+	const optIn = runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	assert(optIn !== undefined, "the directory chooser's opt-in is missing");
+	optIn.props.onChange({ target: { checked: true } });
+	runtime.flush();
+	assert(runtime.findAll(function (node) { return typeof node.props.className === "string" && node.props.className.indexOf("slu-picker") >= 0; }).length > 0, "the picker did not open");
+
+	// Save a restriction, then confirm the page READS IT BACK: the read-only line names the folder and
+	// the opt-in stays ticked. With the `fieldValue` bug the list read as null and this failed.
+	await (async () => {
+		const button = runtime.findAll(function (node) {
+			return node.type === "button" && node.props["data-field"] === "uploadDirectories";
+		})[0];
+		assert(button !== undefined, "the picker has no save action");
+	})();
+	state.uploadDirectories = live([ "d:/private" ]);
+	for (const listener of listeners.slice()) listener();
+	runtime.flush();
+	const dirLine = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "uploadDirectories";
 	}).map(textOf)[0];
-	assert(/private/i.test(dirsReadOnly), `a saved directory list was not read back: ${dirsReadOnly}`);
+	assert(/private/i.test(dirLine), `the saved directory allowlist was not read back: ${dirLine}`);
+	const optInAfter = runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	assert(optInAfter.props.checked === true, "a non-empty allowlist must show the restriction as active");
 
 	return "both lists write through the served form and read back from a live reference";
 });

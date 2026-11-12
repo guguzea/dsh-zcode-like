@@ -36,9 +36,9 @@
     "patternsLabel": "Models to treat as DeepSeek",
     "patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
     "patternsEmpty": "Nothing added yet. Only the default deepseek pattern is used.",
-    "directoriesLabel": "Never upload sessions from these folders",
-    "directoriesHelp": "One path per line. Sessions in these folders or their subfolders are not uploaded. DSH’s own official upload is stopped for them too.",
-    "directoriesEmpty": "Nothing excluded.",
+    "directoriesLabel": "Only upload sessions from these folders",
+    "directoriesHelp": "By default every session is uploaded, whichever workspace it came from. Tick folders to upload only those; subfolders are included.",
+    "directoriesEmpty": "Everything is uploaded (no restriction).",
     "unitMiB": "MiB",
     "unitKiB": "KiB",
     "unitBytes": "bytes",
@@ -92,6 +92,10 @@
     "manualHint": "This browser could not write the setting. Add the configuration below to cordis.patch.yml, or run the command in a Session.",
     "manualPatchLabel": "cordis.patch.yml",
     "manualCommandLabel": "Command",
-    "renderFailed": "This settings section could not be rendered."
+    "renderFailed": "This settings section could not be rendered.",
+    "directoriesScan": "Scan folders",
+    "directoriesScanning": "Scanning…",
+    "directoriesNoSessions": "No sessions found to choose from.",
+    "directoriesChoose": "Choose specific folders"
   }
 }

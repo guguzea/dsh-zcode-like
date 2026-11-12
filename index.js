@@ -34,10 +34,10 @@ import {
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
-  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
+  DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
-  isExcludedWorkingDirectory,
+  isUploadAllowedByDirectory,
   resolveConfig,
 } from './host/config.js'
 import { decideUpload, suppressShipped } from './host/eligibility.js'
@@ -151,7 +151,7 @@ try {
         // constraint here would deactivate the row on a bad value and thereby disarm `off`.
         // `deepseekModelPatterns` is volatile so the user can say "this proxy's `dfmodel` is DeepSeek".
         deepseekModelPatterns: z.array(z.string()).default([...DEFAULT_DEEPSEEK_MODEL_PATTERNS]).volatile(),
-        excludedWorkingDirectories: z.array(z.string()).default([...DEFAULT_EXCLUDED_WORKING_DIRECTORIES]).volatile(),
+        uploadDirectories: z.array(z.string()).default([...DEFAULT_UPLOAD_DIRECTORIES]).volatile(),
         endpoint: z.string().default(DEFAULT_ENDPOINT).volatile(),
         uploadModel: z.string().default(DEFAULT_UPLOAD_MODEL),
         credentialRef: z.string().default(DEFAULT_CREDENTIAL_REF),
@@ -380,6 +380,13 @@ export const LEDGER_ARGUMENT = 'uploaded'
  */
 export const LEDGER_ROUTE_PATH = '/api/session-log-upload.ledger'
 
+/**
+ * The scan route: the working directories of the live Sessions, so the settings page can offer a
+ * folder list instead of making a user type paths. Same authenticated Connection Fetch registry as the
+ * ledger, for the same reason (see {@link registerLedgerRoute}).
+ */
+export const SCAN_ROUTE_PATH = '/api/session-log-upload.scan'
+
 /** Most ledger rows the `/session-log-upload uploaded` listing prints before it summarises the rest. */
 export const MAX_LEDGER_LINES = 50
 
@@ -542,32 +549,36 @@ export function apply(ctx, rawConfig) {
   // immediately stops suppressing it — neither needs a row restart. It also closes the fail-open of
   // REPORT.md F5, because it never depended on `llm` in the first place.
   /**
-   * Whether a Session's working directory is covered by `excludedWorkingDirectories`.
+   * Whether one Session is inside the configured upload allowlist.
+   *
+   * The rule lives in `host/config.js` (`isUploadAllowedByDirectory`): an **empty** list means "no
+   * restriction — upload everything", which is why an unconfigured plugin behaves exactly as before.
    *
    * The shipped registry calls the exclusion predicate synchronously with only `{sessionId, purpose}`
    * (`dsh-session-log-deepseek/lib/index.js:145-149`), so the cwd has to be looked up — it is not
-   * handed to us. Total by construction: no session, no header, a non-string cwd, a missing `sessions`
-   * service or a throwing getter are all "not excluded". Excluding on doubt would silently drop
-   * uploads the user never asked to drop, which is the same class of bug as silently widening.
+   * handed to us. Total by construction: a missing `sessions` service or a throwing getter resolve to
+   * "allowed", because refusing on doubt would silently stop uploads the user never asked to stop.
+   * A *live* session with no working directory is a different case: with a non-empty list it is not
+   * covered by any entry, so it is not uploaded (and `isUploadAllowedByDirectory` decides that).
    *
-   * @param sessionId the Session id from the exclusion request, or anything else.
-   * @returns `true` only when the configured list genuinely covers that Session's working directory.
+   * @param sessionId the Session id from the request, or anything else.
+   * @returns `true` when the Session may be uploaded.
    */
-  function isExcludedSession(sessionId) {
+  function isSessionDirectoryAllowed(sessionId) {
     try {
-      const live = currentConfig()
-      const directories = live.excludedWorkingDirectories
-      if (!Array.isArray(directories) || directories.length === 0) return false
-      if (typeof sessionId !== 'string' || sessionId.length === 0) return false
+      const directories = currentConfig().uploadDirectories
+      // No allowlist configured: every Session is allowed, and there is no need to look one up.
+      if (!Array.isArray(directories) || directories.length === 0) return true
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return true
       const sessions = ctx.get('sessions')
-      if (sessions === null || sessions === undefined || typeof sessions.get !== 'function') return false
+      if (sessions === null || sessions === undefined || typeof sessions.get !== 'function') return true
       const session = sessions.get(sessionId)
-      if (session === null || session === undefined) return false
+      if (session === null || session === undefined) return true
       const header = session.header
-      if (header === null || header === undefined || typeof header !== 'object') return false
-      return isExcludedWorkingDirectory(header.cwd, directories)
+      if (header === null || header === undefined || typeof header !== 'object') return true
+      return isUploadAllowedByDirectory(header.cwd, directories)
     } catch {
-      return false
+      return true
     }
   }
 
@@ -580,13 +591,14 @@ export function apply(ctx, rawConfig) {
       }
       // Two independent reasons to suppress the shipped upload:
       //   1. `off`, which stops everything;
-      //   2. a user directory exclusion. This half is **not** redundant with `decideUpload`: in
+      //   2. the user's directory allowlist. This half is **not** redundant with `decideUpload`: in
       //      `deepseek-any-provider`/`any-model` an official-provider request is reported as `shipped`,
-      //      so the shipped uploader owns it. Gating only our own POST would leave a user who excluded
-      //      a directory still uploading from it — precisely the case they were trying to stop.
+      //      so the shipped uploader owns it. Gating only our own POST would leave a user who restricted
+      //      uploads to one directory still uploading from every other — the opposite of what the page
+      //      says the allowlist does.
       return registry.registerExclusion((request) => {
         const sessionId = request !== null && request !== undefined && typeof request === 'object' ? request.sessionId : undefined
-        return suppressShipped(currentMode()) || isExcludedSession(sessionId)
+        return suppressShipped(currentMode()) || !isSessionDirectoryAllowed(sessionId)
       })
     }, 'session-log-upload: suppress the shipped official-API upload'),
   )
@@ -697,7 +709,7 @@ export function apply(ctx, rawConfig) {
         model: trigger.model,
         hasSession: true,
         patterns: live.deepseekModelPatterns,
-        excluded: isExcludedSession(sessionId),
+        directoryAllowed: isSessionDirectoryAllowed(sessionId),
       })
       if (decision !== 'ours') return source
       return trackStream(source, sessionId, trigger)
@@ -797,7 +809,7 @@ export function apply(ctx, rawConfig) {
     // already hold rather than going back through `ctx.sessions`.
     const sessionHeader = session.header
     const sessionCwd = sessionHeader !== null && sessionHeader !== undefined && typeof sessionHeader === 'object' ? sessionHeader.cwd : undefined
-    if (isExcludedWorkingDirectory(sessionCwd, live.excludedWorkingDirectories)) {
+    if (!isUploadAllowedByDirectory(sessionCwd, live.uploadDirectories)) {
       log('debug', `session-log-upload: session "${sessionId}" is in an excluded working directory; not uploading`)
       return
     }
@@ -1077,19 +1089,59 @@ export function apply(ctx, rawConfig) {
   }
 
   /**
-   * Register the read-only ledger route on the connection service.
+   * The working directories of the currently live Sessions, for the settings page's folder chooser.
+   *
+   * This is what lets the page offer "tick the folders you want" instead of asking a user to type
+   * paths by hand. What it reports is deliberately minimal: the **distinct** working directories, with
+   * a session count each. No session ids, no titles, no content — the page needs to name a folder a
+   * user recognises, and nothing more.
+   *
+   * Only live Sessions appear: this is a chooser for where upload happens, not an archive browser. A
+   * Session that has already ended is not listed, and its directory may therefore be missing from the
+   * list until a Session in it runs again — which is why the page also lets a user type a path.
+   *
+   * @returns `{directories: [{path, sessions}], total}`.
+   */
+  function scanPayload() {
+    const counts = new Map()
+    let total = 0
+    try {
+      const sessions = ctx.get('sessions')
+      if (sessions !== null && sessions !== undefined && typeof sessions.list === 'function') {
+        const live = sessions.list()
+        if (Array.isArray(live)) {
+          for (const session of live) {
+            total += 1
+            const header = session !== null && session !== undefined ? session.header : undefined
+            const cwd = header !== null && header !== undefined && typeof header === 'object' ? header.cwd : undefined
+            if (typeof cwd !== 'string' || cwd.length === 0) continue
+            counts.set(cwd, (counts.get(cwd) ?? 0) + 1)
+          }
+        }
+      }
+    } catch (error) {
+      log('warn', `session-log-upload: scanning Session working directories failed: ${messageOf(error)}`)
+    }
+    const directories = [...counts.entries()]
+      .map(([path, sessions]) => ({ path, sessions }))
+      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+    return { directories, total }
+  }
+
+  /**
+   * Register the read-only ledger and scan routes on the connection service.
    *
    * `connection` is deliberately **not** in this row's `inject`: the plugin must stay active where
    * there is no connection service, and the `mode: 'off'` exclusion must never depend on one. When it
-   * is absent the route is simply not registered (no warning: a headless composition is normal), and
+   * is absent the routes are simply not registered (no warning: a headless composition is normal), and
    * the command listing still works.
    *
-   * **The registration is wrapped, and that is load-bearing.** `Fiber.effect` does not catch
+   * **Both registrations are wrapped, and that is load-bearing.** `Fiber.effect` does not catch
    * (`cordis/lib/index.js:463`), so a synchronous throw from `register` — a duplicate path, a rejected
    * request shape, a reload race — would fail the row, and Cordis would tear down the effects already
    * registered, **including the `mode: 'off'` exclusion**, silently resuming the shipped official-API
-   * upload. Optional infrastructure must never be able to disarm the strongest privacy setting: a
-   * ledger the page cannot read is an acceptable degradation, a disposed exclusion is not.
+   * upload. Optional infrastructure must never be able to disarm the strongest privacy setting: a page
+   * that cannot read its data is an acceptable degradation, a disposed exclusion is not.
    */
   function registerLedgerRoute() {
     const connection = ctx.get('connection')
@@ -1100,32 +1152,49 @@ export function apply(ctx, rawConfig) {
       )
       return
     }
-    try {
-      disposers.push(
-        ctx.effect(
-          () =>
-            connection.fetch.register({
-              path: LEDGER_ROUTE_PATH,
-              methods: ['GET'],
-              requestBody: 'buffered',
-              // Authentication is inherited, not implemented here: Connection dispatches this only after
-              // its browser-credential check, so a request without the page cookie is refused with 401
-              // before this handler runs. Registering the ledger on the raw web server instead would
-              // expose Session ids to any local process (docs/state-channel.md §2.3-§2.4).
-              fetch: async () =>
-                new Response(JSON.stringify(await ledgerPayload()), {
-                  status: 200,
-                  headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-                }),
-            }),
-          'session-log-upload: upload ledger route',
-        ),
-      )
-    } catch (error) {
-      log(
-        'warn',
-        `session-log-upload: the upload ledger route ${LEDGER_ROUTE_PATH} could not be registered (${messageOf(error)}); the Settings page will not show the detailed log, but the plugin, the mode and the "off" suppression are unaffected`,
-      )
+    // Each route is registered in its OWN wrapped effect, so one failing cannot take the other down.
+    const routes = [
+      {
+        path: LEDGER_ROUTE_PATH,
+        effect: 'session-log-upload: upload ledger route',
+        payload: () => ledgerPayload(),
+        what: 'the Settings page will not show the detailed log',
+      },
+      {
+        path: SCAN_ROUTE_PATH,
+        effect: 'session-log-upload: session directory scan route',
+        payload: () => scanPayload(),
+        what: 'the Settings page cannot offer a folder list (typing a path still works)',
+      },
+    ]
+    for (const route of routes) {
+      try {
+        disposers.push(
+          ctx.effect(
+            () =>
+              connection.fetch.register({
+                path: route.path,
+                methods: ['GET'],
+                requestBody: 'buffered',
+                // Authentication is inherited, not implemented here: Connection dispatches this only
+                // after its browser-credential check, so a request without the page cookie is refused
+                // with 401 before this handler runs. Registering on the raw web server instead would
+                // expose Session data to any local process (docs/state-channel.md §2.3-§2.4).
+                fetch: async () =>
+                  new Response(JSON.stringify(await route.payload()), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+                  }),
+              }),
+            route.effect,
+          ),
+        )
+      } catch (error) {
+        log(
+          'warn',
+          `session-log-upload: the route ${route.path} could not be registered (${messageOf(error)}); ${route.what}, but the plugin, the mode and the "off" suppression are unaffected`,
+        )
+      }
     }
   }
 

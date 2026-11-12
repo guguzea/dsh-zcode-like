@@ -192,9 +192,9 @@ check('undefined / null / non-object inputs and every unknown-string spelling gi
       'credentialRef',
       'deepseekModelPatterns',
       'endpoint',
-      'excludedWorkingDirectories',
       'maxBytes',
       'mode',
+      'uploadDirectories',
       'uploadModel',
     ])
   }
@@ -315,7 +315,7 @@ check('RETARGETED: exactly the five volatile fields are unwrapped, and only thos
   const ref = (value) => ({ get: () => value })
   assert.equal(resolveConfig({ mode: ref('any-model') }).mode, 'any-model')
   assert.deepEqual(resolveConfig({ deepseekModelPatterns: ref(['dfmodel']) }).deepseekModelPatterns, ['dfmodel'])
-  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ref(['D:/secret']) }).excludedWorkingDirectories, ['d:/secret'])
+  assert.deepEqual(resolveConfig({ uploadDirectories: ref(['D:/secret']) }).uploadDirectories, ['d:/secret'])
   assert.equal(resolveConfig({ endpoint: ref('https://ok.example/v1/messages') }).endpoint, 'https://ok.example/v1/messages')
   assert.equal(resolveConfig({ maxBytes: ref(2048) }).maxBytes, 2048)
   // The two non-volatile fields: a `{get}` object is NOT unwrapped and the default survives.
@@ -1653,7 +1653,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   assert.match(source, /maxBytes: z\.number\(\)\.step\(1\)\.min\(1\)\.default\(DEFAULT_MAX_BYTES\)\.volatile\(\)/)
   // RETARGETED: five fields are volatile now — `mode` (the consent switch), the two editable lists
   // (`deepseekModelPatterns`, so a user can mark a proxy's renamed model as DeepSeek;
-  // `excludedWorkingDirectories`, the directory exclusion), `endpoint` (so the dialog can name a real
+  // `uploadDirectories`, the directory exclusion), `endpoint` (so the dialog can name a real
   // destination) and `maxBytes` (so the page can report the cap). Those are exactly the `readLive`
   // unwraps; `uploadModel` and `credentialRef` must stay non-volatile.
   const volatileCount = [...source.matchAll(/\.volatile\(\)/g)].length
@@ -1668,7 +1668,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   if (declaration.includes('mode: modeField(z)')) volatileFields.push('mode')
   assert.deepEqual(
     volatileFields.sort(),
-    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
     `volatile fields: ${volatileFields.join(', ')}`,
   )
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -1877,8 +1877,11 @@ check('locale files: identical key sets, meta.title/description present, sentenc
 await checkAsync('the ledger route is registered exactly as Connection expects, GET-only', async () => {
   const handle = createHarness({ mode: 'official-only', connection: true })
   const state = handle.state
-  assert.equal(state.routeRegistrations.length, 1, 'the route was not registered exactly once')
-  const registration = state.routeRegistrations[0]
+  // Two routes register now (the ledger and the Session-directory scan), each in its own wrapped
+  // effect. Assert the ledger's own registration rather than a global count.
+  const ledgerRegistrations = state.routeRegistrations.filter((route) => route.path === '/api/session-log-upload.ledger')
+  assert.equal(ledgerRegistrations.length, 1, 'the ledger route was not registered exactly once')
+  const registration = ledgerRegistrations[0]
   assert.equal(registration.path, '/api/session-log-upload.ledger')
   assert.deepEqual(registration.methods, ['GET'], 'the ledger must be read-only')
   assert.equal(typeof registration.fetch, 'function')
@@ -1889,12 +1892,14 @@ await checkAsync('the ledger route is registered exactly as Connection expects, 
   assert.match(exportSource, /SESSION_LOG_EXPORT_PATH/)
   assert.match(exportSource, /methods: \["GET", "HEAD"\]/, 'the shipped export route changed shape')
   handle.cleanup()
-  assert.equal(state.routeDisposed, 1, 'the registration is not disposed with the row')
+  // Both routes are registered through their own `ctx.effect`, so an unload disposes both. The
+  // property is that every registration has a disposer — not that there is exactly one of them.
+  assert.equal(state.routeDisposed, 2, `expected both route registrations to be disposed, saw ${state.routeDisposed}`)
 })
 
 await checkAsync('the ledger answers 200 JSON, no-store, and its handler is total', async () => {
   const handle = createHarness({ mode: 'official-only', connection: true })
-  const handler = handle.state.routeRegistrations[0].fetch
+  const handler = handle.state.routeRegistrations.find((route) => route.path === '/api/session-log-upload.ledger').fetch
   for (const argument of [undefined, null, {}, new Request('http://127.0.0.1/api/session-log-upload.ledger')]) {
     const response = await handler(argument)
     assert.equal(response.status, 200)
@@ -2059,7 +2064,12 @@ await checkAsync('STANDING INVARIANT (behavioural): a throwing optional registra
       `${label}: the degradation was not logged (logs: ${JSON.stringify(state.logs.slice(-3))})`,
     )
     // The failure must not stop the registrations that come after it.
-    if (expectsRoute) assert.equal(state.routeRegistrations.length, 1, `${label}: the later ledger route did not register`)
+    if (expectsRoute) {
+      assert.ok(
+        state.routeRegistrations.some((route) => route.path === '/api/session-log-upload.ledger'),
+        `${label}: the later ledger route did not register`,
+      )
+    }
     if (label !== 'commands.register') assert.ok(state.command !== undefined, `${label}: the later command did not register`)
     handle.cleanup()
     // A normal unload still disposes it — the wrappers must not break the ordinary lifecycle.
@@ -2190,14 +2200,14 @@ check('ATTRIBUTION PROBE: the ledger reports resolvability as booleans, and neve
   assert.match(code, /return \{ userAgent: userAgent === true, userId: userId === true \}/, 'the probe no longer narrows to booleans')
   // `ledgerPayload` and `ledgerText` must both await the probe; a dropped `await` serialises a Promise,
   // which `JSON.stringify` renders as `{}` — the exact transient breakage this suite caught mid-edit.
-  assert.match(code, /JSON\.stringify\(await ledgerPayload\(\)\)/, 'the route no longer awaits the payload')
+  assert.match(code, /JSON\.stringify\(await route\.payload\(\)\)/, 'the route no longer awaits the payload')
   assert.match(code, /const resolvable = await attributionResolvable\(\)/)
   console.log('        probe: imports only, booleans only, memoised; both consumers await it')
 })
 
 await checkAsync('ATTRIBUTION PROBE: off-Electron the answer is honestly "no", and it is stable', async () => {
   const handle = createHarness({ mode: 'official-only', connection: true })
-  const route = handle.state.routeRegistrations[0].fetch
+  const route = handle.state.routeRegistrations.find((route) => route.path === '/api/session-log-upload.ledger').fetch
   const first = await (await route()).json()
   const second = await (await route()).json()
   assert.deepEqual(first.attribution.resolvable, second.attribution.resolvable, 'the probe answer is not stable across reads')
@@ -2245,7 +2255,7 @@ await checkAsync('LEDGER PAYLOAD: metadata only — no conversation content can 
   )
   // A fresh store must read that file, so build a second harness pointed at the same home.
   const reusing = createHarness({ mode: 'official-only', connection: true, sessions: {}, reuseHome: handle.state.home })
-  const handler = reusing.state.routeRegistrations[0].fetch
+  const handler = reusing.state.routeRegistrations.find((route) => route.path === '/api/session-log-upload.ledger').fetch
   const body = await (await handler()).json()
   const serialized = JSON.stringify(body)
   for (const secret of ['SECRET-TITLE', 'SECRET-USER', 'SECRET-PROMPT', 'SECRET-CONTENT', 'SECRET-EVENT']) {
@@ -2385,7 +2395,7 @@ await checkAsync('ATTRIBUTION REPORT: omitted until an accepted upload, then nam
       return { ok: true, status: 200, body: null, async arrayBuffer() {}, async text() { return '' } }
     },
   })
-  const route = handle.state.routeRegistrations[0].fetch
+  const route = handle.state.routeRegistrations.find((route) => route.path === '/api/session-log-upload.ledger').fetch
 
   // Before any upload: no `lastUploadAt`/`headers` at all — only the resolution probe, which is not a
   // claim about an upload — and the command listing says so out loud.
@@ -2433,7 +2443,7 @@ await checkAsync('ATTRIBUTION REPORT: a FAILED upload does not populate it, and 
     sessions: { [sessionId]: fakeSession({ id: sessionId, events: fakeEvents(3) }) },
     fetchImpl: async () => ({ ok: false, status: 500, body: null, async arrayBuffer() {}, async text() { return 'nope' } }),
   })
-  const route = handle.state.routeRegistrations[0].fetch
+  const route = handle.state.routeRegistrations.find((route) => route.path === '/api/session-log-upload.ledger').fetch
   await runStream(handle, { provider: 'pi-ai', model: 'gpt-4', sessionId })
   const body = await (await route()).json()
   // RETARGETED for the always-present probe: the field exists, but a failed upload must not add

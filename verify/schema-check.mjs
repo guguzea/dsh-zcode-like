@@ -25,7 +25,7 @@ import {
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
-  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
+  DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
   MODES,
@@ -101,7 +101,7 @@ const build = new Function(
   'DEFAULT_CREDENTIAL_REF',
   'DEFAULT_DEEPSEEK_MODEL_PATTERNS',
   'DEFAULT_ENDPOINT',
-  'DEFAULT_EXCLUDED_WORKING_DIRECTORIES',
+  'DEFAULT_UPLOAD_DIRECTORIES',
   'DEFAULT_MAX_BYTES',
   'DEFAULT_UPLOAD_MODEL',
   `${region}\nreturn { schema: ${literal.replace('Config = ', '')}, MODE_PATTERN, modeField };`,
@@ -112,7 +112,7 @@ const built = build(
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
-  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
+  DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
 )
@@ -124,9 +124,9 @@ check('the plugin declaration builds a real schemastery object schema', () => {
     'credentialRef',
     'deepseekModelPatterns',
     'endpoint',
-    'excludedWorkingDirectories',
     'maxBytes',
     'mode',
+    'uploadDirectories',
     'uploadModel',
   ])
 })
@@ -148,7 +148,7 @@ check('H2: the pattern escapes regex metacharacters when MODES is hostile', () =
     DEFAULT_CREDENTIAL_REF,
     DEFAULT_DEEPSEEK_MODEL_PATTERNS,
     DEFAULT_ENDPOINT,
-    DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
+    DEFAULT_UPLOAD_DIRECTORIES,
     DEFAULT_MAX_BYTES,
     DEFAULT_UPLOAD_MODEL,
   )
@@ -254,7 +254,7 @@ check('exactly five fields carry the volatile marker: `mode`, the two lists, `en
     .map(([id]) => id)
   assert.equal(volatileIds.length, 5, `expected exactly five volatile nodes, found ${volatileIds.length}`)
   // The five volatile nodes are exactly the ids these keys point at.
-  const VOLATILE_KEYS = ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode']
+  const VOLATILE_KEYS = ['deepseekModelPatterns', 'endpoint', 'uploadDirectories', 'maxBytes', 'mode']
   const volatileKeys = VOLATILE_KEYS.filter((key) => volatileIds.includes(String(root.dict[key])))
   assert.deepEqual(volatileKeys.sort(), [...VOLATILE_KEYS].sort(), `volatile fields: ${volatileKeys.join(', ')}`)
   for (const key of VOLATILE_KEYS) {
@@ -278,7 +278,7 @@ check('exactly five fields carry the volatile marker: `mode`, the two lists, `en
   // The two list fields are volatile but deliberately carry NO shape constraint beyond their type:
   // a `.min()` here would deactivate the row on a bad value and thereby disarm `off` (the fail-open
   // coupling below). They are narrowed in `resolveConfig` instead.
-  for (const key of ['deepseekModelPatterns', 'excludedWorkingDirectories']) {
+  for (const key of ['deepseekModelPatterns', 'uploadDirectories']) {
     assert.equal(json.refs[root.dict[key]]?.meta?.volatile, true, `${key} is not volatile`)
     assert.equal(json.refs[root.dict[key]]?.meta?.pattern, undefined, `${key} unexpectedly carries a pattern`)
   }
@@ -364,7 +364,7 @@ check('RETARGETED: the settings FORM projects exactly the five volatile fields',
   assert.ok(form !== undefined, 'no form is projected at all')
   assert.deepEqual(
     Object.keys(form.dict).sort(),
-    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
     `the form exposed ${Object.keys(form.dict).join(', ')}`,
   )
 })
@@ -375,7 +375,7 @@ check('RETARGETED: the settings FORM projects exactly the five volatile fields',
 // on. `deepseekModelPatterns` moved to the writable side on purpose: it is how a user says that a
 // proxy's renamed model (`dfmodel`) is DeepSeek.
 check('RETARGETED: the write guard admits exactly the five volatile fields, refuses the other two', () => {
-  for (const key of ['mode', 'deepseekModelPatterns', 'excludedWorkingDirectories', 'endpoint', 'maxBytes']) {
+  for (const key of ['mode', 'deepseekModelPatterns', 'uploadDirectories', 'endpoint', 'maxBytes']) {
     assert.equal(projection.isVolatilePath(schema, [key]), true, `${key} is not writable — the page could not save it`)
   }
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -403,7 +403,7 @@ check('RETARGETED: projectForm exposes the five volatile fields and never the wh
   const projected = projection.projectForm(form, value)
   assert.deepEqual(
     Object.keys(projected).sort(),
-    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
   )
   for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(key in projected, false, `${key} leaked into the browser projection`)
