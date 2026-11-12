@@ -1089,43 +1089,134 @@ export function apply(ctx, rawConfig) {
   }
 
   /**
-   * The working directories of the currently live Sessions, for the settings page's folder chooser.
+   * The chooser's data: the real workspaces and Sessions the Harness already knows about.
    *
-   * This is what lets the page offer "tick the folders you want" instead of asking a user to type
-   * paths by hand. What it reports is deliberately minimal: the **distinct** working directories, with
-   * a session count each. No session ids, no titles, no content — the page needs to name a folder a
-   * user recognises, and nothing more.
+   * **This replaces a wrong implementation.** The first version asked `ctx.sessions.list()`, which
+   * returns only Sessions that are *currently live in this process* — on a normal profile that is the
+   * one you are talking in, so the page offered a single folder and no Sessions at all. The sidebar
+   * shows every workspace and every historical Session, and that is the list a user expects to choose
+   * from, so this reads the same two services the sidebar reads:
    *
-   * Only live Sessions appear: this is a chooser for where upload happens, not an archive browser. A
-   * Session that has already ended is not listed, and its directory may therefore be missing from the
-   * list until a Session in it runs again — which is why the page also lets a user type a path.
+   *   - `ctx.workspaceRegistry.list()` — the durable workspace registry: `id`, `path`, `title`,
+   *     and the `sessionIds` belonging to each (the sidebar's workspace tree);
+   *   - `ctx.sessionQuery.readTitleSnapshots(ids)` — the folded, log-backed title of each Session,
+   *     batched in one observation.
    *
-   * @returns `{directories: [{path, sessions}], total}`.
+   * Nothing here invents a scanner. Both are the Harness's own projections, which means the page lists
+   * what DSH lists, and a workspace a user added in the sidebar appears without extra work.
+   *
+   * What it reports is still minimal — workspace path and title, Session id and title — because the
+   * page only needs enough for a person to recognise a row. No message content, no message counts.
+   *
+   * Every service is optional: a composition without `workspaceRegistry` or `sessionQuery` yields
+   * whatever the others provide, and a failure in one yields the rest rather than an error.
+   *
+   * @returns `{workspaces: [{id, path, title, sessions: [{id, title}]}], total}`.
    */
-  function scanPayload() {
-    const counts = new Map()
+  async function scanPayload() {
+    const workspaces = []
+    const claimed = new Set()
     let total = 0
+
+    // Session ids worth titling: every id any workspace claims, plus every Session the query service
+    // knows about that no workspace claims (a Session started in a directory that was never registered).
+    const ids = []
+
     try {
-      const sessions = ctx.get('sessions')
-      if (sessions !== null && sessions !== undefined && typeof sessions.list === 'function') {
-        const live = sessions.list()
-        if (Array.isArray(live)) {
-          for (const session of live) {
-            total += 1
-            const header = session !== null && session !== undefined ? session.header : undefined
-            const cwd = header !== null && header !== undefined && typeof header === 'object' ? header.cwd : undefined
-            if (typeof cwd !== 'string' || cwd.length === 0) continue
-            counts.set(cwd, (counts.get(cwd) ?? 0) + 1)
+      const registry = ctx.get('workspaceRegistry')
+      if (registry !== null && registry !== undefined && typeof registry.list === 'function') {
+        const listed = registry.list()
+        if (Array.isArray(listed)) {
+          for (const workspace of listed) {
+            if (workspace === null || workspace === undefined) continue
+            const path = typeof workspace.path === 'string' ? workspace.path : undefined
+            const title = typeof workspace.title === 'string' ? workspace.title : undefined
+            if (path === undefined && title === undefined) continue
+            const sessionIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []
+            const sessions = []
+            for (const raw of sessionIds) {
+              const id = typeof raw === 'string' ? raw : raw !== null && raw !== undefined ? String(raw) : undefined
+              if (id === undefined || id.length === 0 || claimed.has(id)) continue
+              claimed.add(id)
+              ids.push(id)
+              sessions.push({ id, title: undefined })
+            }
+            total += sessions.length
+            workspaces.push({ id: String(workspace.id ?? ''), path: path ?? '', title: title ?? '', sessions })
           }
         }
       }
     } catch (error) {
-      log('warn', `session-log-upload: scanning Session working directories failed: ${messageOf(error)}`)
+      log('warn', `session-log-upload: reading the workspace registry failed: ${messageOf(error)}`)
     }
-    const directories = [...counts.entries()]
-      .map(([path, sessions]) => ({ path, sessions }))
-      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
-    return { directories, total }
+
+    // Sessions the registry does not own (started in a directory that was never registered) are listed
+    // under their own working directory so they can still be chosen.
+    try {
+      const query = ctx.get('sessionQuery')
+      if (query !== null && query !== undefined && typeof query.listSessions === 'function') {
+        const records = await query.listSessions()
+        if (Array.isArray(records)) {
+          const loose = new Map()
+          for (const record of records) {
+            const header = record !== null && record !== undefined ? record.header : undefined
+            if (header === null || header === undefined) continue
+            const id = typeof header.id === 'string' ? header.id : undefined
+            if (id === undefined || id.length === 0 || claimed.has(id)) continue
+            const cwd = typeof header.cwd === 'string' && header.cwd.length > 0 ? header.cwd : ''
+            claimed.add(id)
+            ids.push(id)
+            if (!loose.has(cwd)) loose.set(cwd, [])
+            loose.get(cwd).push({ id, title: undefined })
+          }
+          for (const [cwd, sessions] of loose) {
+            total += sessions.length
+            workspaces.push({ id: '', path: cwd, title: '', sessions })
+          }
+        }
+      }
+    } catch (error) {
+      log('warn', `session-log-upload: listing Sessions from the query service failed: ${messageOf(error)}`)
+    }
+
+    // One batched title read. A rejection for one id must not lose the others, which is why the
+    // service returns per-id results rather than throwing.
+    if (ids.length > 0) {
+      try {
+        const query = ctx.get('sessionQuery')
+        if (query !== null && query !== undefined && typeof query.readTitleSnapshots === 'function') {
+          const results = await query.readTitleSnapshots(ids)
+          const titles = new Map()
+          if (Array.isArray(results)) {
+            for (const result of results) {
+              if (result === null || result === undefined || result.status !== 'fulfilled') continue
+              const snapshot = result.value !== null && result.value !== undefined ? result.value.title : undefined
+              const title = snapshot !== null && snapshot !== undefined && typeof snapshot.title === 'string' ? snapshot.title : undefined
+              if (title !== undefined && title.length > 0) titles.set(String(result.sessionId), title)
+            }
+          }
+          for (const workspace of workspaces) {
+            for (const session of workspace.sessions) {
+              const found = titles.get(session.id)
+              if (found !== undefined) session.title = found
+            }
+          }
+        }
+      } catch (error) {
+        log('warn', `session-log-upload: reading Session titles failed: ${messageOf(error)}`)
+      }
+    }
+
+    // Stable order: by path, so the page renders the same list every time. A Session that never got a
+    // title keeps an EMPTY STRING rather than `undefined`: the page reads `title` unconditionally, and
+    // an absent field would make it print "undefined" as a Session name.
+    workspaces.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+    for (const workspace of workspaces) {
+      for (const session of workspace.sessions) {
+        if (typeof session.title !== 'string') session.title = ''
+      }
+    }
+    return { workspaces, total }
   }
 
   /**

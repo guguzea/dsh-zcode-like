@@ -1074,6 +1074,8 @@ function fakeHost({
   throwOnCommandsRegister = false,
   throwOnInject = false,
   accountToken,
+  workspaceRegistry,
+  sessionQuery,
 } = {}) {
   const state = { exclusions: [], streamHandlers: [], edits: [], injected: [], command: undefined, logs: [], fetches: [], routes: [], accountBases: [] }
   const ctx = {
@@ -1116,6 +1118,12 @@ function fakeHost({
       }
       if (name === 'sessions') {
         return sessions === undefined ? undefined : { get: (id) => sessions[id] }
+      }
+      if (name === 'workspaceRegistry') {
+        return workspaceRegistry === undefined ? undefined : { list: () => workspaceRegistry }
+      }
+      if (name === 'sessionQuery') {
+        return sessionQuery === undefined ? undefined : sessionQuery
       }
       if (name === 'credentials') {
         return credential === undefined ? undefined : { resolve: async () => ({ value: credential }) }
@@ -2696,6 +2704,131 @@ await check('off still suppresses everything, and the allowlist ORs with it', ()
   } finally {
     offOnly.cleanup()
   }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+section('17. the folder chooser reads the Harness\'s own workspace registry')
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// A REAL BUG this section exists for. The first chooser implementation called `ctx.sessions.list()`,
+// which returns only Sessions live in this process — on a normal profile that is the one being used,
+// so the page offered a single folder and no Sessions. The sidebar shows every workspace and every
+// historical Session; the chooser must list what the user sees. These tests drive the scan route with
+// services shaped like the documented `workspaceRegistry` and `sessionQuery`.
+
+const SCAN_WORKSPACES = [
+  { id: 'ws-1', path: 'F:\\DSH-ZCODE', title: 'DSH-ZCODE', sessionIds: ['session-a', 'session-b'] },
+  { id: 'ws-2', path: 'C:\\ml', title: '机器学习', sessionIds: ['session-c'] },
+  { id: 'ws-3', path: 'D:\\mc', title: 'MC_skill', sessionIds: ['session-d', 'session-e'] },
+]
+const SCAN_TITLES = {
+  'session-a': '可配置会话日志上传插件',
+  'session-c': '实验协助请求',
+  'session-d': 'Agent 版本校验误报问题排查',
+}
+
+/** The real scan route's handler, driven through the plugin's own registration. */
+async function scanOnce(options) {
+  const host = fakeHost({ raw: { mode: 'official-only' }, ...options })
+  try {
+    const route = host.state.routes.find((candidate) => candidate.path === indexNamespace.SCAN_ROUTE_PATH)
+    assert.ok(route !== undefined, 'the scan route was not registered')
+    const response = await route.fetch(new Request(`http://127.0.0.1${route.path}`))
+    return await response.json()
+  } finally {
+    host.cleanup()
+  }
+}
+
+await check('every workspace the sidebar shows is listed, with its Sessions and titles', async () => {
+  const payload = await scanOnce({
+    workspaceRegistry: SCAN_WORKSPACES,
+    sessionQuery: {
+      listSessions: async () => [],
+      readTitleSnapshots: async (ids) =>
+        ids.map((id) => ({
+          sessionId: id,
+          status: 'fulfilled',
+          value: { session: { id }, title: SCAN_TITLES[id] === undefined ? undefined : { title: SCAN_TITLES[id] } },
+        })),
+    },
+  })
+  assert.equal(payload.workspaces.length, 3, `expected 3 workspaces, got ${payload.workspaces.length}`)
+  assert.equal(payload.total, 5, `expected 5 Sessions, got ${payload.total}`)
+  const byPath = new Map(payload.workspaces.map((workspace) => [workspace.path, workspace]))
+  assert.ok(byPath.has('F:\\DSH-ZCODE'), 'a workspace path is missing')
+  assert.equal(byPath.get('F:\\DSH-ZCODE').title, 'DSH-ZCODE', 'a workspace title is missing')
+  assert.equal(byPath.get('C:\\ml').sessions.length, 1, 'a workspace lost its Session')
+  // Titles come from the batched read, and a Session without one keeps an empty string rather than a guess.
+  const titled = payload.workspaces.flatMap((workspace) => workspace.sessions).filter((session) => session.title.length > 0)
+  assert.equal(titled.length, 3, `expected 3 titled Sessions, got ${titled.length}`)
+  assert.equal(titled.find((session) => session.id === 'session-a').title, '可配置会话日志上传插件')
+})
+
+await check('a Session in no workspace still appears, under its own directory', async () => {
+  const payload = await scanOnce({
+    workspaceRegistry: SCAN_WORKSPACES,
+    sessionQuery: {
+      listSessions: async () => [
+        { header: { id: 'session-a', cwd: 'F:\\DSH-ZCODE' } },
+        { header: { id: 'session-loose', cwd: 'E:\\unregistered' } },
+      ],
+      readTitleSnapshots: async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfilled', value: { session: { id }, title: undefined } })),
+    },
+  })
+  const loose = payload.workspaces.find((workspace) => workspace.path === 'E:\\unregistered')
+  assert.ok(loose !== undefined, 'a Session outside every workspace is not chooseable')
+  assert.deepEqual(loose.sessions.map((session) => session.id), ['session-loose'])
+  // …and the Session already owned by a workspace is NOT listed twice.
+  const all = payload.workspaces.flatMap((workspace) => workspace.sessions.map((session) => session.id))
+  assert.equal(all.length, new Set(all).size, 'a Session is listed more than once')
+})
+
+await check('a missing service degrades to what the other provides, and never fails the route', async () => {
+  // No registry at all: only Sessions the query service reports.
+  const withoutRegistry = await scanOnce({
+    sessionQuery: { listSessions: async () => [{ header: { id: 'only', cwd: 'C:\\only' } }], readTitleSnapshots: async () => [] },
+  })
+  assert.equal(withoutRegistry.workspaces.length, 1, 'the query service alone did not produce a workspace')
+  // No query service: only registry entries, with empty titles.
+  const withoutQuery = await scanOnce({ workspaceRegistry: SCAN_WORKSPACES })
+  assert.equal(withoutQuery.workspaces.length, 3, 'the registry alone did not produce the workspaces')
+  assert.ok(withoutQuery.workspaces.every((workspace) => workspace.sessions.every((session) => session.title === '')))
+  // Neither: an empty, well-formed payload — never a throw.
+  const neither = await scanOnce({})
+  assert.deepEqual(neither.workspaces, [])
+  // A throwing title read must not lose the workspace list.
+  const throwingTitles = await scanOnce({
+    workspaceRegistry: SCAN_WORKSPACES,
+    sessionQuery: {
+      listSessions: async () => [],
+      readTitleSnapshots: async () => {
+        throw new Error('boom')
+      },
+    },
+  })
+  assert.equal(throwingTitles.workspaces.length, 3, 'a throwing title read dropped the workspaces')
+})
+
+await check('the scan reports no message content', async () => {
+  const payload = await scanOnce({
+    workspaceRegistry: SCAN_WORKSPACES,
+    sessionQuery: {
+      listSessions: async () => [],
+      readTitleSnapshots: async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfilled', value: { session: { id }, title: { title: 'T' } } })),
+    },
+  })
+  const keys = new Set()
+  const walk = (value) => {
+    if (Array.isArray(value)) for (const item of value) walk(item)
+    else if (value !== null && typeof value === 'object') for (const [key, item] of Object.entries(value)) { keys.add(key); walk(item) }
+  }
+  walk(payload)
+  for (const forbidden of ['content', 'text', 'prompt', 'messages', 'events', 'cwd', 'path'.replace('path', 'body')]) {
+    assert.equal(keys.has(forbidden), false, `the scan payload carries a "${forbidden}" field`)
+  }
+  // The four fields it MAY carry, and nothing surprising.
+  assert.deepEqual([...keys].sort(), ['id', 'path', 'sessions', 'title', 'total', 'workspaces'].sort(), `scan payload keys: ${[...keys].sort().join(', ')}`)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

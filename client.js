@@ -1107,10 +1107,13 @@ window.__ModuleLoader__.load({
 			 * Best-effort and total: an absent route, a refused credential, an unreadable body and a
 			 * transport failure all resolve to an empty list, and the chooser then offers only what is
 			 * already selected. A scan is a convenience; it must never make the section fail, and it
-			 * must never be read as "there are no directories to upload" — the page's copy is what says
+			 * must never be read as "there are no workspaces to upload" — the page's copy is what says
 			 * an empty list means "everything".
 			 *
-			 * @returns `[{path, sessions}]`, possibly empty.
+			 * The shape comes from the Host's own `workspaceRegistry` + `sessionQuery` projections, the
+			 * same two services the sidebar reads, so this lists what DSH lists.
+			 *
+			 * @returns `[{id, path, title, sessions: [{id, title}]}]`, possibly empty.
 			 */
 			async function readDirectoryScan() {
 				const fetcher = pageFetcher();
@@ -1129,17 +1132,26 @@ window.__ModuleLoader__.load({
 					return [];
 				}
 				const root = asObject(body);
-				if (root === null || !Array.isArray(root.directories)) return [];
+				if (root === null || !Array.isArray(root.workspaces)) return [];
 				const out = [];
-				for (const entry of root.directories) {
+				for (const entry of root.workspaces) {
 					const record = asObject(entry);
 					if (record === null) continue;
 					const path = typeof record.path === "string" ? record.path : null;
-					if (path === null || path.length === 0) continue;
-					out.push({
-						path: path,
-						sessions: typeof record.sessions === "number" && Number.isSafeInteger(record.sessions) ? record.sessions : null
-					});
+					const title = typeof record.title === "string" ? record.title : "";
+					const workspaceId = typeof record.id === "string" ? record.id : "";
+					if ((path === null || path.length === 0) && title.length === 0) continue;
+					const sessions = [];
+					if (Array.isArray(record.sessions)) {
+						for (const raw of record.sessions) {
+							const session = asObject(raw);
+							if (session === null) continue;
+							const id = typeof session.id === "string" ? session.id : null;
+							if (id === null || id.length === 0) continue;
+							sessions.push({ id: id, title: typeof session.title === "string" ? session.title : "" });
+						}
+					}
+					out.push({ id: workspaceId, path: path === null ? "" : path, title: title, sessions: sessions });
 				}
 				return out;
 			}
@@ -1643,22 +1655,12 @@ window.__ModuleLoader__.load({
 				const directoryChooser = function (effective) {
 					const selected = effective === null ? [] : effective;
 					const restricted = selected.length > 0;
-					const state = fieldState !== null && fieldState.field === "uploadDirectories" ? fieldState : null;
-					// The options: every directory the scan found, plus any already-selected entry that
-					// the scan did not report (its workspace is closed, but the choice still counts).
-					const options = [];
-					const seen = Object.create(null);
+					const selectedKeys = Object.create(null);
 					for (const entry of selected) {
 						const key = normalizeDirectoryPath(entry);
-						if (key !== null) { seen[key] = true; options.push({ path: entry, sessions: null }); }
+						if (key !== null) selectedKeys[key] = true;
 					}
-					for (const found of directoryOptions) {
-						const key = normalizeDirectoryPath(found.path);
-						if (key === null || seen[key] === true) continue;
-						seen[key] = true;
-						options.push(found);
-					}
-					options.sort(function (left, right) { return left.path < right.path ? -1 : left.path > right.path ? 1 : 0; });
+					const state = fieldState !== null && fieldState.field === "uploadDirectories" ? fieldState : null;
 
 					const children = [
 						React.createElement("div", { key: "label", className: "slu-fieldLabel" }, t("upload.directoriesLabel")),
@@ -1668,8 +1670,8 @@ window.__ModuleLoader__.load({
 						React.createElement("div", { key: "help", className: "slu-help" }, t("upload.directoriesHelp"))
 					];
 
-					// The opt-in itself. Ticking it switches to "only the selected folders"; clearing it
-					// restores the default (everything), which is one write of an empty list.
+					// The opt-in. Turning it on opens the picker (the list is still empty, which still means
+					// "no restriction"); turning it off writes the empty list, which is "upload everything".
 					children.push(React.createElement("div", { key: "choose", className: "slu-toggle" },
 						React.createElement("label", { className: "slu-toggleLabel" },
 							React.createElement("input", {
@@ -1680,11 +1682,8 @@ window.__ModuleLoader__.load({
 								onChange: function (event) {
 									const target = event !== null && event !== undefined ? event.target : null;
 									const on = target !== null && target !== undefined && target.checked === true;
-									// Turning it on selects nothing yet, so the list is still "no restriction";
-									// the user then ticks folders. Turning it off clears the list, which is
-									// exactly "upload everything" on the Host side.
 									if (!on) saveField("uploadDirectories", [], null);
-									else setPickerOpen(true);
+									else { setPickerOpen(true); refreshScan(selected); }
 								}
 							}),
 							React.createElement("span", null, t("upload.directoriesChoose"))
@@ -1692,14 +1691,54 @@ window.__ModuleLoader__.load({
 					));
 
 					if (pickerOpen) {
+						// A workspace row ticks or unticks that whole directory. A Session row ticks the
+						// Session's own directory (a Session is not independent of where it lives), so the
+						// two levels stay consistent: ticking a Session shows its workspace as ticked too.
+						const tickRow = function (key, checked, label, extraClass, dataAttrs) {
+							const attrs = Object.assign({
+								type: "checkbox",
+								checked: checked === true,
+								disabled: !live ? true : undefined,
+								onChange: function (event) {
+									const target = event !== null && event !== undefined ? event.target : null;
+									const on = target !== null && target !== undefined && target.checked === true;
+									setPicked(function (previous) {
+										const next = Object.assign(Object.create(null), previous);
+										if (on) next[key] = true;
+										else delete next[key];
+										return next;
+									});
+								}
+							}, dataAttrs || {});
+							return React.createElement("label", { key: "row-" + String(key), className: "slu-check " + (extraClass || "") },
+								React.createElement("input", attrs),
+								React.createElement("span", { className: "slu-checkPath" }, label)
+							);
+						};
+
+						const rows = [];
+						for (const workspace of directoryOptions) {
+							const workspaceKey = normalizeDirectoryPath(workspace.path);
+							if (workspaceKey !== null) {
+								rows.push(tickRow(workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
+									workspace.title || workspace.path || workspaceKey, "slu-checkWorkspace", { "data-workspace": workspaceKey }));
+							}
+							for (const session of workspace.sessions) {
+								if (workspaceKey === null) continue;
+								const label = session.title && session.title.length > 0 ? session.title : session.id;
+								rows.push(tickRow(workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
+									label, "slu-checkSession", { "data-session": session.id }));
+							}
+						}
+
 						children.push(React.createElement("div", { key: "picker", className: "slu-picker" },
 							React.createElement("div", { key: "actions", className: "slu-fieldRow" },
 								React.createElement("button", {
 									key: "scan",
 									type: "button",
-									className: "slu-btn slu-ledgerRefresh",
+									className: "slu-btn slu-scanBtn",
 									disabled: !live || scanning ? true : undefined,
-									onClick: function () { refreshScan(); }
+									onClick: function () { refreshScan(selected); }
 								}, t(scanning ? "upload.directoriesScanning" : "upload.directoriesScan")),
 								React.createElement("button", {
 									key: "save",
@@ -1708,39 +1747,22 @@ window.__ModuleLoader__.load({
 									"data-field": "uploadDirectories",
 									disabled: !live || fieldBusy !== null ? true : undefined,
 									onClick: function () {
-										const chosen = options.filter(function (option) { return picked[normalizeDirectoryPath(option.path)] === true; })
-											.map(function (option) { return option.path; });
+										const chosen = [];
+										const seen = Object.create(null);
+										for (const key of Object.keys(picked)) {
+											if (picked[key] !== true || seen[key] === true) continue;
+											seen[key] = true;
+											// Write the original spelling where we have one, so the saved value stays readable.
+											const found = directoryOptions.find(function (workspace) { return normalizeDirectoryPath(workspace.path) === key; });
+											chosen.push(found !== undefined && found.path ? found.path : key);
+										}
 										saveField("uploadDirectories", chosen, null);
 									}
 								}, t("upload.fieldSave"))
 							),
-							options.length === 0
-								? React.createElement("div", { key: "none", className: "slu-note" }, t("upload.directoriesNoSessions"))
-								: React.createElement("div", { key: "list", className: "slu-checks" }, options.map(function (option) {
-									const key = normalizeDirectoryPath(option.path);
-									return React.createElement("label", { key: String(key), className: "slu-check" },
-										React.createElement("input", {
-											type: "checkbox",
-											"data-directory": String(key),
-											checked: picked[key] === true,
-											disabled: !live ? true : undefined,
-											onChange: function (event) {
-												const target = event !== null && event !== undefined ? event.target : null;
-												const on = target !== null && target !== undefined && target.checked === true;
-												setPicked(function (previous) {
-													const next = Object.assign(Object.create(null), previous);
-													if (on) next[key] = true;
-													else delete next[key];
-													return next;
-												});
-											}
-										}),
-										React.createElement("span", { className: "slu-checkPath" }, option.path),
-										option.sessions === null
-											? null
-											: React.createElement("span", { className: "slu-checkCount" }, String(option.sessions))
-									);
-								}))
+							rows.length === 0
+								? React.createElement("div", { key: "none", className: "slu-note" }, t(scanning ? "upload.directoriesScanning" : "upload.directoriesNoSessions"))
+								: React.createElement("div", { key: "list", className: "slu-checks" }, rows)
 						));
 					}
 
@@ -1759,7 +1781,16 @@ window.__ModuleLoader__.load({
 				 * ticked set from the current allowlist, so opening the chooser shows what is already
 				 * selected rather than an empty panel over a restricted Host state.
 				 */
-				const refreshScan = function () {
+				/**
+				 * Scan the Host's workspaces and Sessions, then seed the ticked set from the saved
+				 * allowlist. Seeding happens HERE rather than inside the render so the tick state is
+				 * derived from the config once per scan, not recomputed (and possibly reset) on every
+				 * keystroke or re-render.
+				 *
+				 * @param saved - the allowlist currently in force, so a reopened chooser shows the
+				 *   existing restriction rather than an empty panel.
+				 */
+				const refreshScan = function (saved) {
 					setScanning(true);
 					let attempt;
 					try {
@@ -1769,7 +1800,19 @@ window.__ModuleLoader__.load({
 					}
 					void attempt.then(function (result) {
 						setScanning(false);
-						setDirectoryOptions(Array.isArray(result) ? result : []);
+						const workspaces = Array.isArray(result) ? result : [];
+						setDirectoryOptions(workspaces);
+						const keep = Object.create(null);
+						for (const entry of Array.isArray(saved) ? saved : []) {
+							const key = normalizeDirectoryPath(entry);
+							if (key !== null) keep[key] = true;
+						}
+						// Merge rather than replace: a box the user ticked since the last scan stays ticked.
+						setPicked(function (previous) {
+							const next = Object.assign(Object.create(null), previous);
+							for (const key of Object.keys(keep)) next[key] = true;
+							return next;
+						});
 					}, function () {
 						setScanning(false);
 						setDirectoryOptions([]);
