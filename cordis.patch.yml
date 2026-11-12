@@ -1,0 +1,20 @@
+- insert:
+    - id: session-log-upload
+      name: '@local/dsh-session-log-upload'
+      config:
+        # 四选一：不上传 / 只上传官方 API / 上传任何供应商的 deepseek / 上传任何模型
+        # off | official-only | deepseek-any-provider | any-model
+        # 缺省与未知值一律回落到 official-only（= 维持 DSH 现状），绝不自动放宽。
+        mode: official-only
+        # 仅 deepseek-any-provider 使用：按模型 id 子串匹配，不区分大小写
+        deepseekModelPatterns:
+          - deepseek
+        # 我们那次「只为带日志」的请求发往官方 DeepSeek 的 Anthropic 兼容端点
+        endpoint: https://api.deepseek.com/anthropic/v1/messages
+        # 这个占位模型只为让请求体合法（真实模型在会话事件里）。
+        # 必须用官方 /models 列出的名字：deepseek-flash 或 deepseek-v4-pro。
+        # 其他名字（包括旧版常见的那个）不保证被接受，别用。
+        uploadModel: deepseek-flash
+        # 通过 ctx.credentials.resolve(ref) 取到的凭据引用
+        credentialRef: DEEPSEEK_API_KEY
+        maxBytes: 8388608

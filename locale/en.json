@@ -1,0 +1,91 @@
+{
+  "meta": {
+    "title": "Session log upload",
+    "description": "Chooses when Session logs are uploaded to DeepSeek's official API or to a destination you set: never, only the official API, any provider's DeepSeek models, or any model."
+  },
+  "upload": {
+    "sectionTitle": "Session log upload",
+    "sectionDescription": "A Session log is the durable record of one conversation: your messages, model output, tool results, and the file paths involved. This setting decides when DSH sends that record to the destination below.",
+    "modeGroupLabel": "Upload mode",
+    "modeUnknown": "The Host has not reported the current mode.",
+    "destinationLabel": "Destination",
+    "valueUnknown": "Not reported by the Host",
+    "modes": {
+      "off": {
+        "label": "Never upload",
+        "detail": "Nothing is sent, and DSH's built-in official-API upload is switched off too."
+      },
+      "officialOnly": {
+        "label": "Only the official DeepSeek API",
+        "detail": "DSH's built-in behaviour. The log rides along with requests that were already going to DeepSeek."
+      },
+      "deepseekAnyProvider": {
+        "label": "Any provider's DeepSeek models",
+        "detail": "Also uploads when a DeepSeek model is served by a different provider."
+      },
+      "anyModel": {
+        "label": "Any model",
+        "detail": "Uploads after every model request, whichever provider answered it."
+      }
+    },
+    "warnTitle": "Send this Session log to the destination below?",
+    "warnBody": "The log — your messages, tool output, and file paths, including conversations you held with other model providers — will be sent to the destination named below. It leaves this machine, it may be used to improve and train models, and it cannot be undone.",
+    "warnConfirm": "Enable upload",
+    "warnCancel": "Cancel",
+    "byteCapLabel": "Byte cap per request",
+    "unitMiB": "MiB",
+    "unitKiB": "KiB",
+    "unitBytes": "bytes",
+    "endpointUnknown": "Not reported by the Host",
+    "endpointEditLabel": "Change destination",
+    "capEditLabel": "Change byte cap (bytes)",
+    "fieldSave": "Save",
+    "fieldSaved": "Saved.",
+    "endpointInvalid": "Not saved: the destination must be an http:// or https:// address.",
+    "capInvalid": "Not saved: the byte cap must be a whole number of bytes, 1 or more.",
+    "ledger": {
+      "title": "Uploaded Sessions",
+      "description": "An index of the Session logs this plugin has uploaded: session id, how far each was uploaded, when, and the format version. It does not contain the log content itself.",
+      "refresh": "Refresh",
+      "titlesLabel": "Show session names",
+      "titlesDetail": "A session name comes from the conversation itself, so turning this on shows a slice of its content on this page. Off by default; the detailed log is otherwise metadata only.",
+      "loading": "Reading the detailed log…",
+      "total": "Sessions recorded:",
+      "columnSession": "Session",
+      "columnRange": "Uploaded through",
+      "columnTime": "Time",
+      "columnVersion": "Format version",
+      "columnsHint": "“Uploaded through” is the sequence number of the last session event this plugin has sent for that session; session events are numbered as the conversation grows. “Format version” identifies the session-log format generation, so a format change makes the plugin resend rather than mix incompatible records.",
+      "directoryLabel": "Detailed log folder",
+      "skipped": "Records without a session id were skipped:",
+      "empty": "Nothing recorded yet. This detailed log covers uploads made by this plugin only: in “Never upload” or “Only the official DeepSeek API” mode it stays empty by design, and uploads made by DSH's built-in official-API uploader are never listed here.",
+      "stateMissing": "The Host does not serve the detailed log at this address, so there is nothing to show.",
+      "stateUnauthorized": "The request was refused: this page is not authorized to read the detailed log.",
+      "stateMalformed": "The Host answered, but the detailed log could not be read.",
+      "stateFailed": "The detailed log could not be read.",
+      "failureTitle": "Last upload failure",
+      "failureUnreported": "The Host did not report the last upload failure, so this page cannot say whether an upload is failing.",
+      "failureNone": "No upload failure has been recorded.",
+      "failureRetryable": "This failure is retried automatically, but nothing has been delivered yet.",
+      "failureNotRetryable": "This failure is not retried automatically.",
+      "failurePersistent": "This is not a one-off: the same problem has repeated.",
+      "failureCount": "Consecutive failures:",
+      "failureUnresolved": "This will not clear on its own: until the byte cap changes, every upload stays too large.",
+      "failureDetail": "Host detail",
+      "failureStatus": "HTTP status",
+      "failureKindNoCredential": "No usable API credential was found for the upload.",
+      "failureKindEndpointRefused": "The destination is not a usable http:// or https:// address, so nothing was sent.",
+      "failureKindHttpError": "The destination answered with an error.",
+      "failureKindTransportError": "The request could not reach the destination (network or DNS).",
+      "failureKindPayloadTooLarge": "The log is larger than the byte cap, so it was not sent.",
+      "failureKindUnknown": "The Host reported a failure it could not classify."
+    },
+    "saveFailed": "The setting could not be saved.",
+    "savingLabel": "Saving…",
+    "manualTitle": "Set the mode by hand",
+    "manualHint": "This browser could not write the setting. Add the configuration below to cordis.patch.yml, or run the command in a Session.",
+    "manualPatchLabel": "cordis.patch.yml",
+    "manualCommandLabel": "Command",
+    "renderFailed": "This settings section could not be rendered."
+  }
+}

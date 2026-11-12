@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Test scratch: these are created and removed by the suites; never commit them.
+verify/.host-unit-must-not-exist/
+verify/.host-unit-watermark-absent/
+verify/.host-unit-ledger*/
+verify/.tmp-*/
+verify/.tmp-modules/
+
+# Local editor / OS noise
+.DS_Store
+Thumbs.db
+*.log

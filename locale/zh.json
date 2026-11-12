@@ -1,0 +1,91 @@
+{
+  "meta": {
+    "title": "会话日志上传",
+    "description": "选择 DSH 何时把会话日志上传到 DeepSeek 官方 API 或你自设的目标：不上传、只上传官方 API、上传任何供应商的 DeepSeek 模型，或上传任何模型。"
+  },
+  "upload": {
+    "sectionTitle": "会话日志上传",
+    "sectionDescription": "会话日志是一次对话的完整记录：你的消息、模型输出、工具结果，以及涉及的文件路径。这里决定 DSH 何时把这份记录发到下面填写的目标。",
+    "modeGroupLabel": "上传方式",
+    "modeUnknown": "宿主还没有报告当前的上传方式。",
+    "destinationLabel": "上传目标",
+    "valueUnknown": "宿主未提供",
+    "modes": {
+      "off": {
+        "label": "不上传",
+        "detail": "什么都不发送，DSH 自带的「官方 API 上传」也会一并关掉。"
+      },
+      "officialOnly": {
+        "label": "只上传官方 API",
+        "detail": "DSH 原本的行为。日志搭在本来就要发给 DeepSeek 的请求上一并送出。"
+      },
+      "deepseekAnyProvider": {
+        "label": "上传任何供应商的 deepseek",
+        "detail": "当 DeepSeek 模型由别的供应商提供时也上传。"
+      },
+      "anyModel": {
+        "label": "上传任何模型",
+        "detail": "每一次模型请求之后都上传，不管这次是哪个供应商回答的。"
+      }
+    },
+    "warnTitle": "要把这次会话日志发送到下面的目标吗？",
+    "warnBody": "会话日志——你的消息、工具输出和文件路径，包括你与其他模型供应商的对话——会发送到下面写明的目标。它会离开这台机器，可能被用于改进和训练模型，且无法撤回。",
+    "warnConfirm": "开启上传",
+    "warnCancel": "取消",
+    "byteCapLabel": "每次请求的字节上限",
+    "unitMiB": "MiB",
+    "unitKiB": "KiB",
+    "unitBytes": "字节",
+    "endpointUnknown": "宿主未提供",
+    "endpointEditLabel": "修改上传目标",
+    "capEditLabel": "修改字节上限（字节）",
+    "fieldSave": "保存",
+    "fieldSaved": "已保存。",
+    "endpointInvalid": "未保存：上传目标必须是 http:// 或 https:// 地址。",
+    "capInvalid": "未保存：字节上限必须是不小于 1 的整数（字节）。",
+    "ledger": {
+      "title": "已上传的会话",
+      "description": "本插件已上传的会话日志的索引：会话 id、每个会话上传到哪、时间、格式版本。它不含日志内容本身。",
+      "refresh": "刷新",
+      "titlesLabel": "显示会话名",
+      "titlesDetail": "会话名来自对话内容本身，打开后这一页会显示内容片段。默认关闭；关闭时详细日志只有元数据。",
+      "loading": "正在读取详细日志…",
+      "total": "已记录的会话数：",
+      "columnSession": "会话",
+      "columnRange": "已上传至",
+      "columnTime": "时间",
+      "columnVersion": "格式版本",
+      "columnsHint": "「已上传至」是本插件为该会话已发送的最后一个会话事件的序号；会话事件随对话增长而编号。「格式版本」标识会话日志的格式代次，格式变化时本插件会重新上传，而不是把不兼容的记录混在一起。",
+      "directoryLabel": "详细日志所在目录",
+      "skipped": "因缺少会话 id 而跳过的记录数：",
+      "empty": "还没有记录。这份详细日志只统计本插件的上传：在「不上传」或「只上传官方 API」模式下它本来就是空的，而 DSH 自带的「官方 API 上传」不会出现在这里。",
+      "stateMissing": "宿主没有在这个地址提供详细日志，暂时没有内容可以显示。",
+      "stateUnauthorized": "请求被拒绝：当前页面无权读取详细日志。",
+      "stateMalformed": "宿主已响应，但这份详细日志无法解析。",
+      "stateFailed": "无法读取详细日志。",
+      "failureTitle": "最近一次上传失败",
+      "failureUnreported": "宿主没有报告最近一次上传失败，因此这一页无法说明上传是否正在失败。",
+      "failureNone": "没有记录到上传失败。",
+      "failureRetryable": "这次失败会自动重试，但目前还没有任何内容送达。",
+      "failureNotRetryable": "这次失败不会自动重试。",
+      "failurePersistent": "这不是偶发问题：同一个问题在反复出现。",
+      "failureCount": "连续失败次数：",
+      "failureUnresolved": "这个问题不会自行消失：在字节上限改变之前，每次上传都会因为过大而失败。",
+      "failureDetail": "宿主说明",
+      "failureStatus": "HTTP 状态码",
+      "failureKindNoCredential": "找不到可用于上传的 API 凭据。",
+      "failureKindEndpointRefused": "上传目标不是可用的 http:// 或 https:// 地址，因此没有发送。",
+      "failureKindHttpError": "上传目标返回了错误。",
+      "failureKindTransportError": "请求无法到达上传目标（网络或 DNS）。",
+      "failureKindPayloadTooLarge": "日志超过字节上限，因此没有发送。",
+      "failureKindUnknown": "宿主报告了一次无法归类的失败。"
+    },
+    "saveFailed": "设置没能保存。",
+    "savingLabel": "正在保存…",
+    "manualTitle": "手动设置",
+    "manualHint": "这个浏览器无法写入该设置。请把下面的配置加进 cordis.patch.yml，或在会话里运行这条命令。",
+    "manualPatchLabel": "cordis.patch.yml",
+    "manualCommandLabel": "命令",
+    "renderFailed": "这个设置区块无法渲染。"
+  }
+}
