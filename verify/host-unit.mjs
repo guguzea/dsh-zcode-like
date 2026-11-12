@@ -36,12 +36,15 @@ import {
   CREDENTIAL_REF_PATTERN,
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_ENDPOINT,
+  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_MODE,
   DEFAULT_UPLOAD_MODEL,
   MODES,
   isCredentialRef,
+  isExcludedWorkingDirectory,
   isMode,
+  normalizeDirectoryPath,
   resolveConfig,
 } from '../host/config.js'
 import { OFFICIAL_PROVIDER_ROUTES, decideUpload, matchesDeepseekModel, suppressShipped } from '../host/eligibility.js'
@@ -86,6 +89,7 @@ const TIME = 1700000000000
 const DEFAULT_CONFIG = {
   mode: DEFAULT_MODE,
   deepseekModelPatterns: ['deepseek'],
+  excludedWorkingDirectories: [],
   endpoint: DEFAULT_ENDPOINT,
   uploadModel: DEFAULT_UPLOAD_MODEL,
   credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -134,13 +138,16 @@ await check('absent/non-object input resolves to the full default set', () => {
     assert.deepEqual(resolveConfig(raw), DEFAULT_CONFIG)
   }
 })
-await check('the resolved object carries exactly the six frozen keys', () => {
+await check('the resolved object carries exactly the seven frozen keys', () => {
   assert.deepEqual(Object.keys(resolveConfig({ mode: 'off', extra: 1 })).sort(), Object.keys(DEFAULT_CONFIG).sort())
 })
 await check('a valid config round-trips unchanged', () => {
   const raw = {
     mode: 'any-model',
     deepseekModelPatterns: ['DeepSeek', 'v4'],
+    // Normalized on the way in (case, separator, trailing slash), so the round trip states the
+    // normalized form: that is the value the host actually compares against.
+    excludedWorkingDirectories: ['d:/secret/work'],
     endpoint: 'https://example.test/v1/messages',
     uploadModel: 'deepseek-reasoner',
     credentialRef: 'OTHER_KEY',
@@ -236,22 +243,31 @@ await check('every volatile live reference is unwrapped at call time; plain keys
     return { ref, commit: (value) => ref[write](value) }
   }
 
-  // All three volatile fields resolve to what their references hold at this instant.
+  // All five volatile fields resolve to what their references hold at this instant. The two lists are
+  // volatile too now: the user edits them from the page (to mark a proxy's model as DeepSeek, and to
+  // exclude a working directory), and an edit must take effect on the next decision, not the next mount.
   const mode = live('any-model')
+  const patterns = live(['dfmodel'])
+  const directories = live(['D:\\secret'])
   const endpoint = live('http://first.test/v1/messages')
   const maxBytes = live(1024)
-  const raw = { mode: mode.ref, endpoint: endpoint.ref, maxBytes: maxBytes.ref }
+  const raw = { mode: mode.ref, deepseekModelPatterns: patterns.ref, excludedWorkingDirectories: directories.ref, endpoint: endpoint.ref, maxBytes: maxBytes.ref }
   assert.equal(resolveConfig(raw).mode, 'any-model')
+  assert.deepEqual(resolveConfig(raw).deepseekModelPatterns, ['dfmodel'])
+  assert.deepEqual(resolveConfig(raw).excludedWorkingDirectories, ['d:/secret'])
   assert.equal(resolveConfig(raw).endpoint, 'http://first.test/v1/messages')
   assert.equal(resolveConfig(raw).maxBytes, 1024)
 
   // A settings write commits into the same references and is visible on the very next resolve.
   mode.commit('off')
+  patterns.commit(['deepseek', 'dfmodel'])
+  directories.commit(['D:\\secret', 'C:\\Users\\someone\\private'])
   endpoint.commit('https://second.test/v1/messages')
   maxBytes.commit(4096)
   assert.deepEqual(resolveConfig(raw), {
     mode: 'off',
-    deepseekModelPatterns: ['deepseek'],
+    deepseekModelPatterns: ['deepseek', 'dfmodel'],
+    excludedWorkingDirectories: ['d:/secret', 'c:/users/someone/private'],
     endpoint: 'https://second.test/v1/messages',
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -290,7 +306,9 @@ await check('every volatile live reference is unwrapped at call time; plain keys
   }
 
   // The non-volatile keys stay plain: an object with a `get()` there is NOT unwrapped.
-  assert.deepEqual(resolveConfig({ deepseekModelPatterns: { get: () => ['x'] } }).deepseekModelPatterns, ['deepseek'])
+  // Moved into the volatile set with the manual "this proxy's model is DeepSeek" feature: a live
+  // reference is now unwrapped like the others, so an edit applies to the next decision.
+  assert.deepEqual(resolveConfig({ deepseekModelPatterns: { get: () => ['x'] } }).deepseekModelPatterns, ['x'])
   assert.equal(resolveConfig({ uploadModel: { get: () => 'x' } }).uploadModel, DEFAULT_UPLOAD_MODEL)
   assert.equal(resolveConfig({ credentialRef: { get: () => 'OTHER_KEY' } }).credentialRef, DEFAULT_CREDENTIAL_REF)
 })
@@ -365,13 +383,14 @@ await check('malformed inputs are tolerated and never throw', () => {
   assert.equal(decideUpload({ mode: 'official-only', provider: 'deepseek-official', hasSession: true }), 'shipped')
 })
 await check('decideUpload is total against a throwing getter on every field', () => {
-  for (const field of ['mode', 'provider', 'model', 'hasSession', 'patterns']) {
+  for (const field of ['mode', 'provider', 'model', 'hasSession', 'patterns', 'excluded']) {
     const hostile = {
       mode: 'any-model',
       provider: 'pi-ai',
       model: 'deepseek-chat',
       hasSession: true,
       patterns: PATTERNS,
+      excluded: false,
       get [field]() {
         throw new Error(`boom: ${field}`)
       },
@@ -522,17 +541,24 @@ await check('the mode field is constrained, defensive, and volatile (H2, task-8)
   assert.match(source, /\} catch \{\n    field = z\.string\(\)\n  \}/, 'the defensive fallback is gone')
   assert.match(source, /return field\.default\('official-only'\)\.volatile\(\)/, 'the volatile marker moved')
   assert.match(source, /mode: modeField\(z\)/)
-  // Exactly the three user-visible fields are volatile �?the page can see nothing else �?and the
-  // other three stay non-volatile, so the settings RPC cannot write them.
+  // Exactly the five user-visible fields are volatile — the page can see nothing else — and
+  // `uploadModel`/`credentialRef` stay non-volatile, so the settings RPC cannot write them.
   const start = source.indexOf('Config = z.object({')
   const literal = source.slice(start, source.indexOf('\n      })', start))
   const volatileKeys = literal
     .split('\n')
     .filter((line) => line.includes('.volatile()'))
     .map((line) => line.trim().slice(0, line.trim().indexOf(':')))
-  assert.deepEqual(volatileKeys, ['endpoint', 'maxBytes'], 'the declared volatile set changed')
-  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 3, 'mode + endpoint + maxBytes is exactly three')
-  for (const key of ['deepseekModelPatterns', 'uploadModel', 'credentialRef']) {
+  assert.deepEqual(
+    volatileKeys,
+    ['deepseekModelPatterns', 'excludedWorkingDirectories', 'endpoint', 'maxBytes'],
+    'the declared volatile set changed',
+  )
+  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 5, 'mode + the two lists + endpoint + maxBytes is exactly five')
+  // The two the settings page must NOT be able to write: they decide which credential is used and
+  // which model this plugin spends money on. (`deepseekModelPatterns` moved into the volatile set when
+  // the user gained the ability to mark a proxy's model name as DeepSeek.)
+  for (const key of ['uploadModel', 'credentialRef']) {
     assert.doesNotMatch(literal, new RegExp(`^\\s*${key}:.*volatile`, 'm'), `${key} must stay non-volatile`)
   }
 })
@@ -2481,6 +2507,181 @@ await check('the Config schema takes its defaults from the same constants the re
   assert.equal(described.maxBytes, DEFAULT_MAX_BYTES)
   assert.deepEqual(described.deepseekModelPatterns, DEFAULT_DEEPSEEK_MODEL_PATTERNS)
   assert.equal(described.mode, DEFAULT_MODE)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+section('16. proxy-renamed models and excluded working directories')
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// This section exists because of a real user report: a reverse proxy served DeepSeek as `dfmodel`,
+// `deepseek-any-provider` matched on the model id containing "deepseek", and nothing uploaded — for
+// hours, silently, with no failure record (correctly: nothing was failing, the decision was `none`).
+// The design assumption "the model name says which model it is" is exactly wrong for a proxy, which
+// is the situation this mode exists for. Hence an editable list the user controls.
+
+await check('a proxy-renamed model uploads once the user adds it to the pattern list', () => {
+  const base = { mode: 'deepseek-any-provider', provider: 'qodercn', hasSession: true }
+
+  // The reported case, before and after the user's list edit.
+  assert.equal(decideUpload({ ...base, model: 'dfmodel', patterns: ['deepseek'] }), 'none', 'the bug: dfmodel was not recognised')
+  assert.equal(decideUpload({ ...base, model: 'dfmodel', patterns: ['deepseek', 'dfmodel'] }), 'ours', 'adding dfmodel must make it upload')
+  // Matching stays case-insensitive and substring-based, as before.
+  assert.equal(decideUpload({ ...base, model: 'DFModel-v2', patterns: ['dfmodel'] }), 'ours')
+  // It is still only about the model id: the provider name never decides this on its own.
+  assert.equal(decideUpload({ ...base, provider: 'dfmodel', model: 'gpt-4o', patterns: ['dfmodel'] }), 'none')
+  // Adding a pattern must never make an official-provider request ours: the shipped uploader owns it.
+  assert.equal(decideUpload({ mode: 'deepseek-any-provider', provider: 'deepseek-account', model: 'dfmodel', hasSession: true, patterns: ['dfmodel'] }), 'shipped')
+})
+
+await check('the directory normaliser treats the same directory spelled differently as one', () => {
+  const same = ['D:\\work\\A', 'd:/work/a', 'D:/work/a/', 'd:\\WORK\\a']
+  const first = normalizeDirectoryPath(same[0])
+  for (const spelling of same) {
+    assert.equal(normalizeDirectoryPath(spelling), first, `${spelling} did not normalise to ${first}`)
+  }
+  // Repeated separators collapse; blank and non-strings are unusable.
+  assert.equal(normalizeDirectoryPath('D://work//a'), 'd:/work/a')
+  for (const bad of ['', '   ', undefined, null, 42, {}, []]) {
+    assert.equal(normalizeDirectoryPath(bad), undefined, `${String(bad)} normalised to something usable`)
+  }
+})
+
+await check('a directory is excluded when it equals an entry or is under it, never on a name prefix', () => {
+  const list = ['D:\\work\\secret']
+  for (const inside of ['D:/work/secret', 'D:/WORK/SECRET', 'D:\\work\\secret\\sub', 'd:/work/secret/sub/deeper']) {
+    assert.equal(isExcludedWorkingDirectory(inside, list), true, `${inside} should be excluded`)
+  }
+  // The separator is part of the comparison: `secretary` shares only a name prefix.
+  for (const outside of ['D:/work/secretary', 'D:/work/secret2', 'D:/work/secretX/file', 'D:/work/other']) {
+    assert.equal(isExcludedWorkingDirectory(outside, list), false, `${outside} must NOT be excluded`)
+  }
+  // Unusable inputs exclude nothing, and never throw.
+  for (const bad of [undefined, null, '', 42, {}, []]) {
+    assert.equal(isExcludedWorkingDirectory(bad, list), false)
+  }
+  for (const badList of [undefined, null, 'D:/work/secret', 42, {}]) {
+    assert.equal(isExcludedWorkingDirectory('D:/work/secret/x', badList), false, `a non-array list must exclude nothing`)
+  }
+  // Blank entries are skipped; duplicates collapse.
+  assert.equal(isExcludedWorkingDirectory('D:/a/b', ['', '  ', null, 'D:/a']), true)
+  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ['D:\\a', 'd:/a/', '  '] }).excludedWorkingDirectories, ['d:/a'])
+  // A bare drive root is usable and does not swallow the whole filesystem by accident.
+  assert.equal(isExcludedWorkingDirectory('D:/x', ['D:']), true)
+  assert.equal(isExcludedWorkingDirectory('E:/x', ['D:']), false)
+})
+
+await check('an excluded directory stops OUR upload in every mode, including any-model', () => {
+  for (const mode of ['off', 'official-only', 'deepseek-any-provider', 'any-model']) {
+    assert.equal(
+      decideUpload({ mode, provider: 'pi-ai', model: 'deepseek-chat', hasSession: true, patterns: ['deepseek'], excluded: true }),
+      'none',
+      `mode ${mode} uploaded from an excluded directory`,
+    )
+  }
+  // Only the literal `true` excludes: the flag is not a truthiness test, so a stray value cannot
+  // silently stop uploads the user never asked to stop.
+  for (const value of [1, 'yes', {}, [], null, undefined]) {
+    assert.equal(
+      decideUpload({ mode: 'any-model', provider: 'pi-ai', model: 'x', hasSession: true, excluded: value }),
+      'ours',
+      `a non-boolean excluded=${String(value)} suppressed the upload`,
+    )
+  }
+})
+
+await check('the resolved config carries both lists, normalized and defaulted', () => {
+  const empty = resolveConfig({})
+  assert.deepEqual(empty.excludedWorkingDirectories, [], 'the default must exclude nothing')
+  assert.deepEqual(empty.deepseekModelPatterns, ['deepseek'])
+  // A live reference is unwrapped for both lists.
+  const ref = (value) => ({ get: () => value })
+  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ref(['C:\\x']) }).excludedWorkingDirectories, ['c:/x'])
+  assert.deepEqual(resolveConfig({ deepseekModelPatterns: ref(['dfmodel']) }).deepseekModelPatterns, ['dfmodel'])
+  // A malformed list narrows, and must not take the row down: the mode still resolves.
+  // (A bare string is NOT malformed for the pattern list — a scalar written where a sequence was
+  // meant is taken as a one-element list — so only genuinely unusable shapes are exercised here.)
+  for (const bad of [42, {}, null, undefined]) {
+    const resolved = resolveConfig({ deepseekModelPatterns: bad, excludedWorkingDirectories: bad, mode: 'off' })
+    assert.deepEqual(resolved.deepseekModelPatterns, ['deepseek'])
+    assert.deepEqual(resolved.excludedWorkingDirectories, [])
+    assert.equal(resolved.mode, 'off', 'a malformed list must not change the resolved mode')
+  }
+  // The documented scalar tolerance, stated so a future change to it is deliberate.
+  assert.deepEqual(resolveConfig({ deepseekModelPatterns: 'dfmodel' }).deepseekModelPatterns, ['dfmodel'])
+  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: 'D:\\only' }).excludedWorkingDirectories, ['d:/only'])
+})
+
+// The single most important assertion in this section, and the easiest one to get wrong: in
+// `deepseek-any-provider` with an official provider, `decideUpload` reports `shipped` — the SHIPPED
+// uploader owns that request, not us. So a directory exclusion that only gated our own POST would
+// leave the user's excluded directory uploading anyway, while the settings page said it was excluded.
+// Drive the predicate the plugin actually registered (not a re-implementation) and prove both halves.
+await check('an excluded directory also suppresses the SHIPPED upload, via the predicate the plugin registered', async () => {
+  const EXCLUDED = 'D:\\work\\secret'
+  const sessions = {
+    'session-secret': { header: { version: 4, cwd: EXCLUDED } },
+    'session-open': { header: { version: 4, cwd: 'D:\\work\\public' } },
+    // Hostile shapes must not throw and must not exclude.
+    'session-nocwd': { header: { version: 4 } },
+    'session-noheader': {},
+    'session-throwing': {
+      get header() {
+        throw new Error('boom')
+      },
+    },
+  }
+  const directories = volatileRef([EXCLUDED])
+  const host = fakeHost({ raw: { mode: 'deepseek-any-provider', excludedWorkingDirectories: directories.ref }, sessions, llm: true })
+  try {
+    assert.equal(host.state.exclusions.length, 1, 'exactly one exclusion predicate must be registered')
+    const predicate = host.state.exclusions[0]
+
+    // The crux: `deepseek-any-provider` does NOT suppress the shipped upload on its own…
+    assert.equal(suppressShipped('deepseek-any-provider'), false)
+    // …so for a session in the excluded directory the predicate must say `true` anyway.
+    assert.equal(predicate({ sessionId: 'session-secret' }), true, 'the shipped upload was NOT suppressed for an excluded directory')
+    assert.equal(predicate({ sessionId: 'session-secret', purpose: 'compaction' }), true)
+
+    // A session outside the list is unaffected: the shipped upload keeps working.
+    assert.equal(predicate({ sessionId: 'session-open' }), false, 'an unrelated directory must not be suppressed')
+
+    // Every unusable input suppresses nothing and throws nothing — silently dropping uploads the user
+    // did not ask to drop is the same class of bug as silently adding them.
+    for (const id of ['session-nocwd', 'session-noheader', 'session-throwing', 'session-missing', undefined, null, 42, {}]) {
+      assert.equal(predicate({ sessionId: id }), false, `session ${String(id)} must not be suppressed`)
+    }
+    assert.equal(predicate(undefined), false)
+    assert.equal(predicate(null), false)
+
+    // Live edit: adding the open session's directory suppresses it on the very next call.
+    directories.commit([EXCLUDED, 'D:\\work\\public'])
+    assert.equal(predicate({ sessionId: 'session-open' }), true, 'a live edit did not take effect')
+    // And clearing the list restores the shipped upload everywhere, still without a restart.
+    directories.commit([])
+    assert.equal(predicate({ sessionId: 'session-secret' }), false, 'clearing the list did not restore the shipped upload')
+  } finally {
+    host.cleanup()
+  }
+})
+
+// `off` must keep working independently of the directory feature, and the two must OR together.
+await check('off still suppresses everything, and the directory exclusion ORs with it', () => {
+  const sessions = { 'session-secret': { header: { version: 4, cwd: 'D:\\work\\secret' } } }
+  for (const mode of ['off', 'official-only', 'deepseek-any-provider', 'any-model']) {
+    const host = fakeHost({ raw: { mode, excludedWorkingDirectories: ['D:\\work\\secret'] }, sessions })
+    try {
+      assert.equal(host.state.exclusions[0]({ sessionId: 'session-secret' }), true, `mode ${mode}: excluded directory not suppressed`)
+    } finally {
+      host.cleanup()
+    }
+  }
+  // With no directory configured, `off` is the only reason to suppress.
+  const offOnly = fakeHost({ raw: { mode: 'off', excludedWorkingDirectories: [] }, sessions })
+  try {
+    assert.equal(offOnly.state.exclusions[0]({ sessionId: 'session-secret' }), true)
+  } finally {
+    offOnly.cleanup()
+  }
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

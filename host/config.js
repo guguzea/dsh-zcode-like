@@ -48,6 +48,14 @@ export const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 /** Default largest serialized `dsh_session_log` field, matching the shipped uploader. */
 export const DEFAULT_MAX_BYTES = 8388608
 
+/**
+ * Default excluded-working-directory list: nothing excluded.
+ *
+ * A Session whose working directory matches an entry here is never uploaded — not by this plugin,
+ * and not by the shipped official-API uploader either (see `index.js`'s exclusion predicate).
+ */
+export const DEFAULT_EXCLUDED_WORKING_DIRECTORIES = []
+
 /** The credential-reference grammar accepted by the credentials service. */
 export const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -144,6 +152,83 @@ function normalizeMaxBytes(value) {
 }
 
 /**
+ * Normalize one directory path into the form both halves compare on.
+ *
+ * Windows paths differ by separator, case and trailing slash, so a raw `===` on two spellings of the
+ * same directory silently never matches — which for an upload *exclusion* is the dangerous direction:
+ * the user would believe a directory is excluded while it is still uploading. Every entry and every
+ * candidate therefore goes through this first.
+ *
+ * @param value candidate path.
+ * @returns the normalized form, or `undefined` when unusable.
+ */
+export function normalizeDirectoryPath(value) {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return undefined
+  // Backslashes are the same directory separator as forward slashes on Windows; fold them.
+  const slashed = trimmed.replace(/\\/g, '/')
+  // Collapse repeated separators, then drop trailing ones — but keep a bare drive root (`C:`) usable.
+  const collapsed = slashed.replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+  if (collapsed.length === 0) return undefined
+  return collapsed.toLowerCase()
+}
+
+/**
+ * The excluded-working-directory rule, stated exactly (the settings page's copy mirrors it).
+ *
+ * A candidate working directory is excluded when, after {@link normalizeDirectoryPath}, it **equals**
+ * a listed directory or lies **under** one (the listed form plus `/` is a prefix). So `D:/work/secret`
+ * excludes `D:/work/secret` and `D:/work/secret/sub/deeper`, but **not** `D:/work/secretary` — the
+ * separator is part of the comparison precisely so a name-prefix cannot over-match.
+ *
+ * Anything unusable — no candidate, no list, a non-string, a blank entry — excludes nothing. This is a
+ * privacy control that only ever removes uploads, so failing to match leaves the previous behaviour;
+ * but note the converse: it must never *throw*, because it runs inside the shipped uploader's prepare
+ * callback where an exception fails the contribution.
+ *
+ * @param cwd the Session's working directory, or anything else.
+ * @param directories the configured list, or anything else.
+ * @returns `true` only when the directory is genuinely covered by the list.
+ */
+export function isExcludedWorkingDirectory(cwd, directories) {
+  try {
+    const candidate = normalizeDirectoryPath(cwd)
+    if (candidate === undefined) return false
+    if (!Array.isArray(directories)) return false
+    for (const entry of directories) {
+      const listed = normalizeDirectoryPath(entry)
+      if (listed === undefined) continue
+      if (candidate === listed) return true
+      if (candidate.startsWith(`${listed}/`)) return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Normalize the excluded-directory list.
+ *
+ * Same shape tolerance as {@link normalizePatterns} (a scalar string is a one-element list), but the
+ * entries are normalized rather than kept verbatim, so the page and the host agree on what matches.
+ * Duplicates collapse — the same directory listed twice is one exclusion.
+ *
+ * @param value raw value.
+ * @returns a fresh array of normalized directories; empty when nothing usable was given.
+ */
+function normalizeDirectories(value) {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : []
+  const seen = new Set()
+  for (const entry of raw) {
+    const normalized = normalizeDirectoryPath(entry)
+    if (normalized !== undefined) seen.add(normalized)
+  }
+  return [...seen]
+}
+
+/**
  * THE ENDPOINT NARROWING RULE — stated exactly, because `client.js` mirrors it so the page can show
  * the destination the plugin will really use, and `verify/` asserts the two agree. The same rule is
  * the transport guard in `host/upload.js` (`isAbsoluteHttpEndpoint`).
@@ -178,6 +263,7 @@ function defaults() {
   return {
     mode: DEFAULT_MODE,
     deepseekModelPatterns: [...DEFAULT_DEEPSEEK_MODEL_PATTERNS],
+    excludedWorkingDirectories: [...DEFAULT_EXCLUDED_WORKING_DIRECTORIES],
     endpoint: DEFAULT_ENDPOINT,
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -203,10 +289,11 @@ export function resolveConfig(raw) {
     const resolved = defaults()
     if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) return resolved
 
-    // The three volatile fields are unwrapped; the rest are plain and read directly.
+    // The five volatile fields are unwrapped; the rest are plain and read directly.
     const mode = readLive(own(raw, 'mode'))
     if (isMode(mode)) resolved.mode = mode
-    resolved.deepseekModelPatterns = normalizePatterns(own(raw, 'deepseekModelPatterns'), resolved.deepseekModelPatterns)
+    resolved.deepseekModelPatterns = normalizePatterns(readLive(own(raw, 'deepseekModelPatterns')), resolved.deepseekModelPatterns)
+    resolved.excludedWorkingDirectories = normalizeDirectories(readLive(own(raw, 'excludedWorkingDirectories')))
 
     const endpoint = normalizeEndpoint(readLive(own(raw, 'endpoint')))
     if (endpoint !== undefined) resolved.endpoint = endpoint

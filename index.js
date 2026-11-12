@@ -34,8 +34,10 @@ import {
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
+  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
+  isExcludedWorkingDirectory,
   resolveConfig,
 } from './host/config.js'
 import { decideUpload, suppressShipped } from './host/eligibility.js'
@@ -145,7 +147,11 @@ try {
         // said `deepseek-flash`, so the row handed the POST a model name the code did not intend and
         // nothing on screen showed it. One definition, imported, makes that impossible.
         mode: modeField(z),
-        deepseekModelPatterns: z.array(z.string()).default([...DEFAULT_DEEPSEEK_MODEL_PATTERNS]),
+        // Both lists are permissive `z.array(z.string())` for the coupling reason above: a shape
+        // constraint here would deactivate the row on a bad value and thereby disarm `off`.
+        // `deepseekModelPatterns` is volatile so the user can say "this proxy's `dfmodel` is DeepSeek".
+        deepseekModelPatterns: z.array(z.string()).default([...DEFAULT_DEEPSEEK_MODEL_PATTERNS]).volatile(),
+        excludedWorkingDirectories: z.array(z.string()).default([...DEFAULT_EXCLUDED_WORKING_DIRECTORIES]).volatile(),
         endpoint: z.string().default(DEFAULT_ENDPOINT).volatile(),
         uploadModel: z.string().default(DEFAULT_UPLOAD_MODEL),
         credentialRef: z.string().default(DEFAULT_CREDENTIAL_REF),
@@ -535,6 +541,36 @@ export function apply(ctx, rawConfig) {
   // matter: selecting `off` immediately starts suppressing the shipped upload, and leaving `off`
   // immediately stops suppressing it — neither needs a row restart. It also closes the fail-open of
   // REPORT.md F5, because it never depended on `llm` in the first place.
+  /**
+   * Whether a Session's working directory is covered by `excludedWorkingDirectories`.
+   *
+   * The shipped registry calls the exclusion predicate synchronously with only `{sessionId, purpose}`
+   * (`dsh-session-log-deepseek/lib/index.js:145-149`), so the cwd has to be looked up — it is not
+   * handed to us. Total by construction: no session, no header, a non-string cwd, a missing `sessions`
+   * service or a throwing getter are all "not excluded". Excluding on doubt would silently drop
+   * uploads the user never asked to drop, which is the same class of bug as silently widening.
+   *
+   * @param sessionId the Session id from the exclusion request, or anything else.
+   * @returns `true` only when the configured list genuinely covers that Session's working directory.
+   */
+  function isExcludedSession(sessionId) {
+    try {
+      const live = currentConfig()
+      const directories = live.excludedWorkingDirectories
+      if (!Array.isArray(directories) || directories.length === 0) return false
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return false
+      const sessions = ctx.get('sessions')
+      if (sessions === null || sessions === undefined || typeof sessions.get !== 'function') return false
+      const session = sessions.get(sessionId)
+      if (session === null || session === undefined) return false
+      const header = session.header
+      if (header === null || header === undefined || typeof header !== 'object') return false
+      return isExcludedWorkingDirectory(header.cwd, directories)
+    } catch {
+      return false
+    }
+  }
+
   disposers.push(
     ctx.effect(() => {
       const registry = ctx.sessionLogDeepSeek
@@ -542,7 +578,16 @@ export function apply(ctx, rawConfig) {
         log('warn', 'session-log-upload: the sessionLogDeepSeek exclusion registry is unavailable; mode "off" cannot suppress the shipped upload')
         return undefined
       }
-      return registry.registerExclusion(() => suppressShipped(currentMode()))
+      // Two independent reasons to suppress the shipped upload:
+      //   1. `off`, which stops everything;
+      //   2. a user directory exclusion. This half is **not** redundant with `decideUpload`: in
+      //      `deepseek-any-provider`/`any-model` an official-provider request is reported as `shipped`,
+      //      so the shipped uploader owns it. Gating only our own POST would leave a user who excluded
+      //      a directory still uploading from it — precisely the case they were trying to stop.
+      return registry.registerExclusion((request) => {
+        const sessionId = request !== null && request !== undefined && typeof request === 'object' ? request.sessionId : undefined
+        return suppressShipped(currentMode()) || isExcludedSession(sessionId)
+      })
     }, 'session-log-upload: suppress the shipped official-API upload'),
   )
 
@@ -645,12 +690,14 @@ export function apply(ctx, rawConfig) {
         provider: typeof request.provider === 'string' ? request.provider : undefined,
         model: typeof request.model === 'string' ? request.model : undefined,
       }
+      const live = currentConfig()
       const decision = decideUpload({
-        mode: currentMode(),
+        mode: live.mode,
         provider: trigger.provider,
         model: trigger.model,
         hasSession: true,
-        patterns: currentConfig().deepseekModelPatterns,
+        patterns: live.deepseekModelPatterns,
+        excluded: isExcludedSession(sessionId),
       })
       if (decision !== 'ours') return source
       return trackStream(source, sessionId, trigger)
@@ -743,6 +790,17 @@ export function apply(ctx, rawConfig) {
     // Everything this upload needs is read now, not at load: `endpoint` and `maxBytes` are volatile, so
     // a settings write between two uploads must be honoured without a row restart.
     const live = currentConfig()
+
+    // Last line of defence for the directory exclusion. `wrapStream`/`decideUpload` already refuse an
+    // excluded Session, but this path is also reachable from a queued upload whose decision was taken
+    // earlier — and a directory added in the meantime must stop it. Read from the live `session` we
+    // already hold rather than going back through `ctx.sessions`.
+    const sessionHeader = session.header
+    const sessionCwd = sessionHeader !== null && sessionHeader !== undefined && typeof sessionHeader === 'object' ? sessionHeader.cwd : undefined
+    if (isExcludedWorkingDirectory(sessionCwd, live.excludedWorkingDirectories)) {
+      log('debug', `session-log-upload: session "${sessionId}" is in an excluded working directory; not uploading`)
+      return
+    }
 
     // The watermark is read before building and advanced only after HTTP 2xx. A record from another
     // Session format generation is ignored, mirroring the shipped fold's version guard.

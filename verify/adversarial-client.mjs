@@ -743,23 +743,26 @@ check('the manual block is collapsed behind a summary (last resort, not the expe
 // three volatile fields, never `deepseekModelPatterns` / `uploadModel` / `credentialRef`, and `mode`
 // must still only be reachable through the consent-gated path. The literal-matching is gone because
 // the field is now a variable, so assert the whitelist and drive the write paths instead.
-check('RETARGETED: the UI may write exactly `mode`, `endpoint` and `maxBytes` — never the other three', () => {
+check('RETARGETED: the UI may write exactly the four whitelisted fields — never `mode`, `uploadModel`, `credentialRef`', () => {
   // The whitelist is the guard, and `mode` is deliberately NOT in it: mode has its own gated path.
+  // It grew from two names to four when the user gained two editable lists — a model-pattern list (so
+  // a proxy's renamed model can be marked as DeepSeek) and a working-directory exclusion list. The
+  // line that must not move is the same one: `mode`, `uploadModel`, `credentialRef` stay out.
   assert.match(
     CLIENT_SOURCE,
-    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes" ?\]\);/,
+    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes", ?"deepseekModelPatterns", ?"excludedWorkingDirectories" ?\]\);/,
     'the editable-field whitelist changed shape or contents',
   )
   assert.match(CLIENT_SOURCE, /if \(EDITABLE_FIELDS\.indexOf\(field\) < 0\) return \{ ok: false, path: "none", doc: null \}/)
   const whitelist = [...(CLIENT_SOURCE.match(/EDITABLE_FIELDS = Object\.freeze\(\[([^\]]*)\]/) ?? [])][1]
-  for (const forbidden of ['mode', 'deepseekModelPatterns', 'uploadModel', 'credentialRef']) {
+  for (const forbidden of ['mode', 'uploadModel', 'credentialRef']) {
     assert.equal(whitelist.includes(forbidden), false, `${forbidden} is in EDITABLE_FIELDS`)
   }
   // `mode` has its own writer, reached only from the consent-gated path.
   assert.match(CLIENT_SOURCE, /async function writeMode\(nextMode\) \{\n\t+return persistField\("mode", nextMode\);/)
-  // No literal write of the three protected fields through any path, and no literal `mode` write from
+  // No literal write of the two protected fields through any path, and no literal `mode` write from
   // the field editor either (it writes `field`, a variable, which the whitelist bounds).
-  for (const protectedField of ['deepseekModelPatterns', 'uploadModel', 'credentialRef']) {
+  for (const protectedField of ['uploadModel', 'credentialRef']) {
     assert.doesNotMatch(CLIENT_SOURCE, new RegExp(`form\\.set\\(\\s*"${protectedField}"`), `the UI writes ${protectedField}`)
     assert.doesNotMatch(CLIENT_SOURCE, new RegExp(`path:\\s*\\[\\s*"${protectedField}"`), `the UI writes ${protectedField}`)
   }
@@ -1593,9 +1596,13 @@ check('CONSENT COPY: the dialog names the live destination and makes no brand cl
     Object.entries(object).flatMap(([key, value]) =>
       value !== null && typeof value === 'object' ? flatten(value, `${prefix}${key}.`) : [[`${prefix}${key}`, value]],
     )
+  // Membership bar: a string belongs on this allowlist only if it names the brand as the OFFICIAL
+  // MODEL/API — never as where the data goes. `upload.patterns*` qualifies that way ("Models to treat
+  // as DeepSeek" is about recognising which model a provider serves, the same category as
+  // `modes.deepseekAnyProvider.label`) and says nothing about the destination.
   const ALLOWED = {
-    en: ['meta.description', 'upload.modes.officialOnly.label', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.ledger.empty'],
-    zh: ['meta.description', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail'],
+    en: ['meta.description', 'upload.modes.officialOnly.label', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.ledger.empty', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty'],
+    zh: ['meta.description', 'upload.modes.officialOnly.detail', 'upload.modes.deepseekAnyProvider.label', 'upload.modes.deepseekAnyProvider.detail', 'upload.patternsLabel', 'upload.patternsHelp', 'upload.patternsEmpty'],
   }
   for (const [label, dictionary] of [['en', en], ['zh', zh]]) {
     const naming = flatten(dictionary)

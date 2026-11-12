@@ -60,6 +60,12 @@ window.__ModuleLoader__.load({
 				"upload.warnConfirm": "Enable upload",
 				"upload.warnCancel": "Cancel",
 				"upload.byteCapLabel": "Byte cap per request",
+				"upload.patternsLabel": "Models to treat as DeepSeek",
+				"upload.patternsHelp": "Substrings matched case-insensitively against the model id. A provider or proxy can serve DeepSeek under another name (for example dfmodel); without an entry here, \"any provider’s DeepSeek\" cannot recognise those sessions. It is used only in that mode: it changes nothing in \"never upload\", \"only the official DeepSeek API\", or \"any model\".",
+				"upload.patternsEmpty": "(none yet — only the default deepseek pattern is applied)",
+				"upload.directoriesLabel": "Never upload sessions from these folders",
+				"upload.directoriesHelp": "One path per line. A session whose working directory is one of these, or inside one, is never uploaded — and DSH’s built-in official-API upload is stopped for it too. Matching ignores case and \\ vs /, and covers subfolders but not folders that merely share a name prefix (secret does not cover secretary). It can only narrow: \"never upload\" still stops everything.",
+				"upload.directoriesEmpty": "(none — nothing is excluded)",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "bytes",
@@ -133,6 +139,12 @@ window.__ModuleLoader__.load({
 				"upload.warnConfirm": "开启上传",
 				"upload.warnCancel": "取消",
 				"upload.byteCapLabel": "每次请求的字节上限",
+				"upload.patternsLabel": "把这些模型当作 DeepSeek",
+				"upload.patternsHelp": "按大小写不敏感的子串匹配模型 id。供应商或反代可能用别的名字提供 DeepSeek（例如 dfmodel），名单里不写它就识别不出来。只在这个模式下起作用：“不上传”“只上传官方 API”“上传任何模型”这三种模式下它什么也不影响。",
+				"upload.patternsEmpty": "（空——目前只按默认的 deepseek 匹配）",
+				"upload.directoriesLabel": "这些目录下的会话永不上传",
+				"upload.directoriesHelp": "每行一个路径。会话的工作目录是这些目录之一、或在它们里面，就永不上传——而且 DSH 自带的上传在官方 API 下也会一并停掉。匹配不区分大小写、忽略斜杠方向，包含子目录；但不会误伤只是名字前缀相同的目录（secret 不包含 secretary）。它只能收紧、不能放宽：“不上传”仍然停掉一切。",
+				"upload.directoriesEmpty": "（空——没有排除任何目录）",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "字节",
@@ -399,7 +411,7 @@ window.__ModuleLoader__.load({
 		 * its own consent-gated path, and this list is what makes it impossible for the field
 		 * editor to widen the mode by accident.
 		 */
-		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes" ]);
+		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "excludedWorkingDirectories" ]);
 		/**
 		 * The destination the Host will actually POST to, for one reported value.
 		 *
@@ -423,6 +435,89 @@ window.__ModuleLoader__.load({
 		 */
 		function maxBytesInUse(value) {
 			return isUsableByteCap(value) ? value : PATCH_ROW.maxBytes;
+		}
+		/**
+		 * The model-pattern list the Host will actually match with, for one reported value: the
+		 * entries it would keep, or the shipped default otherwise. Mirrors `host/config.js`'s
+		 * `normalizePatterns` — a scalar string is a one-element list, arrays keep their non-empty
+		 * string entries, anything else falls back.
+		 * @param value - the reported value, already unwrapped by `fieldValue`.
+		 * @returns the patterns the Host will use.
+		 */
+		function patternsInUse(value) {
+			if (value === undefined || value === null) return PATCH_ROW.deepseekModelPatterns.slice();
+			if (typeof value === "string") return value.length > 0 ? [ value ] : [];
+			if (Array.isArray(value)) return value.filter(function (entry) { return typeof entry === "string" && entry.length > 0; });
+			return PATCH_ROW.deepseekModelPatterns.slice();
+		}
+		/**
+		 * The excluded-directory list the Host will actually compare against, normalized the same
+		 * way `host/config.js` normalizes it (case-insensitive, forward slashes, no trailing slash),
+		 * so what the page shows is what the Host matches.
+		 * @param value - the reported value, already unwrapped by `fieldValue`.
+		 * @returns the normalized directories the Host will use.
+		 */
+		function directoriesInUse(value) {
+			const raw = typeof value === "string" ? [ value ] : Array.isArray(value) ? value : [];
+			const seen = Object.create(null);
+			const out = [];
+			for (let index = 0; index < raw.length; index++) {
+				const normalized = normalizeDirectoryPath(raw[index]);
+				if (normalized !== null && seen[normalized] !== true) {
+					seen[normalized] = true;
+					out.push(normalized);
+				}
+			}
+			return out;
+		}
+		/**
+		 * Normalize one directory path exactly as the Host does.
+		 * @param value - a candidate path.
+		 * @returns the normalized form, or null when unusable.
+		 */
+		function normalizeDirectoryPath(value) {
+			if (typeof value !== "string") return null;
+			const trimmed = value.trim();
+			if (trimmed.length === 0) return null;
+			const slashed = trimmed.replace(/\\/g, "/");
+			const collapsed = slashed.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+			if (collapsed.length === 0) return null;
+			return collapsed.toLowerCase();
+		}
+		/**
+		 * Turn one list draft into the array to write: one entry per line, trimmed, blanks dropped.
+		 *
+		 * De-duplication uses the **host's own normalization** as the key, so two spellings of the same
+		 * directory (`D:\secret` and `d:/secret`) collapse to one entry — otherwise the list would show
+		 * duplicates for a single exclusion, and the user would have no way to tell they were the same.
+		 * The first spelling as typed is what gets written, so the user's own form survives.
+		 *
+		 * An empty list is a legitimate value (it means "nothing"), so this never returns null.
+		 * @param text - what the user typed, one entry per line.
+		 * @returns the array to write.
+		 */
+		function listToWrite(text) {
+			const lines = String(text).split(/\r?\n/);
+			const seen = Object.create(null);
+			const out = [];
+			for (let index = 0; index < lines.length; index++) {
+				const trimmed = lines[index].trim();
+				if (trimmed.length === 0) continue;
+				const key = normalizeDirectoryPath(trimmed);
+				if (key !== null) {
+					if (seen[key] === true) continue;
+					seen[key] = true;
+					out.push(trimmed);
+					continue;
+				}
+				// Not a path (a bare model-id pattern): compare case-insensitively, then stop trying
+				// to interpret it as a directory.
+				const lowered = trimmed.toLowerCase();
+				if (seen[lowered] === true) continue;
+				seen[lowered] = true;
+				out.push(trimmed);
+			}
+			return out;
 		}
 		/**
 		 * Validate one endpoint draft for a write.
@@ -1302,6 +1397,8 @@ window.__ModuleLoader__.load({
 				// value the Host reported, so a change made elsewhere shows up until the user types.
 				const [ endpointDraft, setEndpointDraft ] = React.useState(null);
 				const [ capDraft, setCapDraft ] = React.useState(null);
+				const [ patternsDraft, setPatternsDraft ] = React.useState(null);
+				const [ directoriesDraft, setDirectoriesDraft ] = React.useState(null);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
@@ -1352,6 +1449,8 @@ window.__ModuleLoader__.load({
 				const servedValue = formValue !== null ? formValue : asObject(doc);
 				const endpoint = servedValue === null ? null : endpointInUse(fieldValue(servedValue.endpoint));
 				const maxBytes = servedValue === null ? null : maxBytesInUse(fieldValue(servedValue.maxBytes));
+				const patterns = servedValue === null ? null : patternsInUse(fieldValue(servedValue.deepseekModelPatterns));
+				const directories = servedValue === null ? null : directoriesInUse(fieldValue(servedValue.excludedWorkingDirectories));
 
 				/**
 				 * Validate one draft and, when the Host would accept it, write it. The write goes
@@ -1382,12 +1481,80 @@ window.__ModuleLoader__.load({
 						if (!ok) return;
 						const nextDoc = outcome.doc ? asObject(outcome.doc) : null;
 						if (nextDoc !== null) setDoc(nextDoc);
+						// Clear the saved field's draft so the control returns to mirroring the
+						// effective value; the other drafts are untouched.
 						if (field === "endpoint") setEndpointDraft(null);
-						else setCapDraft(null);
+						else if (field === "maxBytes") setCapDraft(null);
+						else if (field === "deepseekModelPatterns") setPatternsDraft(null);
+						else if (field === "excludedWorkingDirectories") setDirectoriesDraft(null);
 					}, function () {
 						setFieldBusy(null);
 						setFieldState({ field: field, kind: "failed", key: "upload.saveFailed" });
 					});
+				};
+
+				/**
+				 * Build one editable LIST field: the value in use (read-only, normalized exactly as
+				 * the Host normalizes it) plus a textarea and a Save action.
+				 *
+				 * Deliberately mirrors {@link editableField}'s honesty rule: the read-only line shows
+				 * the effective value, while the textarea may hold an unsaved draft, so nothing that
+				 * describes behaviour can read a draft.
+				 *
+				 * @param field - the config key.
+				 * @param label - localized label.
+				 * @param help - localized explanation of what the list does and does not do.
+				 * @param effective - the list the Host will use, or null when nothing reported one.
+				 * @param draft - the current draft text, or null when the textarea mirrors the Host value.
+				 * @param setDraft - the draft setter.
+				 */
+				const listField = function (field, label, help, effective, draft, setDraft) {
+					const text = draft !== null ? draft : (effective === null ? "" : effective.join("\n"));
+					const state = fieldState !== null && fieldState.field === field ? fieldState : null;
+					const emptyKey = field === "deepseekModelPatterns" ? "upload.patternsEmpty" : "upload.directoriesEmpty";
+					const shown = effective === null
+						? t("upload.valueUnknown")
+						: effective.length === 0
+							? t(emptyKey)
+							: effective.join(", ");
+					return React.createElement("div", { key: field, className: "slu-field" },
+						React.createElement("div", { className: "slu-fieldLabel" }, label),
+						// Read-only: the list the Host will actually use.
+						React.createElement("code", { className: "slu-value slu-listValue", "data-field": field }, shown),
+						React.createElement("div", { className: "slu-help" }, help),
+						React.createElement("div", { key: "row", className: "slu-fieldRow" },
+							React.createElement("textarea", {
+								key: "input",
+								className: "slu-input slu-listInput",
+								"data-field": field,
+								rows: 3,
+								value: text,
+								disabled: !live ? true : undefined,
+								"aria-label": label,
+								onChange: function (event) {
+									const target = event !== null && event !== undefined ? event.target : null;
+									setDraft(target !== null && target !== undefined ? String(target.value) : "");
+								}
+							}),
+							React.createElement("button", {
+								key: "save",
+								type: "button",
+								className: "slu-btn slu-fieldSave",
+								"data-field": field,
+								disabled: !live || fieldBusy !== null ? true : undefined,
+								onClick: function () {
+									// A list draft is never invalid: a blank line is dropped, and an
+									// empty list is a legitimate value meaning "nothing".
+									saveField(field, listToWrite(text), null);
+								}
+							}, t("upload.fieldSave"))
+						),
+						state === null ? null : React.createElement(
+							"div",
+							{ className: state.kind === "failed" || state.kind === "invalid" ? "slu-error slu-fieldState" : "slu-note slu-fieldState", role: state.kind === "failed" ? "alert" : "status" },
+							t(state.key)
+						)
+					);
 				};
 
 				/**
@@ -1604,6 +1771,30 @@ window.__ModuleLoader__.load({
 					React.createElement("div", { className: "slu-fieldLabel" }, t("upload.byteCapLabel")),
 					React.createElement("code", { className: "slu-value" }, maxBytes === null ? t("upload.valueUnknown") : formatBytes(maxBytes, t)),
 					editableField("maxBytes", maxBytes, function (value) { return String(value); }, capDraft, setCapDraft, "upload.capInvalid", capToWrite)
+				));
+
+				// The model-pattern list. Its whole reason for being editable: a provider or proxy can
+				// serve DeepSeek under a name that does not contain "deepseek", and then
+				// `deepseek-any-provider` cannot recognise it. The copy says so, and says the list is
+				// inert in the other three modes so nobody mistakes it for a widening switch.
+				children.push(listField(
+					"deepseekModelPatterns",
+					t("upload.patternsLabel"),
+					t("upload.patternsHelp"),
+					patterns,
+					patternsDraft,
+					setPatternsDraft
+				));
+
+				// The excluded working directories. Load-bearing sentence in the help text: this also
+				// stops the built-in official-API upload, not just this plugin's own request.
+				children.push(listField(
+					"excludedWorkingDirectories",
+					t("upload.directoriesLabel"),
+					t("upload.directoriesHelp"),
+					directories,
+					directoriesDraft,
+					setDirectoriesDraft
 				));
 
 				// ── upload ledger ──────────────────────────────────────────────────────────────

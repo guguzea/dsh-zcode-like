@@ -72,11 +72,18 @@ export function matchesDeepseekModel(model, patterns) {
  * @param request.model the served model id.
  * @param request.hasSession whether the request carries a Live Session id.
  * @param request.patterns configured model-id patterns (mode `deepseek-any-provider` only).
+ * @param request.excluded whether the Session's working directory is excluded. Checked **first** and
+ *   in every mode: the user's directory exclusion is absolute, and it is the one input here that can
+ *   only ever remove an upload. The shipped-upload side of the same exclusion lives in `index.js`
+ *   (its predicate), because in some modes the shipped uploader — not this plugin — owns the request.
  * @returns `'shipped'` (the shipped plugin owns it), `'ours'` (this plugin uploads), or `'none'`.
  */
 export function decideUpload(request) {
   try {
-    const { mode, provider, model, hasSession, patterns } = request === null || request === undefined ? {} : request
+    const { mode, provider, model, hasSession, patterns, excluded } = request === null || request === undefined ? {} : request
+
+    // Absolute, and ahead of every other rule: an excluded directory stops our upload in any mode.
+    if (excluded === true) return 'none'
 
     if (hasSession !== true) return 'none'
     if (mode === 'off') return 'none'

@@ -25,6 +25,7 @@ import {
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
+  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
   MODES,
@@ -100,6 +101,7 @@ const build = new Function(
   'DEFAULT_CREDENTIAL_REF',
   'DEFAULT_DEEPSEEK_MODEL_PATTERNS',
   'DEFAULT_ENDPOINT',
+  'DEFAULT_EXCLUDED_WORKING_DIRECTORIES',
   'DEFAULT_MAX_BYTES',
   'DEFAULT_UPLOAD_MODEL',
   `${region}\nreturn { schema: ${literal.replace('Config = ', '')}, MODE_PATTERN, modeField };`,
@@ -110,6 +112,7 @@ const built = build(
   DEFAULT_CREDENTIAL_REF,
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
+  DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
 )
@@ -121,6 +124,7 @@ check('the plugin declaration builds a real schemastery object schema', () => {
     'credentialRef',
     'deepseekModelPatterns',
     'endpoint',
+    'excludedWorkingDirectories',
     'maxBytes',
     'mode',
     'uploadModel',
@@ -144,6 +148,7 @@ check('H2: the pattern escapes regex metacharacters when MODES is hostile', () =
     DEFAULT_CREDENTIAL_REF,
     DEFAULT_DEEPSEEK_MODEL_PATTERNS,
     DEFAULT_ENDPOINT,
+    DEFAULT_EXCLUDED_WORKING_DIRECTORIES,
     DEFAULT_MAX_BYTES,
     DEFAULT_UPLOAD_MODEL,
   )
@@ -238,7 +243,7 @@ check('H2 FIXED: an unknown mode STRING is now REJECTED by the schema', () => {
   assert.equal(resolveConfig({ mode: 'offf' }).mode, 'official-only')
 })
 
-check('exactly three fields carry the volatile marker: `mode`, `endpoint`, `maxBytes`', () => {
+check('exactly five fields carry the volatile marker: `mode`, the two lists, `endpoint`, `maxBytes`', () => {
   // `schema.toJSON()` is a uid/refs graph: {uid, refs:{id: node}, ...}. The live Config inspect
   // projection re-renders the same marker as `x-cordis.volatile` (observed: Config.listConfigs
   // entry `include:session-log-upload`).
@@ -247,11 +252,12 @@ check('exactly three fields carry the volatile marker: `mode`, `endpoint`, `maxB
   const volatileIds = Object.entries(json.refs)
     .filter(([, node]) => node?.meta?.volatile === true)
     .map(([id]) => id)
-  assert.equal(volatileIds.length, 3, `expected exactly three volatile nodes, found ${volatileIds.length}`)
-  // The three volatile nodes are exactly the ids `mode`, `endpoint` and `maxBytes` point at.
-  const volatileKeys = ['mode', 'endpoint', 'maxBytes'].filter((key) => volatileIds.includes(String(root.dict[key])))
-  assert.deepEqual(volatileKeys.sort(), ['endpoint', 'maxBytes', 'mode'], `volatile fields: ${volatileKeys.join(', ')}`)
-  for (const key of ['mode', 'endpoint', 'maxBytes']) {
+  assert.equal(volatileIds.length, 5, `expected exactly five volatile nodes, found ${volatileIds.length}`)
+  // The five volatile nodes are exactly the ids these keys point at.
+  const VOLATILE_KEYS = ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode']
+  const volatileKeys = VOLATILE_KEYS.filter((key) => volatileIds.includes(String(root.dict[key])))
+  assert.deepEqual(volatileKeys.sort(), [...VOLATILE_KEYS].sort(), `volatile fields: ${volatileKeys.join(', ')}`)
+  for (const key of VOLATILE_KEYS) {
     assert.equal(json.refs[root.dict[key]]?.meta?.volatile, true, `${key} is not volatile`)
   }
   const modeNode = json.refs[root.dict.mode]
@@ -263,9 +269,17 @@ check('exactly three fields carry the volatile marker: `mode`, `endpoint`, `maxB
   assert.equal(json.refs[root.dict.endpoint].type, 'string')
   assert.equal(json.refs[root.dict.maxBytes].meta.default, 8388608)
   assert.equal(json.refs[root.dict.maxBytes].type, 'number')
-  // The other three stay non-volatile and carry no constraint beyond their type.
-  for (const key of ['uploadModel', 'credentialRef', 'deepseekModelPatterns']) {
+  // The two stay non-volatile and carry no constraint beyond their type: they decide which credential
+  // is used and which model this plugin spends money on, so the settings wire must not write them.
+  for (const key of ['uploadModel', 'credentialRef']) {
     assert.notEqual(json.refs[root.dict[key]]?.meta?.volatile, true, `${key} is marked volatile`)
+    assert.equal(json.refs[root.dict[key]]?.meta?.pattern, undefined, `${key} unexpectedly carries a pattern`)
+  }
+  // The two list fields are volatile but deliberately carry NO shape constraint beyond their type:
+  // a `.min()` here would deactivate the row on a bad value and thereby disarm `off` (the fail-open
+  // coupling below). They are narrowed in `resolveConfig` instead.
+  for (const key of ['deepseekModelPatterns', 'excludedWorkingDirectories']) {
+    assert.equal(json.refs[root.dict[key]]?.meta?.volatile, true, `${key} is not volatile`)
     assert.equal(json.refs[root.dict[key]]?.meta?.pattern, undefined, `${key} unexpectedly carries a pattern`)
   }
 })
@@ -345,21 +359,26 @@ check('the schema declares no secret fields (so the redaction stub above is exac
 
 // RETARGETED (was: "the settings FORM projects exactly one field — mode"). That WAS the reported
 // bug: a non-volatile field never reaches the browser, so the page could not show the destination.
-check('RETARGETED: the settings FORM projects exactly `mode`, `endpoint` and `maxBytes`', () => {
+check('RETARGETED: the settings FORM projects exactly the five volatile fields', () => {
   const form = projection.volatileForm(schema)
   assert.ok(form !== undefined, 'no form is projected at all')
-  assert.deepEqual(Object.keys(form.dict).sort(), ['endpoint', 'maxBytes', 'mode'], `the form exposed ${Object.keys(form.dict).join(', ')}`)
+  assert.deepEqual(
+    Object.keys(form.dict).sort(),
+    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+    `the form exposed ${Object.keys(form.dict).join(', ')}`,
+  )
 })
 
 // RETARGETED (was: "the write guard admits `mode` and REFUSES every other declared field"). The wire
-// really does now admit three fields; the boundary that still matters is that the OTHER three are
-// refused, because `credentialRef`/`uploadModel`/`deepseekModelPatterns` would otherwise let a
-// browser-side actor change what is sent or where the credential comes from.
-check('RETARGETED: the write guard admits exactly `mode`+`endpoint`+`maxBytes`, refuses the other three', () => {
-  for (const key of ['mode', 'endpoint', 'maxBytes']) {
+// now admits five fields; the boundary that still matters is that `uploadModel` and `credentialRef`
+// are refused, because they decide which credential is used and which model this plugin spends money
+// on. `deepseekModelPatterns` moved to the writable side on purpose: it is how a user says that a
+// proxy's renamed model (`dfmodel`) is DeepSeek.
+check('RETARGETED: the write guard admits exactly the five volatile fields, refuses the other two', () => {
+  for (const key of ['mode', 'deepseekModelPatterns', 'excludedWorkingDirectories', 'endpoint', 'maxBytes']) {
     assert.equal(projection.isVolatilePath(schema, [key]), true, `${key} is not writable — the page could not save it`)
   }
-  for (const key of ['uploadModel', 'credentialRef', 'deepseekModelPatterns']) {
+  for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(projection.isVolatilePath(schema, [key]), false, `${key} is writable through the settings wire`)
     assert.equal(projection.isVolatilePath(schema, [key, 'nested']), false)
   }
@@ -368,12 +387,12 @@ check('RETARGETED: the write guard admits exactly `mode`+`endpoint`+`maxBytes`, 
     settingsSource,
     /for \(const path of paths\) if \(path\.length && !isVolatilePath\(schema, path\)\) throw new Error\(`Config field "\$\{path\.join\("\."\)\}" is not volatile`\)/,
   )
-  console.log('        dsh-settings/lib/index.js:507 is the host-side guard; the wire admits three fields and refuses three')
+  console.log('        dsh-settings/lib/index.js:507 is the host-side guard; the wire admits five fields and refuses two')
 })
 
-// RETARGETED: the projection now carries the three volatile fields, and nothing else — no
-// `uploadModel`, no `credentialRef`, no `deepseekModelPatterns`.
-check('RETARGETED: projectForm exposes the three volatile fields and never the whole config', () => {
+// RETARGETED: the projection now carries the five volatile fields, and nothing else — no
+// `uploadModel`, no `credentialRef`.
+check('RETARGETED: projectForm exposes the five volatile fields and never the whole config', () => {
   const form = projection.volatileForm(schema)
   const value = validate({
     endpoint: 'https://api.deepseek.com/anthropic/v1/messages',
@@ -382,8 +401,11 @@ check('RETARGETED: projectForm exposes the three volatile fields and never the w
     deepseekModelPatterns: ['*'],
   })
   const projected = projection.projectForm(form, value)
-  assert.deepEqual(Object.keys(projected).sort(), ['endpoint', 'maxBytes', 'mode'])
-  for (const key of ['uploadModel', 'credentialRef', 'deepseekModelPatterns']) {
+  assert.deepEqual(
+    Object.keys(projected).sort(),
+    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+  )
+  for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(key in projected, false, `${key} leaked into the browser projection`)
   }
 })

@@ -192,6 +192,7 @@ check('undefined / null / non-object inputs and every unknown-string spelling gi
       'credentialRef',
       'deepseekModelPatterns',
       'endpoint',
+      'excludedWorkingDirectories',
       'maxBytes',
       'mode',
       'uploadModel',
@@ -309,14 +310,15 @@ check('BEHAVIOUR OF RECORD: a corrupt live mode makes `off` fail OPEN (falls bac
 // them). What is still true, and now has to be asserted precisely, is that (a) only those three are
 // unwrapped and (b) the anti-hijack guard is the scheme check in `resolveConfig`, not the absence of
 // unwrapping.
-check('RETARGETED: exactly the three volatile fields are unwrapped, and only those', () => {
-  // The three volatile fields: a live reference is honoured.
+check('RETARGETED: exactly the five volatile fields are unwrapped, and only those', () => {
+  // The five volatile fields: a live reference is honoured.
   const ref = (value) => ({ get: () => value })
   assert.equal(resolveConfig({ mode: ref('any-model') }).mode, 'any-model')
+  assert.deepEqual(resolveConfig({ deepseekModelPatterns: ref(['dfmodel']) }).deepseekModelPatterns, ['dfmodel'])
+  assert.deepEqual(resolveConfig({ excludedWorkingDirectories: ref(['D:/secret']) }).excludedWorkingDirectories, ['d:/secret'])
   assert.equal(resolveConfig({ endpoint: ref('https://ok.example/v1/messages') }).endpoint, 'https://ok.example/v1/messages')
   assert.equal(resolveConfig({ maxBytes: ref(2048) }).maxBytes, 2048)
-  // The three non-volatile fields: a `{get}` object is NOT unwrapped and the default survives.
-  assert.deepEqual(resolveConfig({ deepseekModelPatterns: ref(['*']) }).deepseekModelPatterns, ['deepseek'])
+  // The two non-volatile fields: a `{get}` object is NOT unwrapped and the default survives.
   assert.equal(resolveConfig({ credentialRef: ref('STOLEN') }).credentialRef, 'DEEPSEEK_API_KEY')
   assert.equal(resolveConfig({ uploadModel: ref('attacker-model') }).uploadModel, DEFAULT_UPLOAD_MODEL)
   // A reference is only ever *read*: it cannot inject a second field either.
@@ -1649,11 +1651,13 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   // integer step and its `min(1)` and stays volatile, and that `endpoint` stays a pattern-free volatile
   // string — not that the default was typed out twice.
   assert.match(source, /maxBytes: z\.number\(\)\.step\(1\)\.min\(1\)\.default\(DEFAULT_MAX_BYTES\)\.volatile\(\)/)
-  // RETARGETED: three fields are volatile now — `mode` (the consent switch), `endpoint` (so the
-  // dialog can name a real destination) and `maxBytes` (so the page can report the cap). Those are
-  // exactly the three `readLive` unwraps; the other three must stay non-volatile.
+  // RETARGETED: five fields are volatile now — `mode` (the consent switch), the two editable lists
+  // (`deepseekModelPatterns`, so a user can mark a proxy's renamed model as DeepSeek;
+  // `excludedWorkingDirectories`, the directory exclusion), `endpoint` (so the dialog can name a real
+  // destination) and `maxBytes` (so the page can report the cap). Those are exactly the `readLive`
+  // unwraps; `uploadModel` and `credentialRef` must stay non-volatile.
   const volatileCount = [...source.matchAll(/\.volatile\(\)/g)].length
-  assert.equal(volatileCount, 3, `expected exactly three .volatile() fields, found ${volatileCount}`)
+  assert.equal(volatileCount, 5, `expected exactly five .volatile() fields, found ${volatileCount}`)
   assert.match(source, /endpoint: z\.string\(\)\.default\(DEFAULT_ENDPOINT\)\.volatile\(\)/)
   const declaration = source.slice(source.indexOf('Config = z.object({'), source.indexOf('})', source.indexOf('Config = z.object({')))
   const volatileFields = declaration
@@ -1662,8 +1666,12 @@ check('the schema declaration matches the shipped volatile idiom', () => {
     .map((line) => line.trim().split(':')[0])
   // `mode` gets its `.volatile()` inside `modeField` (asserted above), so it appears here by name.
   if (declaration.includes('mode: modeField(z)')) volatileFields.push('mode')
-  assert.deepEqual(volatileFields.sort(), ['endpoint', 'maxBytes', 'mode'], `volatile fields: ${volatileFields.join(', ')}`)
-  for (const key of ['deepseekModelPatterns', 'uploadModel', 'credentialRef']) {
+  assert.deepEqual(
+    volatileFields.sort(),
+    ['deepseekModelPatterns', 'endpoint', 'excludedWorkingDirectories', 'maxBytes', 'mode'],
+    `volatile fields: ${volatileFields.join(', ')}`,
+  )
+  for (const key of ['uploadModel', 'credentialRef']) {
     const line = declaration.split('\n').find((entry) => entry.trim().startsWith(`${key}:`))
     assert.ok(line !== undefined, `${key} is missing from the declaration`)
     assert.doesNotMatch(line, /\.volatile\(\)/, `${key} became volatile`)

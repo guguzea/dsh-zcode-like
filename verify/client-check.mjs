@@ -894,9 +894,11 @@ function sessionsHookWithHooks(React, byId) {
 	return hook;
 }
 
-/** The input for one editable field. */
+/** The control for one editable field: an `input` for single values, a `textarea` for lists. */
 function fieldInput(runtime, field) {
-	return runtime.findAll(function (node) { return node.type === "input" && node.props["data-field"] === field; })[0];
+	return runtime.findAll(function (node) {
+		return (node.type === "input" || node.type === "textarea") && node.props["data-field"] === field;
+	})[0];
 }
 
 /** The Save button for one editable field. */
@@ -922,7 +924,13 @@ function clickSave(runtime, field) {
 
 /** Every field state note in the tree (saved or rejected), in document order. */
 function fieldStateTexts(runtime) {
-	return runtime.findAll(function (node) { return node.props.className === "slu-saved slu-fieldState" || node.props.className === "slu-error slu-fieldState"; }).map(textOf);
+	return runtime
+		.findAll(function (node) {
+			const cls = node.props.className;
+			if (typeof cls !== "string") return false;
+			return cls.indexOf("slu-fieldState") >= 0;
+		})
+		.map(textOf);
 }
 
 /** The "last upload failure" block, or undefined when the ledger is not ready. */
@@ -1766,7 +1774,14 @@ await checkAsync("field-editing", "the destination and byte cap are editable, va
 	assert(fieldStateTexts(failed.runtime).includes("The setting could not be saved."), "a refused write did not surface a failure");
 	assert(!fieldStateTexts(failed.runtime).includes("Saved."), "a refused write claimed success");
 	for (const set of failed.form.sets) assert(set[0] !== "mode", "the field editor wrote the mode");
-	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly endpoint + maxBytes");
+	// The whitelist grew from two names to four when the user gained two editable lists (a
+	// model-pattern list, so a proxy's renamed model can be marked as DeepSeek; and the working-directory
+	// exclusion list). The property that matters is unchanged: `mode`, `uploadModel` and `credentialRef`
+	// are never in it, so the field editor cannot touch them.
+	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "excludedWorkingDirectories" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the four editable fields");
+	for (const forbidden of ['mode', 'uploadModel', 'credentialRef']) {
+		assert(!new RegExp(`EDITABLE_FIELDS = Object\\.freeze\\(\\[[^\\]]*"${forbidden}"`).test(stripComments(clientSource)), `${forbidden} entered EDITABLE_FIELDS`);
+	}
 
 	// Writing a valid destination updates the value the dialog would name.
 	const live = await ledgerScenario([ { status: 404 } ]);
@@ -2004,6 +2019,83 @@ check("disposal", "apply hands every registration to ctx.effect with a cleanup",
 	assert(cleanups.length === 4, `apply created ${cleanups.length} effects, expected 4`);
 	assert(cleanups.every(function (cleanup) { return typeof cleanup === "function"; }), "an effect returned no cleanup");
 	return `${cleanups.length} effects, all with cleanups`;
+});
+
+// 25 ─ the two editable lists ────────────────────────────────────────────────────────────
+// These exist because of a real user report: a reverse proxy served DeepSeek as `dfmodel`, the mode
+// matched on the model id containing "deepseek", and nothing uploaded — silently, for hours. The
+// first list is how a user says "that name is DeepSeek"; the second is a new feature (never upload
+// from these folders). Both are edited on this page, so both must be driven here.
+await checkAsync("list-editing", "the two lists edit, normalize and write like the other fields", async () => {
+	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ]);
+	const runtime = scenario.runtime;
+
+	// With nothing configured, the read-only lines say so explicitly rather than rendering a blank.
+	const valueTexts = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0;
+	}).map(textOf);
+	assert(valueTexts.length === 2, `expected two list value lines, found ${valueTexts.length}`);
+	assert(valueTexts.some(function (text) { return text.indexOf("(none") >= 0; }), "an empty list must say so explicitly, not render a blank");
+
+	// Both controls exist and are textareas, so a multi-line list is actually editable.
+	for (const field of [ "deepseekModelPatterns", "excludedWorkingDirectories" ]) {
+		const control = fieldInput(runtime, field);
+		assert(control !== undefined, `no control for ${field}`);
+		assert(control.type === "textarea", `${field} is not a textarea`);
+	}
+
+	// Typing a messy list and saving writes ONE array: trimmed, blanks dropped, duplicates collapsed
+	// case-insensitively. This is the property the user's hand-edited list depends on.
+	typeInto(runtime, "deepseekModelPatterns", "  dfmodel  \n\nDFModel\ndeepseek\n   \n");
+	clickSave(runtime, "deepseekModelPatterns");
+	await settle(runtime);
+	const patternsWrite = scenario.form.sets.find(function (set) { return set[0] === "deepseekModelPatterns"; });
+	assert(patternsWrite !== undefined, "the pattern list was never written");
+	assert(Array.isArray(patternsWrite[1]), `the pattern list was written as ${typeof patternsWrite[1]}`);
+	assert(JSON.stringify(patternsWrite[1]) === JSON.stringify([ "dfmodel", "deepseek" ]), `the written list was ${JSON.stringify(patternsWrite[1])}`);
+
+	typeInto(runtime, "excludedWorkingDirectories", "D:\\secret\n  \nd:/secret\nC:\\other\n");
+	clickSave(runtime, "excludedWorkingDirectories");
+	await settle(runtime);
+	const dirsWrite = scenario.form.sets.find(function (set) { return set[0] === "excludedWorkingDirectories"; });
+	assert(dirsWrite !== undefined, "the directory list was never written");
+	assert(JSON.stringify(dirsWrite[1]) === JSON.stringify([ "D:\\secret", "C:\\other" ]), `the written directories were ${JSON.stringify(dirsWrite[1])}`);
+
+	// An empty list is a legitimate value (it means "nothing"), so saving an empty box must write [],
+	// not be refused as invalid.
+	typeInto(runtime, "excludedWorkingDirectories", "\n  \n");
+	clickSave(runtime, "excludedWorkingDirectories");
+	await settle(runtime);
+	const cleared = scenario.form.sets.filter(function (set) { return set[0] === "excludedWorkingDirectories"; }).pop();
+	assert(JSON.stringify(cleared[1]) === JSON.stringify([]), `clearing the list wrote ${JSON.stringify(cleared[1])}`);
+
+	// The field editor must never write `mode`, and the two protected fields stay unwritable.
+	for (const set of scenario.form.sets) {
+		assert(set[0] !== "mode", "the list editor wrote the mode");
+		assert(set[0] !== "uploadModel" && set[0] !== "credentialRef", `the list editor wrote ${set[0]}`);
+	}
+	return `${scenario.form.sets.length} list writes, normalized (trim, dedupe case-insensitively, empty allowed)`;
+});
+
+await checkAsync("list-help", "the copy says what each list does and does NOT do", async () => {
+	const en = JSON.parse(fs.readFileSync(path.join(ROOT, "locale", "en.json"), "utf8")).upload;
+	const zh = JSON.parse(fs.readFileSync(path.join(ROOT, "locale", "zh.json"), "utf8")).upload;
+	// The pattern list's whole point is the renamed-model case, and its DANGER is being mistaken for a
+	// widening switch — so it must say it is inert in the other three modes.
+	assert(/proxy|another name|dfmodel/i.test(en.patternsHelp), "the pattern help does not explain the renamed-model case");
+	assert(/does nothing|changes nothing|only in that mode/i.test(en.patternsHelp), "the pattern help does not say it is inert outside that mode");
+	assert(/反代|别的名字|dfmodel/.test(zh.patternsHelp), "zh pattern help lost the renamed-model case");
+	// The directory list's load-bearing sentence: it stops the BUILT-IN upload too. A user pruning
+	// sensitive folders would assume that, and if the copy does not say it they cannot tell.
+	assert(/built-in|official-API upload is stopped/i.test(en.directoriesHelp), "the directory help does not say it also stops the built-in upload");
+	assert(/自带/.test(zh.directoriesHelp), "zh directory help lost the built-in-upload sentence");
+	assert(/narrow|widen/i.test(en.directoriesHelp), "the directory help does not say it can only narrow");
+	// Both empty states must exist as real strings.
+	for (const key of [ "patternsEmpty", "directoriesEmpty" ]) {
+		assert(typeof en[key] === "string" && en[key].length > 0, `en.${key} is missing`);
+		assert(typeof zh[key] === "string" && zh[key].length > 0, `zh.${key} is missing`);
+	}
+	return "both lists explained in both languages, including the built-in-upload consequence";
 });
 
 console.log("");

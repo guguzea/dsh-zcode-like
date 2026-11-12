@@ -1,293 +1,185 @@
-# Session log upload — 会话日志上传
+# dsh-session-log-upload
 
-A DSH plugin that lets **the user** decide when a Session log is uploaded to DeepSeek.
+给 DSH 用的插件：让用户自己决定会话日志什么时候上传到 DeepSeek。
 
-默认值是「只上传官方 API」——装上之后行为与不装完全一致。放宽共享范围必须是用户自己的、看得见的动作。
+装上之后默认什么都不变。要放宽，得你自己点，而且得点两次。
 
-> **⚠️ 选择宽模式会立刻开始真实上传。** 这不只是「一个设置」：选中 `deepseek-any-provider` 或
-> `any-model` 之后，本机接下来的每一次符合条件的模型请求都会把会话日志 POST 到
-> `api.deepseek.com`，用的凭据是配置里的 `credentialRef`。开发/测试本插件时请先确认这一点，
-> 或先把 `credentialRef` 指向一个不存在的引用。本项目实测过：测试期间该会话日志确实上传过
-> （见下文「已验证到哪一步」）。
+## 四种模式
 
----
+| 模式 | 含义 |
+|---|---|
+| `off` | 什么都不传。DSH 自带的官方上传也一并停掉。 |
+| `official-only` | **默认。** 只跟随那些本来就要发往 DeepSeek 官方 API 的请求捎带日志。 |
+| `deepseek-any-provider` | 上面那些之外，当模型 id 命中你的名单时，额外发一条只带日志的请求——即使这次请求是别的供应商服务的。 |
+| `any-model` | 上面那些之外，每一次带会话的模型请求之后都额外发一条。 |
 
-## The four modes
+`mode` 缺失或写了不认识的值，一律回落到 `official-only`。插件不会替你放宽模式。
 
-| `mode` | 中文 | What leaves the machine |
-|---|---|---|
-| `off` | 不上传 | Nothing. The shipped official-API upload is suppressed too. |
-| `official-only` | 只上传官方 API | **Default.** Only the log that rides along with a request already going to DeepSeek's official API. |
-| `deepseek-any-provider` | 上传任何供应商的 deepseek | The above, **plus** a separate log-only request to DeepSeek whenever the served model id matches `deepseekModelPatterns` — even when a different provider served it. |
-| `any-model` | 上传任何模型 | The above, **plus** a separate log-only request to DeepSeek after **every** model request that carries a live Session, whichever provider answered. |
+## 会话日志里有什么
 
-Unknown or missing `mode` always falls back to `official-only`. Nothing in the plugin ever widens the
-mode on the user's behalf.
+一段对话的完整记录：你的消息、模型输出、工具返回结果，以及涉及的文件路径。
 
-## What a Session log contains
+附件只是**引用**，图片和文件的字节内容不会上传。
 
-The durable record of one conversation: user messages, assistant output, tool results, and the file
-paths involved. Attachments are **referenced, not embedded** — no image or file bytes are uploaded.
+## 会传到哪里
 
-## Why modes 3 and 4 need their own request
+`endpoint` 默认是 DeepSeek 的 Anthropic 兼容端点 `https://api.deepseek.com/anthropic/v1/messages`，可以在设置页改。
 
-`dsh_session_log` is a top-level body field owned by `@deepseek-ai/dsh-session-log-deepseek` through
-the `deepseekLlmApiExtensions` registry, and **only** the official DeepSeek adapter reads that
-registry. `GenerateOptions` has no free-form body field, and `llm-pi-ai/request-headers` contributes
-headers only.
+改之前请读这句：确认弹窗里写的目标是当时生效的那个 endpoint，不是写死的"DeepSeek"。你把 endpoint 指到自己的收集器，弹窗就会如实说数据发到你的收集器。这是故意的——一个说不出真实去向的同意弹窗没有意义。
 
-So when the user talks to some other provider there is no DeepSeek request to attach the log to, and
-the plugin issues its own small request instead. That is a real, separately billed network call, and
-the UI says so before the mode changes.
+## 安装
 
----
+在 profile 的目录下：
 
-## Read this before you ship it to anyone
+```powershell
+cd C:\Users\<you>\.dsh\profiles\desktop
+```
 
-- **It sends other providers' conversations to DeepSeek.** A user in `any-model` mode has their
-  Anthropic/OpenAI/local-model conversations delivered to DeepSeek. Sending one provider's session
-  content to a third party may violate that provider's terms, and it is a materially different
-  privacy posture from DSH's stock behaviour.
-- **It must be opt-in, and the opt-in must cost a deliberate action.** The default is
-  `official-only`; the two wider modes sit behind a confirmation dialog in the UI **and** a two-step
-  `confirm` token on the command. Do not ship a build that defaults wider, buries the dialog, or
-  re-enables a wider mode after an upgrade. A telemetry plugin that widens its own scope silently is
-  malware, whatever its settings screen says.
-- **The disclosure has to be true.** The dialog and the command prompt both name the endpoint. If you
-  repoint `endpoint` at your own collector, fix the wording rather than letting it keep saying
-  "DeepSeek".
-- Uploads are **at-least-once**: a crash between server acceptance and the watermark write replays a
-  range. Duplicates are possible; skipped ranges are not.
+然后任选一种。
 
----
+**A. 插件管理器（推荐）**
 
-## Installation
+在 DSH 设置里的插件页安装，或者：
 
-**This bundle is not installed through the Plugin Manager.** It is mounted by hand, because the
-Plugin Manager cannot install anything in this profile (see the environment note at the end):
+```
+plugin_manager install_bundle, target = <bundle-root>
+```
 
-1. Link the package into the profile so its bare name resolves:
+它会把 `@local/dsh-session-log-upload` 写进 profile 的 `package.json`，作为 `link:` 依赖并加入 `dsh.profile.bundles`。
 
-   ```powershell
-   cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-session-log-upload" "<bundle-root>"
-   ```
+**B. 手动挂载**
 
-2. Append the row to the profile's `cordis.patch.yml`:
+不想走插件管理器的话，把包链接进 profile 的 `node_modules`，然后自己加一条 patch 行：
 
-   ```yaml
-   - insert:
-       - id: session-log-upload
-         name: '@local/dsh-session-log-upload'
-         config:
-           mode: official-only
-           deepseekModelPatterns: [deepseek]
-           endpoint: https://api.deepseek.com/anthropic/v1/messages
-           uploadModel: deepseek-chat
-           credentialRef: DEEPSEEK_API_KEY
-           maxBytes: 8388608
-   ```
+```powershell
+cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-session-log-upload" "<bundle-root>"
+```
 
-3. Changes to the plugin's own files do **not** hot-reload. Editing `cordis.patch.yml` to a
-   different *content* restarts the row; so does restarting DSH.
+```yaml
+- insert:
+    - id: session-log-upload
+      name: '@local/dsh-session-log-upload'
+      config:
+        mode: official-only
+```
 
-Once you change the mode in the settings UI, the profile patch gains a **second** top-level row —
-`- id: session-log-upload` — written by the config editor. That is the patch layer's normal
-override-by-id shape, not a duplicate plugin: the `insert` row creates the Loader entry, and the
-override row supplies the user's chosen config to it. Read both if you want to know the effective
-mode; the override wins. See [INTERFACES.md](INTERFACES.md) §3 for the keys.
+改了插件源码不会热重载。 改动 profile 的 `cordis.patch.yml`（哪怕只改一行注释）会让这一行重启并加载新代码；重启 DSH 同理。
 
-**Rollback:** delete the `insert` block above (and any `- id: session-log-upload` override row the
-settings form wrote), then remove the junction with
-`cmd /c rmdir "…\node_modules\@local\dsh-session-log-upload"`. The workspace is untouched.
+## 配置
 
----
+所有键都可选。
 
-## Configuration
-
-Every key is optional, and the row declares a real `Config` so the settings page can read and write
-it.
-
-| Key | Type | Default | Meaning |
+| 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `mode` | enum | `official-only` | `off` \| `official-only` \| `deepseek-any-provider` \| `any-model`. **Volatile** — see the note below. |
-| `deepseekModelPatterns` | `string[]` | `['deepseek']` | Case-insensitive substrings matched against the **model id** only. |
-| `endpoint` | string | DeepSeek's Anthropic-compatible messages endpoint | Where the log-only request goes. **Volatile** — shown in the UI. Must be an absolute `http(s)` URL or it falls back to the default. |
-| `uploadModel` | string | `deepseek-chat` | `model` field of that request — it must be a model the official API knows, since the model the user was actually talking to may be served by someone else. |
-| `credentialRef` | string | `DEEPSEEK_API_KEY` | Resolved through `ctx.credentials.resolve(ref)`. |
-| `maxBytes` | int ≥ 1 | `8388608` | Largest serialized `dsh_session_log` per request. **Volatile** — shown in the UI. |
+| `mode` | enum | `official-only` | 见上表 |
+| `deepseekModelPatterns` | `string[]` | `['deepseek']` | 大小写不敏感的子串，只匹配模型 id。见下面「反代改了模型名怎么办」。 |
+| `excludedWorkingDirectories` | `string[]` | `[]` | 这些目录下的会话永不上传，并且 DSH 自带的上传也一并停掉。见下面「排除整个目录」。 |
+| `endpoint` | string | DeepSeek 官方端点 | 只带日志的那条请求发往哪里。必须是绝对 `http(s)` URL，否则回落到默认值。 |
+| `uploadModel` | string | `deepseek-flash` | 那条请求的 `model` 字段。必须是官方 API 认识的名字（`deepseek-flash` 或 `deepseek-v4-pro`）。 |
+| `credentialRef` | string | `DEEPSEEK_API_KEY` | 通过 `ctx.credentials.resolve(ref)` 解析。 |
+| `maxBytes` | int ≥ 1 | `8388608` | 单次请求里 `dsh_session_log` 字段的最大字节数。 |
 
-`credentialRef` is resolved through `ctx.credentials.resolve(ref)`. If it resolves to nothing, the
-wider modes cannot upload and the plugin reports that instead of pretending to work.
+`mode`、`deepseekModelPatterns`、`excludedWorkingDirectories`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
 
-### Switching the mode without the UI
+### 反代改了模型名怎么办
+
+`deepseek-any-provider` 判断"这次请求算不算 DeepSeek"的方式，是看**模型 id 里有没有你配的子串**。
+
+如果反代把 DeepSeek 命名成 `dfmodel` 之类的名字，这个名字里没有 `deepseek`，**这个模式就认不出来**——它会安静地跳过，既不传也不报错（失败记录也是空的，因为根本没有失败，是没走到上传）。
+
+在设置页的「把这些模型当作 DeepSeek」里加一行 `dfmodel` 就好。这个名单只影响 `deepseek-any-provider`，在另外三种模式下不起作用。
+
+### 排除整个目录
+
+「这些目录下的会话永不上传」里每行写一个路径。工作目录是该路径、或在该路径下的会话，**任何模式下都不上传**——而且 **DSH 自带的官方 API 上传也一并停掉**。
+
+匹配不区分大小写、忽略 `\` 和 `/` 的区别，包含子目录，但不会误伤名字前缀相同的目录（`D:\work\secret` 不包含 `D:\work\secretary`）。它只能收紧、不能放宽。
+
+## 不用界面切换模式
 
 ```
-/session-log-upload                      # report the current mode and endpoint; writes nothing
-/session-log-upload off                  # narrowing: applies immediately
-/session-log-upload official-only        # narrowing: applies immediately
-/session-log-upload any-model            # prints the disclosure prompt; writes NOTHING
-/session-log-upload any-model confirm    # the actual widening write
-/session-log-upload uploaded             # list which Session logs have been uploaded
+/session-log-upload                      报告当前模式和目标，不写任何东西
+/session-log-upload off                  缩小范围，立刻生效
+/session-log-upload official-only        缩小范围，立刻生效
+/session-log-upload any-model            打印披露提示，什么都不写
+/session-log-upload any-model confirm    真正执行放宽
+/session-log-upload uploaded             列出已上传的会话
 ```
 
-### 详细日志 — what has been uploaded
+放宽模式必须带 `confirm`。少这个参数就只是打印提示。
 
-**Settings → 会话日志上传 → 详细日志** lists every Session this plugin has uploaded: the Session id,
-the range it was uploaded through, when it last happened, and the format version — read from
-`$DSH_HOME/session-log-upload/watermarks.json`. There is a Refresh action, the log file's own
-directory path, and a row-count summary that reports **the Host's own total** (or says the Host did
-not report one) rather than a number the page counted for itself.
+## 已上传的会话
 
-The same data is available without the UI:
+设置 → 会话日志上传 → 详细日志 列出每个上传过的会话：会话 id、传到第几个事件、时间、格式版本。
+
+同一个列表也能在会话里看：
 
 ```
 /session-log-upload uploaded
 ```
 
-**The name says "detailed log", but read what it actually is:** an **index of what was uploaded**,
-not the uploaded material. Per Session it holds only the id, how far the upload got, when, and the
-format generation — no prompts, no titles, no file paths, no message content. That is deliberate, so
-this file can never become a second copy of your data.
+它还会报两件事：这次加载以来有没有成功上传过，以及 attribution 头在当前安装里能不能解析。
 
-Two honest limits, both stated in the UI as well:
+名字叫"详细日志"，但它是索引，不是日志内容。 每个会话只有 id、传到哪、什么时候、格式版本——没有提示词、没有标题、没有文件路径、没有消息正文。这样这个文件永远不会变成你数据的第二份拷贝。
 
-- It covers uploads **this plugin** made. In `off` or `official-only` it is legitimately empty, and
-  DSH's built-in official-API uploader is never listed here — so an empty log does not mean nothing
-  was ever uploaded.
-- It is **metadata only** — see above. The page also shows Session **titles** only behind an explicit
-  opt-in toggle, because a title is derived from the conversation itself.
+会话标题默认不显示。标题是从对话内容生成的，所以设置页里那个开关要你自己打开。
 
-The page reads the log over an **authenticated** Host route
-(`GET /api/session-log-upload.ledger`, a document-relative `fetch`), registered through the same
-Connection Fetch registry the shipped `dsh-session-log-export` uses — so it inherits the page's
-credential check and answers 401 without the cookie. A raw `webServer` route would have been
-unauthenticated and would have exposed session ids to any local process.
+两条限制：
 
-The directory is **not hard-coded**: `host/watermark.js` resolves it as a non-blank `$DSH_HOME`
-(with `~` expanded) with `~/.dsh` as the fallback, then joins the single literal segment
-`session-log-upload`. Set `DSH_HOME` elsewhere and both files move with it.
+- 它只记录**本插件**发起的上传。`off` 或 `official-only` 下它本来就是空的，DSH 自带的上传不会出现在这里——所以空的不等于没上传过。
+- 上传是**至少一次**语义：服务端接受之后、水印写入之前如果崩溃，这段范围会重发。可能重复，不会跳过。
 
-### Attribution headers
+## 传的是什么
 
-The log-only request carries the same harness attribution headers the shipped official adapter sends,
-so the receiver can attribute the upload the same way: `user-agent`
-(`deepseek-harness/<version>`) from the harness's own `attributionHeaders()`, plus
-`x-deepseek-harness-user-id` (the harness's **anonymous** id, the same one the shipped adapter uses)
-and `x-deepseek-harness-session-id`. `x-deepseek-harness-compact` is never sent — the shipped adapter
-only sends it for compaction requests, which ours never is.
+只带日志的那条请求，形状和 DSH 自带的官方上传器一致：
 
-All three are **best-effort**: each is omitted when its source is unavailable, no id is ever minted
-invented, and a header failure never fails an upload. The two harness values are read from modules
-inside the running installation, so they only resolve under Electron; in a plain-Node context the
-Session id is still sent and the request still goes out.
+- 同一个端点，同一套认证头（`x-api-key`；账号路由用 `x-dsh-auth-token`，且只发给官方域名）
+- 同一套 attribution 头：`user-agent`、`x-deepseek-harness-user-id`（匿名 id）、`x-deepseek-harness-session-id`
+- `dsh_session_log` 字段与官方格式逐字节一致
 
-The 详细日志 reports which headers the **last accepted** upload actually carried — names only, never
-values — so you can see attribution working rather than taking it on trust.
+不同的是：`model` 是个占位值（`deepseek-flash`），`max_tokens` 是 1，`messages` 里只有一条载体消息而不是整段对话。那条消息的内容会写明触发这次上传的 provider 和 model：
 
-### Maintainer note — there is no read-only middle ground
+```
+DSH session-log upload. Source: provider=acme-relay model=deepseek-v4-pro. The Session log is carried in the dsh_session_log field.
+```
 
-`dsh-settings`' `describe()` sends the page `projectForm(volatileForm(schema), …)` and nothing else. A
-field is therefore either **volatile** — visible *and* writable through the settings RPC — or
-**invisible to the page**, not even its default. That is why `mode`, `endpoint` and `maxBytes` are
-volatile and the other three are not; it is also why a first version that marked only `mode` showed
-`上传目标: 未配置`, which was simply false.
+这样接收方看到的不只是一个占位模型名。
 
-Two consequences you must not undo:
+attribution 头都是**尽力而为**：拿不到就省略，不会自己编一个 id，头出错也不会让上传失败。那两个值来自运行中安装里的模块，只在 Electron 下能解析。
 
-- **A volatile field reaches `apply` as a live cosmokit reference, not a value.** The plugin resolves
-  it through `readLive()` and **re-reads the whole config per use** (`currentConfig()`), with no
-  startup capture anywhere. If you reintroduce `const config = resolveConfig(rawConfig)`, the first
-  settings write silently reverts `endpoint` to the default — the same fail-open class that once made
-  `off` behave as `official-only`.
-- **Volatile means writable.** A browser-side actor that can call `settings.mutate` on this namespace
-  can repoint `endpoint`. That is an accepted trade: the alternative was a consent dialog that could
-  not name where the data goes, which is worse. The remaining guard is that `resolveConfig` refuses a
-  non-`http(s)` endpoint and falls back to the default, so a bad value cannot send logs to a `file:`
-  or relative target. The page itself displays the destination and never offers to edit it.
+## 上传失败了怎么看
 
-The pending-range figure is deliberately **not** shown: it comes from the plugin's own watermark file,
-not from configuration, so no read-only channel could report it.
+设置页的详细日志会显示上一次失败：哪一类（没有凭据 / 端点被拒 / HTTP 错误 / 传输失败 / 单条事件超过字节上限 / 未知）、HTTP 状态码、时间、哪个会话、是否会自动重试，以及具体诊断。
 
----
+成功上传之后这条记录会被清掉。`payload-too-large` 单独标出来，因为它不会自己恢复——单条事件就超过 `maxBytes` 时，除非把上限调大，否则那个会话会永远卡在那里。
 
-## Why this bundle reaches into the DSH installation
+失败记录在 `$DSH_HOME/session-log-upload/last-failure.json`，只存诊断，不存会话内容。
 
-A bundle installed into a profile cannot resolve bare specifiers — `@deepseek-ai/*`, `zod` and even
-`@deepseek-ai/cordis` all fail with `ERR_MODULE_NOT_FOUND`, because Node resolves ESM from the
-importing file's own location and the profile's `node_modules` holds none of them.
+## 文件在哪
 
-That matters because `dsh-settings` only manages profile entries that declare a `Config` with
-volatile fields. So the row reaches the copy of `@deepseek-ai/schemastery` that ships **inside the
-running Harness**, by absolute `file://` URL derived from `process.resourcesPath`, keeping the bare
-specifier as a second candidate and "no schema" as a supported posture. If neither resolves, the
-plugin still works — the mode is then patch-only and changed with the command. See
-[docs/api-dossier.md](docs/api-dossier.md) §6.
+都跟着 `$DSH_HOME` 走（非空的 `DSH_HOME` 优先，`~` 会展开，否则 `~/.dsh`）：
 
-Per-session watermarks are deliberately **not** stored through the harness: they are a plain JSON
-file the plugin owns under `$DSH_HOME/session-log-upload/watermarks.json`.
+- `session-log-upload/watermarks.json` — 每个会话传到哪了
+- `session-log-upload/last-failure.json` — 上次失败
 
----
+删掉水印文件不会损坏会话，只是让插件忘记进度、下次重发。
 
-## Verified to what extent
+## 开发
 
-Proven against the real running Harness, not just unit tests:
+```
+node verify/run-all.mjs
+```
 
-- the row mounts, `Config` projects (`status: "schema"`, `mode` marked volatile), and the settings
-  page registers in `settings.section` at order 60, active;
-- in the real GUI: the default is preselected, `off`/`official-only` save silently, the wider modes
-  raise the confirmation dialog, and the choice **survives a page refresh**;
-- the page's three data rows are sourced for real: **上传目标** shows the effective endpoint,
-  **每次请求的字节上限** shows `8 MiB`, and the unsourceable pending-range row is gone. (An earlier
-  revision showed `未配置` / `未提供` for all three because only `mode` was volatile — see the
-  maintainer note above.)
-- the payload builder is byte-for-byte identical to the shipped uploader's wire format, re-derived
-  against the shipped source (`verify/fidelity.mjs`);
-- **the upload path works against the real endpoint.** Both wide modes have been exercised for real:
-  in `deepseek-any-provider` the watermark advanced to `afterSeq: 800`, and later in `any-model` to
-  `afterSeq: 1270`, then froze within 45 s each time the mode was returned to `official-only`. So
-  this conversation's Session log has genuinely been transmitted to `api.deepseek.com` while a wide
-  mode was selected — which is what the mode says it does, and why the dialog says it too.
+七套检查：host 单测、client 检查、payload 与官方上传器的差分保真、两套对抗测试、对着 `app.asar` 里真实 schemastery 的 schema 检查、主题令牌检查。
 
-**Current state on this machine:** the row is mounted at the default **`mode: official-only`**, so
-nothing is being uploaded by this plugin. The profile's `cordis.patch.yml` carries the `insert` row
-(and, once you change the mode in the UI, an editor-written override row too — the override wins). To
-resume wider sharing, pick a mode in Settings or edit that row; to stop, set it back to
-`official-only`.
+`verify/REPORT.md` 是独立验收报告，写清了哪些结论被驱动验证过、哪些没有。
 
-Not verified: nothing in the upload path has been exercised under `any-model`; the `maxBytes`
-backlog-drain path has not been driven with a real oversized event; and the plugin has never been
-installed through the Plugin Manager, so its behaviour as a *bundle* (as opposed to a linked row) is
-untested.
+## 卸载
 
----
+插件管理器里移除 `@local/dsh-session-log-upload`。
 
-## Layout
+手动挂载的话：删掉 profile patch 里的 `insert` 段和设置页写入的覆盖行，再删掉 `node_modules\@local\dsh-session-log-upload` 这个链接。
 
-| Path | Role |
-|---|---|
-| [index.js](index.js) | Host entry: `apply`, `inject`, optional `Config`, stream hook, exclusion, command |
-| [host/config.js](host/config.js) | Raw config → resolved config, prototype-safe, volatile-aware |
-| [host/eligibility.js](host/eligibility.js) | The behaviour matrix, as pure total functions |
-| [host/logfield.js](host/logfield.js) | Builds the `dsh_session_log` envelope |
-| [host/watermark.js](host/watermark.js) | Per-session upload watermark |
-| [host/upload.js](host/upload.js) | The log-only POST |
-| [client.js](client.js) | Settings section: four modes + consent gate |
-| [locale/](locale/) | English and Chinese strings |
-| [INTERFACES.md](INTERFACES.md) | The frozen contract the halves were built against |
-| [docs/api-dossier.md](docs/api-dossier.md) | Verified harness API facts, with citations |
-| [verify/](verify/) | Test suites and the independent verification report |
+## 许可
 
----
-
-## Known environment blocker
-
-`C:\Users\<you>\.dsh\profiles\desktop\node_modules\dsh-our-free-model` was created 2026-10-07 with an
-owner the signed-in user cannot read. It is not a permissions problem that can be repaired with
-`takeown` or `icacls`: an **elevated** administrator is refused by `takeown`, `icacls /reset`,
-`Remove-Item` and `[System.IO.Directory]::Delete` alike, and the object returns both "access denied"
-and "path not found" for the same call. That is the signature of a corrupt or orphaned NTFS
-directory entry, and the normal repair is `chkdsk C: /f`.
-
-Until it is repaired, pnpm aborts with `ERR_PNPM_EPERM` while scanning it, so **no bundle can be
-installed in this profile** — which is why this plugin is mounted by hand. It also means the
-`dsh-our-free-model` plugin itself may fail to load on the next DSH restart.
+MIT
