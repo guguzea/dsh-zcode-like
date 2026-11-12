@@ -365,16 +365,24 @@ window.__ModuleLoader__.load({
 		/**
 		 * Unwrap one settings field. A schema field marked volatile reaches the browser as a
 		 * live reference (`{ get: () => value }`) rather than as a plain value, and reading it
-		 * as-is would silently lose the current mode.
-		 * @returns the plain value, which may itself be null.
+		 * as-is would silently lose the current value.
+		 *
+		 * Arrays are returned as-is, NOT treated as "not a plain value": a list field
+		 * (`deepseekModelPatterns`, `excludedWorkingDirectories`) is legitimately an array, and the
+		 * earlier `return null` for every object turned a successfully-saved list into "nothing
+		 * reported" on the page — the write went through and the control still showed the old value.
+		 * @returns the plain value, or null when this is a reference that cannot be read.
 		 */
 		function fieldValue(value) {
 			if (value === null || value === undefined) return null;
 			if (typeof value !== "object") return value;
+			// A list is a value in its own right.
+			if (Array.isArray(value)) return value;
 			try {
 				if (typeof value.get === "function") return fieldValue(value.get());
 			} catch (_error) {}
-			return null;
+			// A plain object with no accessor is also a value (a projection may hand one back).
+			return Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null ? value : null;
 		}
 		/** @returns the first argument that is a non-empty string, else null. */
 		function firstString() {

@@ -2122,6 +2122,89 @@ await checkAsync("list-help", "the copy says what each list does, and the patter
 	return "both lists explained; the pattern list appears only in deepseek-any-provider";
 });
 
+// 26 ─ a saved list must READ BACK ───────────────────────────────────────────────────────────
+// The bug this guards against was invisible to every earlier check: `fieldValue` returned `null` for
+// anything that was `typeof "object"` without a `.get()`, which includes every ARRAY. So a list write
+// went through, the patch file was updated, and the control still rendered "not reported" — the page
+// said the save failed when it had succeeded. Every existing test passed because
+// `createWritableForm` hands back a PLAIN array, while the real page receives a live cosmokit
+// reference. This drives the real shapes.
+await checkAsync("list-readback", "a list saved through the served form is read back and re-rendered", async () => {
+	// A snapshot that mimics the real wire: volatile fields arrive as `{get}` references.
+	const live = (value) => ({ get: () => value });
+	const state = {
+		mode: "deepseek-any-provider",
+		deepseekModelPatterns: live([ "deepseek" ]),
+		excludedWorkingDirectories: live([]),
+		endpoint: live("https://api.deepseek.com/anthropic/v1/messages"),
+		maxBytes: live(8388608)
+	};
+	const listeners = [];
+	const form = {
+		sets: [],
+		getSnapshot() {
+			return { status: "ready", writable: true, revision: 1, value: state };
+		},
+		subscribe(listener) {
+			listeners.push(listener);
+			return function () {
+				const index = listeners.indexOf(listener);
+				if (index >= 0) listeners.splice(index, 1);
+			};
+		},
+		async set(field, value) {
+			this.sets.push([ field, value ]);
+			// The Host replaces the live reference's content; it does not swap the reference out.
+			state[field] = live(value);
+			for (const listener of listeners.slice()) listener();
+			return true;
+		}
+	};
+
+	const runtime = createHookRuntime();
+	applyWith({
+		configForms: createConfigForms({ served: [ "session-log-upload" ], form }),
+		fetch: ledgerFetch([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ])
+	}, runtime);
+	await settle(runtime);
+
+	// Before the write, the read-only line reports the effective list.
+	const readOnlyBefore = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "deepseekModelPatterns";
+	}).map(textOf)[0];
+	assert(readOnlyBefore !== undefined, "the pattern list's read-only line is missing");
+	assert(/deepseek/.test(readOnlyBefore), `the read-only line does not show the effective list: ${readOnlyBefore}`);
+
+	// Type and save a second name.
+	typeInto(runtime, "deepseekModelPatterns", "deepseek\ndfmodel\n");
+	clickSave(runtime, "deepseekModelPatterns");
+	await settle(runtime);
+
+	const written = form.sets.find(function (set) { return set[0] === "deepseekModelPatterns"; });
+	assert(written !== undefined, "the list was never written");
+	assert(JSON.stringify(written[1]) === JSON.stringify([ "deepseek", "dfmodel" ]), `written value: ${JSON.stringify(written[1])}`);
+
+	// THE ASSERTION THAT WOULD HAVE FAILED: the page must now read the stored array back. With the
+	// `fieldValue` bug the read-only line said "not reported" and the textarea reverted.
+	const readOnlyAfter = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "deepseekModelPatterns";
+	}).map(textOf)[0];
+	assert(/dfmodel/.test(readOnlyAfter), `a saved list was not read back: ${readOnlyAfter}`);
+	const control = fieldInput(runtime, "deepseekModelPatterns");
+	assert(typeof control.props.value === "string" && control.props.value.indexOf("dfmodel") >= 0, `the textarea did not mirror the saved list: ${JSON.stringify(control.props.value)}`);
+
+	// The same for the directories, including the empty→filled direction.
+	typeInto(runtime, "excludedWorkingDirectories", "D:\\private\n");
+	clickSave(runtime, "excludedWorkingDirectories");
+	await settle(runtime);
+	const dirsReadOnly = runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0 && node.props["data-field"] === "excludedWorkingDirectories";
+	}).map(textOf)[0];
+	assert(/private/i.test(dirsReadOnly), `a saved directory list was not read back: ${dirsReadOnly}`);
+
+	return "both lists write through the served form and read back from a live reference";
+});
+
 console.log("");
 if (failures.length === 0) {
 	console.log(`OK: ${passed} checks passed.`);
