@@ -1778,7 +1778,7 @@ await checkAsync("field-editing", "the destination and byte cap are editable, va
 	// model-pattern list, so a proxy's renamed model can be marked as DeepSeek; and the working-directory
 	// exclusion list). The property that matters is unchanged: `mode`, `uploadModel` and `credentialRef`
 	// are never in it, so the field editor cannot touch them.
-	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the four editable fields");
+	assert(/const EDITABLE_FIELDS = Object\.freeze\(\[ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories", "uploadSessionIds" \]\)/.test(stripComments(clientSource)), "the editable-field whitelist is not exactly the five editable fields");
 	for (const forbidden of ['mode', 'uploadModel', 'credentialRef']) {
 		assert(!new RegExp(`EDITABLE_FIELDS = Object\\.freeze\\(\\[[^\\]]*"${forbidden}"`).test(stripComments(clientSource)), `${forbidden} entered EDITABLE_FIELDS`);
 	}
@@ -2207,6 +2207,27 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 	assert(optInAfter.props.checked === true, "a non-empty allowlist must show the restriction as active");
 
 	return "both lists write through the served form and read back from a live reference";
+});
+
+// 27 ─ the folder chooser renders, and a Session can be chosen alone ─────────────────────────
+// Two user-reported defects, both of which every earlier check passed through:
+//   1. the chooser's class names had NO CSS rule, so it rendered as an unstyled run of text;
+//   2. a Session row shared its workspace's key, so ticking a Session ticked the whole workspace and
+//      a single conversation could never be selected.
+await checkAsync("chooser-ui", "the chooser is styled, and Session ticks are independent of directory ticks", async () => {
+	// (1) every class the chooser renders must have a rule, or it silently looks broken.
+	for (const name of [ "slu-help", "slu-picker", "slu-checks", "slu-check", "slu-checkPath", "slu-checkWorkspace", "slu-checkSession" ]) {
+		assert(new RegExp(`\\.${name}\\s*[{,:]`).test(clientSource), `.${name} has no CSS rule, so the chooser renders unstyled`);
+	}
+	// (2) the two tick sets are separate, and the Session row keys on the Session id.
+	const tickRow = clientSource.slice(clientSource.indexOf("const tickRow = function"), clientSource.indexOf("const rows = [];"));
+	assert(tickRow.includes('if (kind === "session") setPickedSessions(apply)'), "a Session tick does not go to its own state");
+	assert(tickRow.includes("else setPicked(apply)"), "a directory tick does not go to its own state");
+	assert(/tickRow\("session", session\.id,/.test(clientSource), "a Session row is not keyed by its own id");
+	// (3) both allowlists are written — saving only the directory one would silently drop Session ticks.
+	assert(clientSource.includes('saveField("uploadDirectories", chosenDirectories'), "the directory allowlist is not saved");
+	assert(clientSource.includes('saveField("uploadSessionIds", chosenSessions'), "the Session allowlist is not saved");
+	return "7 chooser classes styled; the two tick sets are separate; both allowlists are written";
 });
 
 console.log("");

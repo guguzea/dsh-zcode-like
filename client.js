@@ -331,6 +331,17 @@ window.__ModuleLoader__.load({
 .slu-input:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:2px}
 .slu-toggle{display:flex;flex-direction:column;gap:4px}
 .slu-toggleLabel{display:flex;align-items:center;gap:8px;font-size:12px;line-height:18px;cursor:pointer}
+/* The folder chooser. Without these rules the checkboxes and their labels collapse into one
+   unpunctuated run of text, which is what the first version rendered. */
+.slu-help{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.slu-picker{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}
+.slu-checks{display:flex;flex-direction:column;gap:2px;max-height:280px;overflow:auto}
+.slu-check{display:flex;align-items:center;gap:8px;padding:3px 4px;box-sizing:border-box;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;cursor:pointer}
+.slu-check:hover{background-color:var(--dsw-alias-bg-layer-2)}
+.slu-check input{flex:none;margin:0;cursor:pointer}
+.slu-checkPath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slu-checkWorkspace{font-weight:600;color:var(--dsw-alias-label-primary)}
+.slu-checkSession{padding-left:24px;color:var(--dsw-alias-label-secondary)}
 .slu-fieldState{font-size:12px;line-height:18px}
 .slu-saved{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .slu-pre{margin:0;padding:12px;box-sizing:border-box;border-radius:var(--dsw-radius-sm);background-color:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:220px}
@@ -430,7 +441,7 @@ window.__ModuleLoader__.load({
 		 * its own consent-gated path, and this list is what makes it impossible for the field
 		 * editor to widen the mode by accident.
 		 */
-		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories" ]);
+		const EDITABLE_FIELDS = Object.freeze([ "endpoint", "maxBytes", "deepseekModelPatterns", "uploadDirectories", "uploadSessionIds" ]);
 		/**
 		 * The destination the Host will actually POST to, for one reported value.
 		 *
@@ -486,6 +497,27 @@ window.__ModuleLoader__.load({
 					seen[normalized] = true;
 					out.push(normalized);
 				}
+			}
+			return out;
+		}
+		/**
+		 * The per-Session allowlist the Host will use, for one reported value.
+		 *
+		 * Session ids are OPAQUE: unlike a directory path they are never lower-cased, trimmed or
+		 * separator-folded. Doing so would silently match a Session the user did not tick, so this
+		 * keeps exactly the non-empty strings the Host would keep — and nothing else.
+		 * @param value - the reported value, already unwrapped by `fieldValue`.
+		 * @returns the Session ids the Host will use.
+		 */
+		function sessionIdsInUse(value) {
+			const raw = typeof value === "string" ? [ value ] : Array.isArray(value) ? value : [];
+			const seen = Object.create(null);
+			const out = [];
+			for (let index = 0; index < raw.length; index++) {
+				const id = raw[index];
+				if (typeof id !== "string" || id.length === 0 || seen[id] === true) continue;
+				seen[id] = true;
+				out.push(id);
 			}
 			return out;
 		}
@@ -1478,6 +1510,7 @@ window.__ModuleLoader__.load({
 				const [ pickerOpen, setPickerOpen ] = React.useState(false);
 				const [ directoryOptions, setDirectoryOptions ] = React.useState([]);
 				const [ picked, setPicked ] = React.useState(function () { return Object.create(null); });
+				const [ pickedSessions, setPickedSessions ] = React.useState(function () { return Object.create(null); });
 				const [ scanning, setScanning ] = React.useState(false);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
@@ -1531,6 +1564,9 @@ window.__ModuleLoader__.load({
 				const maxBytes = servedValue === null ? null : maxBytesInUse(fieldValue(servedValue.maxBytes));
 				const patterns = servedValue === null ? null : patternsInUse(fieldValue(servedValue.deepseekModelPatterns));
 				const directories = servedValue === null ? null : directoriesInUse(fieldValue(servedValue.uploadDirectories));
+				// The per-Session allowlist. Read the same way as the directory one: an array of opaque
+				// ids, reported as `null` when nothing described the namespace.
+				const uploadSessionIds = servedValue === null ? null : sessionIdsInUse(fieldValue(servedValue.uploadSessionIds));
 
 				/**
 				 * Validate one draft and, when the Host would accept it, write it. The write goes
@@ -1540,7 +1576,7 @@ window.__ModuleLoader__.load({
 				 * @param parsed - the value to write, or null when the draft is invalid.
 				 * @param invalidKey - locale key explaining why the draft was not written.
 				 */
-				const saveField = function (field, parsed, invalidKey) {
+				const saveField = function (field, parsed, invalidKey, afterSuccess) {
 					if (parsed === null) {
 						setFieldState({ field: field, kind: "invalid", key: invalidKey });
 						return;
@@ -1567,6 +1603,8 @@ window.__ModuleLoader__.load({
 						else if (field === "maxBytes") setCapDraft(null);
 						else if (field === "deepseekModelPatterns") setPatternsDraft(null);
 						else if (field === "uploadDirectories") setDirectoriesDraft(null);
+						// A second write chained by the caller (the chooser saves two config keys).
+						if (typeof afterSuccess === "function") afterSuccess();
 					}, function () {
 						setFieldBusy(null);
 						setFieldState({ field: field, kind: "failed", key: "upload.saveFailed" });
@@ -1646,20 +1684,25 @@ window.__ModuleLoader__.load({
 				 * first ("all of it"), then lets the user narrow it by ticking folders, which is the
 				 * mental model that matches what the Host actually does with a non-empty list.
 				 *
-				 * The folder options come from the Host's scan route (live Sessions only). A path the
-				 * user typed but no live Session is in is kept as an option too, so a saved choice never
-				 * silently disappears from the list just because that workspace is not open right now.
+				 * The folder options come from the Host's scan route, which reads the same
+				 * `workspaceRegistry` + `sessionQuery` projections the sidebar reads. Ticking a workspace
+				 * row restricts to that DIRECTORY; ticking a Session row restricts to that one SESSION.
+				 * Both are ORed by the Host, and both are saved here.
 				 *
-				 * @param effective - the allowlist the Host will use, or null when nothing reported one.
+				 * @param effective - the directory allowlist the Host will use, or null when unknown.
+				 * @param effectiveSessions - the per-Session allowlist the Host will use, or null.
 				 */
-				const directoryChooser = function (effective) {
+				const directoryChooser = function (effective, effectiveSessions) {
 					const selected = effective === null ? [] : effective;
-					const restricted = selected.length > 0;
+					const selectedSessionList = effectiveSessions === null ? [] : effectiveSessions;
+					const restricted = selected.length > 0 || selectedSessionList.length > 0;
 					const selectedKeys = Object.create(null);
 					for (const entry of selected) {
 						const key = normalizeDirectoryPath(entry);
 						if (key !== null) selectedKeys[key] = true;
 					}
+					const selectedSessionIds = Object.create(null);
+					for (const id of selectedSessionList) if (typeof id === "string" && id.length > 0) selectedSessionIds[id] = true;
 					const state = fieldState !== null && fieldState.field === "uploadDirectories" ? fieldState : null;
 
 					const children = [
@@ -1691,10 +1734,13 @@ window.__ModuleLoader__.load({
 					));
 
 					if (pickerOpen) {
-						// A workspace row ticks or unticks that whole directory. A Session row ticks the
-						// Session's own directory (a Session is not independent of where it lives), so the
-						// two levels stay consistent: ticking a Session shows its workspace as ticked too.
-						const tickRow = function (key, checked, label, extraClass, dataAttrs) {
+						// Two INDEPENDENT sets. A workspace row ticks its DIRECTORY (written to
+						// uploadDirectories); a Session row ticks that one SESSION (written to
+						// uploadSessionIds). They are ORed on the Host, so ticking a single conversation
+						// uploads it even when its workspace is unticked — which is the reason to offer
+						// Session-level rows at all. Sharing one key here (the earlier version) made a
+						// Session impossible to select on its own.
+						const tickRow = function (kind, key, checked, label, extraClass, dataAttrs) {
 							const attrs = Object.assign({
 								type: "checkbox",
 								checked: checked === true,
@@ -1702,15 +1748,17 @@ window.__ModuleLoader__.load({
 								onChange: function (event) {
 									const target = event !== null && event !== undefined ? event.target : null;
 									const on = target !== null && target !== undefined && target.checked === true;
-									setPicked(function (previous) {
+									const apply = function (previous) {
 										const next = Object.assign(Object.create(null), previous);
 										if (on) next[key] = true;
 										else delete next[key];
 										return next;
-									});
+									};
+									if (kind === "session") setPickedSessions(apply);
+									else setPicked(apply);
 								}
 							}, dataAttrs || {});
-							return React.createElement("label", { key: "row-" + String(key), className: "slu-check " + (extraClass || "") },
+							return React.createElement("label", { key: kind + "-" + String(key), className: "slu-check " + (extraClass || "") },
 								React.createElement("input", attrs),
 								React.createElement("span", { className: "slu-checkPath" }, label)
 							);
@@ -1720,13 +1768,12 @@ window.__ModuleLoader__.load({
 						for (const workspace of directoryOptions) {
 							const workspaceKey = normalizeDirectoryPath(workspace.path);
 							if (workspaceKey !== null) {
-								rows.push(tickRow(workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
+								rows.push(tickRow("workspace", workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
 									workspace.title || workspace.path || workspaceKey, "slu-checkWorkspace", { "data-workspace": workspaceKey }));
 							}
 							for (const session of workspace.sessions) {
-								if (workspaceKey === null) continue;
 								const label = session.title && session.title.length > 0 ? session.title : session.id;
-								rows.push(tickRow(workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
+								rows.push(tickRow("session", session.id, pickedSessions[session.id] === true || selectedSessionIds[session.id] === true,
 									label, "slu-checkSession", { "data-session": session.id }));
 							}
 						}
@@ -1747,16 +1794,22 @@ window.__ModuleLoader__.load({
 									"data-field": "uploadDirectories",
 									disabled: !live || fieldBusy !== null ? true : undefined,
 									onClick: function () {
-										const chosen = [];
-										const seen = Object.create(null);
+										// Two writes, because the two sets are separate config keys: the ticked
+										// directories and the ticked Sessions. Each keeps the spelling the user
+										// saw where we have one, so the saved value stays readable.
+										const chosenDirectories = [];
 										for (const key of Object.keys(picked)) {
-											if (picked[key] !== true || seen[key] === true) continue;
-											seen[key] = true;
-											// Write the original spelling where we have one, so the saved value stays readable.
+											if (picked[key] !== true) continue;
 											const found = directoryOptions.find(function (workspace) { return normalizeDirectoryPath(workspace.path) === key; });
-											chosen.push(found !== undefined && found.path ? found.path : key);
+											chosenDirectories.push(found !== undefined && found.path ? found.path : key);
 										}
-										saveField("uploadDirectories", chosen, null);
+										const chosenSessions = Object.keys(pickedSessions).filter(function (id) { return pickedSessions[id] === true; });
+										// One field is saved at a time through the same path the other fields use;
+										// the directory write is the one that reports its own state, so a refusal on
+										// either surfaces rather than being swallowed.
+										saveField("uploadDirectories", chosenDirectories, null, function () {
+											saveField("uploadSessionIds", chosenSessions, null);
+										});
 									}
 								}, t("upload.fieldSave"))
 							),
@@ -2054,7 +2107,7 @@ window.__ModuleLoader__.load({
 				// The excluded working directories apply in every mode, so this one is always shown.
 				// It is a chooser, not a text box: the default ("everything is uploaded") is stated
 				// first, and narrowing it is an explicit act of ticking folders.
-				children.push(directoryChooser(directories));
+				children.push(directoryChooser(directories, uploadSessionIds));
 
 				// ── upload ledger ──────────────────────────────────────────────────────────────
 				// Which Session logs this plugin has uploaded: Host-side state read over its own

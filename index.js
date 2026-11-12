@@ -35,9 +35,10 @@ import {
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
+  DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
-  isUploadAllowedByDirectory,
+  isUploadAllowed,
   resolveConfig,
 } from './host/config.js'
 import { decideUpload, suppressShipped } from './host/eligibility.js'
@@ -152,6 +153,7 @@ try {
         // `deepseekModelPatterns` is volatile so the user can say "this proxy's `dfmodel` is DeepSeek".
         deepseekModelPatterns: z.array(z.string()).default([...DEFAULT_DEEPSEEK_MODEL_PATTERNS]).volatile(),
         uploadDirectories: z.array(z.string()).default([...DEFAULT_UPLOAD_DIRECTORIES]).volatile(),
+        uploadSessionIds: z.array(z.string()).default([...DEFAULT_UPLOAD_SESSION_IDS]).volatile(),
         endpoint: z.string().default(DEFAULT_ENDPOINT).volatile(),
         uploadModel: z.string().default(DEFAULT_UPLOAD_MODEL),
         credentialRef: z.string().default(DEFAULT_CREDENTIAL_REF),
@@ -551,32 +553,41 @@ export function apply(ctx, rawConfig) {
   /**
    * Whether one Session is inside the configured upload allowlist.
    *
-   * The rule lives in `host/config.js` (`isUploadAllowedByDirectory`): an **empty** list means "no
-   * restriction — upload everything", which is why an unconfigured plugin behaves exactly as before.
+   * The rule lives in `host/config.js` (`isUploadAllowed`): **both** lists empty means "no restriction
+   * — upload everything", which is why an unconfigured plugin behaves exactly as before. When either
+   * list is non-empty a Session is allowed if it is explicitly ticked, or if its working directory is
+   * covered — the two are ORed, so a single ticked conversation uploads out of an unticked workspace.
    *
    * The shipped registry calls the exclusion predicate synchronously with only `{sessionId, purpose}`
    * (`dsh-session-log-deepseek/lib/index.js:145-149`), so the cwd has to be looked up — it is not
    * handed to us. Total by construction: a missing `sessions` service or a throwing getter resolve to
    * "allowed", because refusing on doubt would silently stop uploads the user never asked to stop.
-   * A *live* session with no working directory is a different case: with a non-empty list it is not
-   * covered by any entry, so it is not uploaded (and `isUploadAllowedByDirectory` decides that).
+   * A *live* session with no working directory is a different case: with a directory list and no
+   * Session tick it is not covered, so it is not uploaded (`isUploadAllowed` decides that).
    *
    * @param sessionId the Session id from the request, or anything else.
    * @returns `true` when the Session may be uploaded.
    */
   function isSessionDirectoryAllowed(sessionId) {
     try {
-      const directories = currentConfig().uploadDirectories
+      const live = currentConfig()
+      const directories = live.uploadDirectories
+      const sessionIds = live.uploadSessionIds
+      const hasDirectories = Array.isArray(directories) && directories.length > 0
+      const hasSessions = Array.isArray(sessionIds) && sessionIds.length > 0
       // No allowlist configured: every Session is allowed, and there is no need to look one up.
-      if (!Array.isArray(directories) || directories.length === 0) return true
+      if (!hasDirectories && !hasSessions) return true
       if (typeof sessionId !== 'string' || sessionId.length === 0) return true
+      // A ticked Session does not need its cwd looked up at all.
+      if (hasSessions && sessionIds.includes(sessionId)) return true
+      if (!hasDirectories) return false
       const sessions = ctx.get('sessions')
       if (sessions === null || sessions === undefined || typeof sessions.get !== 'function') return true
       const session = sessions.get(sessionId)
       if (session === null || session === undefined) return true
       const header = session.header
       if (header === null || header === undefined || typeof header !== 'object') return true
-      return isUploadAllowedByDirectory(header.cwd, directories)
+      return isUploadAllowed({ cwd: header.cwd, sessionId, directories, sessionIds })
     } catch {
       return true
     }
@@ -803,14 +814,14 @@ export function apply(ctx, rawConfig) {
     // a settings write between two uploads must be honoured without a row restart.
     const live = currentConfig()
 
-    // Last line of defence for the directory exclusion. `wrapStream`/`decideUpload` already refuse an
-    // excluded Session, but this path is also reachable from a queued upload whose decision was taken
-    // earlier — and a directory added in the meantime must stop it. Read from the live `session` we
+    // Last line of defence for the upload allowlist. `wrapStream`/`decideUpload` already refuse a
+    // Session outside it, but this path is also reachable from a queued upload whose decision was taken
+    // earlier — and a restriction added in the meantime must stop it. Read from the live `session` we
     // already hold rather than going back through `ctx.sessions`.
     const sessionHeader = session.header
     const sessionCwd = sessionHeader !== null && sessionHeader !== undefined && typeof sessionHeader === 'object' ? sessionHeader.cwd : undefined
-    if (!isUploadAllowedByDirectory(sessionCwd, live.uploadDirectories)) {
-      log('debug', `session-log-upload: session "${sessionId}" is in an excluded working directory; not uploading`)
+    if (!isUploadAllowed({ cwd: sessionCwd, sessionId, directories: live.uploadDirectories, sessionIds: live.uploadSessionIds })) {
+      log('debug', `session-log-upload: session "${sessionId}" is outside the upload allowlist; not uploading`)
       return
     }
 
@@ -1108,6 +1119,13 @@ export function apply(ctx, rawConfig) {
    * What it reports is still minimal — workspace path and title, Session id and title — because the
    * page only needs enough for a person to recognise a row. No message content, no message counts.
    *
+   * **Subagent Sessions are excluded.** A delegated child Session has no workspace of its own, a title
+   * derived from someone else's prompt, and dozens of siblings; listing them turns a chooser into a
+   * wall of noise and makes "upload only this folder" impossible to reason about. They are recognised
+   * the way the Harness marks them — `origin: 'subagent'` or a `parentSession` — and dropped before
+   * anything is grouped, so a workspace never shows one and a loose Session grouping never invents a
+   * directory the user does not recognise.
+   *
    * Every service is optional: a composition without `workspaceRegistry` or `sessionQuery` yields
    * whatever the others provide, and a failure in one yields the rest rather than an error.
    *
@@ -1121,6 +1139,30 @@ export function apply(ctx, rawConfig) {
     // Session ids worth titling: every id any workspace claims, plus every Session the query service
     // knows about that no workspace claims (a Session started in a directory that was never registered).
     const ids = []
+
+    // Headers and the subagent set come from one corpus read, so every later filter agrees on which
+    // Sessions are children. Reading it once also keeps the route to a single persistence listing.
+    const headers = new Map()
+    const children = new Set()
+    try {
+      const query = ctx.get('sessionQuery')
+      if (query !== null && query !== undefined && typeof query.listSessions === 'function') {
+        const records = await query.listSessions()
+        if (Array.isArray(records)) {
+          for (const record of records) {
+            const header = record !== null && record !== undefined ? record.header : undefined
+            if (header === null || header === undefined) continue
+            const id = typeof header.id === 'string' ? header.id : undefined
+            if (id === undefined || id.length === 0) continue
+            headers.set(id, header)
+            // Both markers exist in the header shape; either one means "this is a delegate".
+            if (header.origin === 'subagent' || typeof header.parentSession === 'string') children.add(id)
+          }
+        }
+      }
+    } catch (error) {
+      log('warn', `session-log-upload: listing Sessions for the folder chooser failed: ${messageOf(error)}`)
+    }
 
     try {
       const registry = ctx.get('workspaceRegistry')
@@ -1138,6 +1180,9 @@ export function apply(ctx, rawConfig) {
               const id = typeof raw === 'string' ? raw : raw !== null && raw !== undefined ? String(raw) : undefined
               if (id === undefined || id.length === 0 || claimed.has(id)) continue
               claimed.add(id)
+              // A subagent Session is never offered as a choice; mark it claimed so the loose pass
+              // below cannot re-introduce it under a directory.
+              if (children.has(id)) continue
               ids.push(id)
               sessions.push({ id, title: undefined })
             }
@@ -1155,19 +1200,16 @@ export function apply(ctx, rawConfig) {
     try {
       const query = ctx.get('sessionQuery')
       if (query !== null && query !== undefined && typeof query.listSessions === 'function') {
-        const records = await query.listSessions()
-        if (Array.isArray(records)) {
+        if (headers.size > 0) {
           const loose = new Map()
-          for (const record of records) {
-            const header = record !== null && record !== undefined ? record.header : undefined
-            if (header === null || header === undefined) continue
-            const id = typeof header.id === 'string' ? header.id : undefined
-            if (id === undefined || id.length === 0 || claimed.has(id)) continue
-            const cwd = typeof header.cwd === 'string' && header.cwd.length > 0 ? header.cwd : ''
+          for (const [id, header] of headers) {
+            if (claimed.has(id)) continue
             claimed.add(id)
-            ids.push(id)
+            if (children.has(id)) continue
+            const cwd = typeof header.cwd === 'string' && header.cwd.length > 0 ? header.cwd : ''
             if (!loose.has(cwd)) loose.set(cwd, [])
             loose.get(cwd).push({ id, title: undefined })
+            ids.push(id)
           }
           for (const [cwd, sessions] of loose) {
             total += sessions.length
@@ -1176,7 +1218,7 @@ export function apply(ctx, rawConfig) {
         }
       }
     } catch (error) {
-      log('warn', `session-log-upload: listing Sessions from the query service failed: ${messageOf(error)}`)
+      log('warn', `session-log-upload: grouping Sessions by directory failed: ${messageOf(error)}`)
     }
 
     // One batched title read. A rejection for one id must not lose the others, which is why the

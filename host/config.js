@@ -56,6 +56,14 @@ export const DEFAULT_MAX_BYTES = 8388608
  */
 export const DEFAULT_UPLOAD_DIRECTORIES = []
 
+/**
+ * Default per-Session allowlist: empty, meaning no Session is singled out.
+ *
+ * ORed with {@link DEFAULT_UPLOAD_DIRECTORIES}: ticking a Session uploads it even when its directory is
+ * not ticked, which is how a user picks one conversation out of a large workspace.
+ */
+export const DEFAULT_UPLOAD_SESSION_IDS = []
+
 /** The credential-reference grammar accepted by the credentials service. */
 export const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -207,19 +215,63 @@ export function isDirectoryCovered(cwd, directories) {
 }
 
 /**
- * Whether a Session may be uploaded at all, given the configured directory allowlist.
+ * Whether a Session may be uploaded at all, given the configured allowlists.
  *
  * THE SENTENCE THIS IMPLEMENTS, and the one the page must say: *by default every Session is uploaded,
- * whichever workspace it came from. List directories and only Sessions in those directories (or under
- * them) are uploaded.* An empty list therefore means "no restriction", **not** "nothing".
+ * whichever workspace it came from. Tick folders and/or individual Sessions to upload only those.*
+ * Both lists empty therefore means "no restriction", **not** "nothing".
  *
  * That asymmetry is the whole point of the allowlist shape: an unconfigured plugin behaves exactly as
  * it did before, and turning it on is a visible, deliberate act. A denylist would have the opposite
  * failure mode — a user reading "these directories are excluded" has no way to tell what is still
  * being sent.
  *
- * An unusable cwd (a Session with no working directory) is not covered by any allowlist, so it is not
- * uploaded once the list is non-empty; with an empty list it is uploaded as before.
+ * The two lists are ORed, which is what makes per-Session selection useful: ticking a Session uploads
+ * it even when its directory is not ticked, so a user can pick one conversation out of a large
+ * workspace without also sending its siblings.
+ *
+ * An unusable cwd (a Session with no working directory) is not covered by any directory entry, so it
+ * is not uploaded once the directory list is non-empty; an explicitly ticked Session is uploaded
+ * regardless of its cwd.
+ *
+ * @param request the Session's cwd and id, and both configured lists; every field is tolerated.
+ * @returns `true` when the Session may be uploaded.
+ */
+export function isUploadAllowed(request) {
+  try {
+    const { cwd, sessionId, directories, sessionIds } = request === null || request === undefined ? {} : request
+    const dirs = usableDirectoryEntries(directories)
+    const ids = usableSessionIds(sessionIds)
+    // Neither list restricts anything.
+    if (dirs.length === 0 && ids.length === 0) return true
+    // An explicitly ticked Session is always allowed, whatever its directory.
+    if (typeof sessionId === 'string' && sessionId.length > 0 && ids.includes(sessionId)) return true
+    // Otherwise the directory allowlist decides.
+    if (dirs.length === 0) return false
+    return isDirectoryCovered(cwd, dirs)
+  } catch {
+    return true
+  }
+}
+
+/** The directory entries that survive normalization, or `[]`. */
+function usableDirectoryEntries(directories) {
+  if (!Array.isArray(directories)) return []
+  return directories.filter((entry) => normalizeDirectoryPath(entry) !== undefined)
+}
+
+/** The Session ids that are non-empty strings, or `[]`. */
+function usableSessionIds(sessionIds) {
+  if (!Array.isArray(sessionIds)) return []
+  return sessionIds.filter((entry) => typeof entry === 'string' && entry.length > 0)
+}
+
+/**
+ * Whether a Session may be uploaded at all, given the configured directory allowlist alone.
+ *
+ * Kept as its own export because the directory rule is what the shipped-uploader predicate consults
+ * when it has an id but the caller wants the pure directory answer. New callers should prefer
+ * {@link isUploadAllowed}, which also honours a ticked Session.
  *
  * @param cwd the Session's working directory, or anything else.
  * @param directories the configured allowlist, or anything else.
@@ -227,11 +279,7 @@ export function isDirectoryCovered(cwd, directories) {
  */
 export function isUploadAllowedByDirectory(cwd, directories) {
   try {
-    if (!Array.isArray(directories) || directories.length === 0) return true
-    // A non-empty list that normalizes to nothing usable is treated as "no restriction" rather than
-    // "nothing is allowed": a list of blank lines is a configuration mistake, and silently stopping
-    // every upload is the more surprising of the two failures.
-    const usable = directories.filter((entry) => normalizeDirectoryPath(entry) !== undefined)
+    const usable = usableDirectoryEntries(directories)
     if (usable.length === 0) return true
     return isDirectoryCovered(cwd, usable)
   } catch {
@@ -289,12 +337,32 @@ function normalizeEndpoint(value) {
   return /^https?:\/\//i.test(text) ? text : undefined
 }
 
+/**
+ * Normalize the per-Session allowlist.
+ *
+ * Ids are opaque strings compared exactly — no trimming, no case folding: a Session id is an
+ * identifier, not a path, and silently matching `ABC` to `abc` would upload a Session the user did not
+ * tick. Non-strings and empty strings drop; duplicates collapse.
+ *
+ * @param value raw value.
+ * @returns a fresh array of Session ids; empty when nothing usable was given.
+ */
+function normalizeSessionIds(value) {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : []
+  const seen = new Set()
+  for (const entry of raw) {
+    if (typeof entry === 'string' && entry.length > 0) seen.add(entry)
+  }
+  return [...seen]
+}
+
 /** A complete defaulted configuration object (fresh on every call). */
 function defaults() {
   return {
     mode: DEFAULT_MODE,
     deepseekModelPatterns: [...DEFAULT_DEEPSEEK_MODEL_PATTERNS],
     uploadDirectories: [...DEFAULT_UPLOAD_DIRECTORIES],
+    uploadSessionIds: [...DEFAULT_UPLOAD_SESSION_IDS],
     endpoint: DEFAULT_ENDPOINT,
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -313,18 +381,19 @@ function defaults() {
  * visible immediately.
  *
  * @param raw the row's raw `config` value from the Loader (any type).
- * @returns `{mode, deepseekModelPatterns, endpoint, uploadModel, credentialRef, maxBytes}`.
+ * @returns `{mode, deepseekModelPatterns, endpoint, uploadModel, credentialRef, maxBytes, uploadDirectories, uploadSessionIds}`.
  */
 export function resolveConfig(raw) {
   try {
     const resolved = defaults()
     if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) return resolved
 
-    // The five volatile fields are unwrapped; the rest are plain and read directly.
+    // The six volatile fields are unwrapped; the rest are plain and read directly.
     const mode = readLive(own(raw, 'mode'))
     if (isMode(mode)) resolved.mode = mode
     resolved.deepseekModelPatterns = normalizePatterns(readLive(own(raw, 'deepseekModelPatterns')), resolved.deepseekModelPatterns)
     resolved.uploadDirectories = normalizeDirectories(readLive(own(raw, 'uploadDirectories')))
+    resolved.uploadSessionIds = normalizeSessionIds(readLive(own(raw, 'uploadSessionIds')))
 
     const endpoint = normalizeEndpoint(readLive(own(raw, 'endpoint')))
     if (endpoint !== undefined) resolved.endpoint = endpoint

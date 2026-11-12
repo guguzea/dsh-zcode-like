@@ -188,15 +188,7 @@ check('undefined / null / non-object inputs and every unknown-string spelling gi
   for (const raw of hostile) {
     const resolved = resolveConfig(raw)
     assert.equal(resolved.mode, 'official-only', `resolveConfig(${describe(raw)}) widened to ${resolved.mode}`)
-    assert.deepEqual(Object.keys(resolved).sort(), [
-      'credentialRef',
-      'deepseekModelPatterns',
-      'endpoint',
-      'maxBytes',
-      'mode',
-      'uploadDirectories',
-      'uploadModel',
-    ])
+    assert.deepEqual(Object.keys(resolved).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
   }
 })
 
@@ -1657,7 +1649,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   // destination) and `maxBytes` (so the page can report the cap). Those are exactly the `readLive`
   // unwraps; `uploadModel` and `credentialRef` must stay non-volatile.
   const volatileCount = [...source.matchAll(/\.volatile\(\)/g)].length
-  assert.equal(volatileCount, 5, `expected exactly five .volatile() fields, found ${volatileCount}`)
+  assert.equal(volatileCount, 6, `expected exactly six .volatile() fields, found ${volatileCount}`)
   assert.match(source, /endpoint: z\.string\(\)\.default\(DEFAULT_ENDPOINT\)\.volatile\(\)/)
   const declaration = source.slice(source.indexOf('Config = z.object({'), source.indexOf('})', source.indexOf('Config = z.object({')))
   const volatileFields = declaration
@@ -1668,7 +1660,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   if (declaration.includes('mode: modeField(z)')) volatileFields.push('mode')
   assert.deepEqual(
     volatileFields.sort(),
-    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
+    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
     `volatile fields: ${volatileFields.join(', ')}`,
   )
   for (const key of ['uploadModel', 'credentialRef']) {

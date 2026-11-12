@@ -26,6 +26,7 @@ import {
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
+  DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
   MODES,
@@ -102,6 +103,7 @@ const build = new Function(
   'DEFAULT_DEEPSEEK_MODEL_PATTERNS',
   'DEFAULT_ENDPOINT',
   'DEFAULT_UPLOAD_DIRECTORIES',
+  'DEFAULT_UPLOAD_SESSION_IDS',
   'DEFAULT_MAX_BYTES',
   'DEFAULT_UPLOAD_MODEL',
   `${region}\nreturn { schema: ${literal.replace('Config = ', '')}, MODE_PATTERN, modeField };`,
@@ -113,6 +115,7 @@ const built = build(
   DEFAULT_DEEPSEEK_MODEL_PATTERNS,
   DEFAULT_ENDPOINT,
   DEFAULT_UPLOAD_DIRECTORIES,
+  DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_MAX_BYTES,
   DEFAULT_UPLOAD_MODEL,
 )
@@ -120,15 +123,7 @@ const schema = built.schema
 
 check('the plugin declaration builds a real schemastery object schema', () => {
   assert.equal(schema.type, 'object')
-  assert.deepEqual(Object.keys(schema.dict).sort(), [
-    'credentialRef',
-    'deepseekModelPatterns',
-    'endpoint',
-    'maxBytes',
-    'mode',
-    'uploadDirectories',
-    'uploadModel',
-  ])
+  assert.deepEqual(Object.keys(schema.dict).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
 })
 
 check('H2: MODE_PATTERN is an exact anchored alternation of the four frozen ids', () => {
@@ -149,6 +144,7 @@ check('H2: the pattern escapes regex metacharacters when MODES is hostile', () =
     DEFAULT_DEEPSEEK_MODEL_PATTERNS,
     DEFAULT_ENDPOINT,
     DEFAULT_UPLOAD_DIRECTORIES,
+    DEFAULT_UPLOAD_SESSION_IDS,
     DEFAULT_MAX_BYTES,
     DEFAULT_UPLOAD_MODEL,
   )
@@ -252,9 +248,9 @@ check('exactly five fields carry the volatile marker: `mode`, the two lists, `en
   const volatileIds = Object.entries(json.refs)
     .filter(([, node]) => node?.meta?.volatile === true)
     .map(([id]) => id)
-  assert.equal(volatileIds.length, 5, `expected exactly five volatile nodes, found ${volatileIds.length}`)
+  assert.equal(volatileIds.length, 6, `expected exactly six volatile nodes, found ${volatileIds.length}`)
   // The five volatile nodes are exactly the ids these keys point at.
-  const VOLATILE_KEYS = ['deepseekModelPatterns', 'endpoint', 'uploadDirectories', 'maxBytes', 'mode']
+  const VOLATILE_KEYS = [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]
   const volatileKeys = VOLATILE_KEYS.filter((key) => volatileIds.includes(String(root.dict[key])))
   assert.deepEqual(volatileKeys.sort(), [...VOLATILE_KEYS].sort(), `volatile fields: ${volatileKeys.join(', ')}`)
   for (const key of VOLATILE_KEYS) {
@@ -364,7 +360,7 @@ check('RETARGETED: the settings FORM projects exactly the five volatile fields',
   assert.ok(form !== undefined, 'no form is projected at all')
   assert.deepEqual(
     Object.keys(form.dict).sort(),
-    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
+    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
     `the form exposed ${Object.keys(form.dict).join(', ')}`,
   )
 })
@@ -375,7 +371,7 @@ check('RETARGETED: the settings FORM projects exactly the five volatile fields',
 // on. `deepseekModelPatterns` moved to the writable side on purpose: it is how a user says that a
 // proxy's renamed model (`dfmodel`) is DeepSeek.
 check('RETARGETED: the write guard admits exactly the five volatile fields, refuses the other two', () => {
-  for (const key of ['mode', 'deepseekModelPatterns', 'uploadDirectories', 'endpoint', 'maxBytes']) {
+  for (const key of [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]) {
     assert.equal(projection.isVolatilePath(schema, [key]), true, `${key} is not writable — the page could not save it`)
   }
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -403,7 +399,7 @@ check('RETARGETED: projectForm exposes the five volatile fields and never the wh
   const projected = projection.projectForm(form, value)
   assert.deepEqual(
     Object.keys(projected).sort(),
-    ['deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories'],
+    [ 'deepseekModelPatterns', 'endpoint', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
   )
   for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(key in projected, false, `${key} leaked into the browser projection`)

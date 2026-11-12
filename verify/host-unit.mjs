@@ -90,6 +90,7 @@ const DEFAULT_CONFIG = {
   mode: DEFAULT_MODE,
   deepseekModelPatterns: ['deepseek'],
   uploadDirectories: [],
+  uploadSessionIds: [],
   endpoint: DEFAULT_ENDPOINT,
   uploadModel: DEFAULT_UPLOAD_MODEL,
   credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -138,7 +139,7 @@ await check('absent/non-object input resolves to the full default set', () => {
     assert.deepEqual(resolveConfig(raw), DEFAULT_CONFIG)
   }
 })
-await check('the resolved object carries exactly the seven frozen keys', () => {
+await check('the resolved object carries exactly the eight frozen keys', () => {
   assert.deepEqual(Object.keys(resolveConfig({ mode: 'off', extra: 1 })).sort(), Object.keys(DEFAULT_CONFIG).sort())
 })
 await check('a valid config round-trips unchanged', () => {
@@ -148,6 +149,7 @@ await check('a valid config round-trips unchanged', () => {
     // Normalized on the way in (case, separator, trailing slash), so the round trip states the
     // normalized form: that is the value the host actually compares against.
     uploadDirectories: ['d:/secret/work'],
+    uploadSessionIds: [],
     endpoint: 'https://example.test/v1/messages',
     uploadModel: 'deepseek-reasoner',
     credentialRef: 'OTHER_KEY',
@@ -268,6 +270,7 @@ await check('every volatile live reference is unwrapped at call time; plain keys
     mode: 'off',
     deepseekModelPatterns: ['deepseek', 'dfmodel'],
     uploadDirectories: ['d:/secret', 'c:/users/someone/private'],
+    uploadSessionIds: [],
     endpoint: 'https://second.test/v1/messages',
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
@@ -551,10 +554,10 @@ await check('the mode field is constrained, defensive, and volatile (H2, task-8)
     .map((line) => line.trim().slice(0, line.trim().indexOf(':')))
   assert.deepEqual(
     volatileKeys,
-    ['deepseekModelPatterns', 'uploadDirectories', 'endpoint', 'maxBytes'],
+    ['deepseekModelPatterns', 'uploadDirectories', 'uploadSessionIds', 'endpoint', 'maxBytes'],
     'the declared volatile set changed',
   )
-  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 5, 'mode + the two lists + endpoint + maxBytes is exactly five')
+  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 6, 'mode + the three lists + endpoint + maxBytes is exactly six')
   // The two the settings page must NOT be able to write: they decide which credential is used and
   // which model this plugin spends money on. (`deepseekModelPatterns` moved into the volatile set when
   // the user gained the ability to mark a proxy's model name as DeepSeek.)
@@ -2829,6 +2832,38 @@ await check('the scan reports no message content', async () => {
   }
   // The four fields it MAY carry, and nothing surprising.
   assert.deepEqual([...keys].sort(), ['id', 'path', 'sessions', 'title', 'total', 'workspaces'].sort(), `scan payload keys: ${[...keys].sort().join(', ')}`)
+})
+
+await check('subagent Sessions are excluded, by either Harness marker', async () => {
+  // A delegated child has no workspace of its own and a title derived from someone else's prompt.
+  // Listing a dozen of them turns the chooser into noise, so both markers the header carries must
+  // remove it: `origin: 'subagent'` and a `parentSession`.
+  const payload = await scanOnce({
+    workspaceRegistry: [
+      { id: 'ws-1', path: 'F:\\DSH-ZCODE', title: 'DSH-ZCODE', sessionIds: ['session-parent', 'session-child-origin'] },
+      { id: 'ws-2', path: 'C:\\ml', title: '机器学习', sessionIds: ['session-child-parent'] },
+    ],
+    sessionQuery: {
+      listSessions: async () => [
+        { header: { id: 'session-parent', cwd: 'F:\\DSH-ZCODE' } },
+        { header: { id: 'session-child-origin', cwd: 'F:\\DSH-ZCODE', origin: 'subagent' } },
+        { header: { id: 'session-child-parent', cwd: 'C:\\ml', parentSession: 'session-parent' } },
+        { header: { id: 'session-loose-child', cwd: 'E:\\loose', origin: 'subagent' } },
+        { header: { id: 'session-loose', cwd: 'E:\\loose' } },
+      ],
+      readTitleSnapshots: async (ids) => ids.map((id) => ({ sessionId: id, status: 'fulfilled', value: { session: { id }, title: undefined } })),
+    },
+  })
+  const listed = payload.workspaces.flatMap((workspace) => workspace.sessions.map((session) => session.id))
+  assert.deepEqual(listed.sort(), ['session-loose', 'session-parent'], `chooser listed ${JSON.stringify(listed)}`)
+  // The empty workspace entry stays (it is a real workspace) but loses its only child.
+  const ml = payload.workspaces.find((workspace) => workspace.path === 'C:\\ml')
+  assert.ok(ml !== undefined, 'a workspace disappeared entirely; only its children should be dropped')
+  assert.equal(ml.sessions.length, 0, 'a subagent Session survived inside its workspace')
+  // An empty-title workspace entry that had ONLY children must not become a phantom loose group.
+  assert.equal(payload.workspaces.filter((workspace) => workspace.path === 'E:\\loose').length, 1, 'the loose grouping is wrong')
+  const loose = payload.workspaces.find((workspace) => workspace.path === 'E:\\loose')
+  assert.deepEqual(loose.sessions.map((session) => session.id), ['session-loose'], 'a loose subagent was listed')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

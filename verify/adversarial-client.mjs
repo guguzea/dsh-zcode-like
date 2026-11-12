@@ -750,7 +750,7 @@ check('RETARGETED: the UI may write exactly the four whitelisted fields — neve
   // that must not move is the same one: `mode`, `uploadModel`, `credentialRef` stay out.
   assert.match(
     CLIENT_SOURCE,
-    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes", ?"deepseekModelPatterns", ?"uploadDirectories" ?\]\);/,
+    /const EDITABLE_FIELDS = Object\.freeze\(\[ ?"endpoint", ?"maxBytes", ?"deepseekModelPatterns", ?"uploadDirectories", ?"uploadSessionIds" ?\]\);/,
     'the editable-field whitelist changed shape or contents',
   )
   assert.match(CLIENT_SOURCE, /if \(EDITABLE_FIELDS\.indexOf\(field\) < 0\) return \{ ok: false, path: "none", doc: null \}/)
