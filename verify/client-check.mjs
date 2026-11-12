@@ -842,14 +842,14 @@ function createWritableForm(initial) {
 /**
  * Render the section with a served form and one ledger `fetch` stub.
  * @param replies - replies for {@link ledgerFetch}.
- * @param options - `{endpoint, maxBytes, useSessions, form}`.
+ * @param options - `{mode, endpoint, maxBytes, useSessions, form}`.
  * @returns `{runtime, tree, fetch, form}`.
  */
 async function ledgerScenario(replies, options) {
 	const settings = options || {};
 	const ledger = ledgerFetch(replies);
 	const form = settings.form !== undefined ? settings.form : createWritableForm({
-		mode: "official-only",
+		mode: settings.mode === undefined ? "official-only" : settings.mode,
 		endpoint: settings.endpoint === undefined ? SERVED_ENDPOINT : settings.endpoint,
 		maxBytes: settings.maxBytes === undefined ? 8388608 : settings.maxBytes
 	});
@@ -2027,15 +2027,19 @@ check("disposal", "apply hands every registration to ctx.effect with a cleanup",
 // first list is how a user says "that name is DeepSeek"; the second is a new feature (never upload
 // from these folders). Both are edited on this page, so both must be driven here.
 await checkAsync("list-editing", "the two lists edit, normalize and write like the other fields", async () => {
-	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ]);
+	// The model-pattern list only renders in `deepseek-any-provider` — the one mode that reads it.
+	// Elsewhere it is absent rather than shown-and-disabled, because a control that looks live but
+	// does nothing is how a user comes to believe they changed something they did not. So this
+	// scenario starts in that mode.
+	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode: "deepseek-any-provider" });
 	const runtime = scenario.runtime;
 
 	// With nothing configured, the read-only lines say so explicitly rather than rendering a blank.
 	const valueTexts = runtime.findAll(function (node) {
 		return typeof node.props.className === "string" && node.props.className.indexOf("slu-listValue") >= 0;
 	}).map(textOf);
-	assert(valueTexts.length === 2, `expected two list value lines, found ${valueTexts.length}`);
-	assert(valueTexts.some(function (text) { return text.indexOf("(none") >= 0; }), "an empty list must say so explicitly, not render a blank");
+	assert(valueTexts.length === 2, `expected two list value lines in this mode, found ${valueTexts.length}`);
+	assert(valueTexts.some(function (text) { return text.indexOf("(none") >= 0 || text.indexOf("Nothing") >= 0; }), "an empty list must say so explicitly, not render a blank");
 
 	// Both controls exist and are textareas, so a multi-line list is actually editable.
 	for (const field of [ "deepseekModelPatterns", "excludedWorkingDirectories" ]) {
@@ -2077,25 +2081,45 @@ await checkAsync("list-editing", "the two lists edit, normalize and write like t
 	return `${scenario.form.sets.length} list writes, normalized (trim, dedupe case-insensitively, empty allowed)`;
 });
 
-await checkAsync("list-help", "the copy says what each list does and does NOT do", async () => {
-	const en = JSON.parse(fs.readFileSync(path.join(ROOT, "locale", "en.json"), "utf8")).upload;
-	const zh = JSON.parse(fs.readFileSync(path.join(ROOT, "locale", "zh.json"), "utf8")).upload;
-	// The pattern list's whole point is the renamed-model case, and its DANGER is being mistaken for a
-	// widening switch — so it must say it is inert in the other three modes.
+await checkAsync("list-help", "the copy says what each list does, and the pattern list is hidden outside its mode", async () => {
+	const en = JSON.parse(fs.readFileSync(path.join(ROOT, "locale/en.json"), "utf8")).upload;
+	const zh = JSON.parse(fs.readFileSync(path.join(ROOT, "locale/zh.json"), "utf8")).upload;
+	// The pattern list's job: explain the renamed-model case, which is the only reason it exists.
 	assert(/proxy|another name|dfmodel/i.test(en.patternsHelp), "the pattern help does not explain the renamed-model case");
-	assert(/does nothing|changes nothing|only in that mode/i.test(en.patternsHelp), "the pattern help does not say it is inert outside that mode");
-	assert(/反代|别的名字|dfmodel/.test(zh.patternsHelp), "zh pattern help lost the renamed-model case");
+	assert(/dfmodel/.test(zh.patternsHelp), "zh pattern help lost the renamed-model case");
 	// The directory list's load-bearing sentence: it stops the BUILT-IN upload too. A user pruning
 	// sensitive folders would assume that, and if the copy does not say it they cannot tell.
-	assert(/built-in|official-API upload is stopped/i.test(en.directoriesHelp), "the directory help does not say it also stops the built-in upload");
+	assert(/built-in|DSH\u2019s own official upload|official upload is stopped/i.test(en.directoriesHelp), "the directory help does not say it also stops the built-in upload");
 	assert(/自带/.test(zh.directoriesHelp), "zh directory help lost the built-in-upload sentence");
-	assert(/narrow|widen/i.test(en.directoriesHelp), "the directory help does not say it can only narrow");
+	// The two sentences the user asked to delete must be gone from every copy of the string.
+	for (const [label, dict] of [ [ "en", en ], [ "zh", zh ] ]) {
+		assert(!/secretary|name prefix/i.test(dict.directoriesHelp), `${label}: the name-prefix caveat is back`);
+		assert(!/can only narrow|widen|不能放宽|只能收紧/i.test(dict.directoriesHelp), `${label}: the narrow-only sentence is back`);
+	}
 	// Both empty states must exist as real strings.
 	for (const key of [ "patternsEmpty", "directoriesEmpty" ]) {
 		assert(typeof en[key] === "string" && en[key].length > 0, `en.${key} is missing`);
 		assert(typeof zh[key] === "string" && zh[key].length > 0, `zh.${key} is missing`);
 	}
-	return "both lists explained in both languages, including the built-in-upload consequence";
+	// The rendering rule: the pattern list appears only in `deepseek-any-provider`. Not "disabled
+	// elsewhere" — absent, so nobody mistakes a dead control for a live one.
+	for (const mode of [ "off", "official-only", "any-model" ]) {
+		const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode });
+		const labels = scenario.runtime.findAll(function (node) {
+			return typeof node.props.className === "string" && node.props.className.indexOf("slu-fieldLabel") >= 0;
+		}).map(textOf);
+		const hasPatterns = labels.some(function (text) { return /treat as DeepSeek|当作 DeepSeek/.test(text); });
+		assert(hasPatterns === false, `the pattern list is visible in mode ${mode}`);
+		const hasDirectories = labels.some(function (text) { return /folders|目录/.test(text); });
+		assert(hasDirectories === true, `the directory list is missing in mode ${mode}`);
+	}
+	// …and it IS visible in the one mode that reads it.
+	const wide = await ledgerScenario([ { status: 200, body: { generatedAt: 1, directory: "C:\\\\l", total: 0, sessions: [] } } ], { mode: "deepseek-any-provider" });
+	const wideLabels = wide.runtime.findAll(function (node) {
+		return typeof node.props.className === "string" && node.props.className.indexOf("slu-fieldLabel") >= 0;
+	}).map(textOf);
+	assert(wideLabels.some(function (text) { return /treat as DeepSeek/.test(text); }), "the pattern list is missing from the mode that uses it");
+	return "both lists explained; the pattern list appears only in deepseek-any-provider";
 });
 
 console.log("");

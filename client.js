@@ -56,16 +56,16 @@ window.__ModuleLoader__.load({
 				"upload.modes.anyModel.label": "Any model",
 				"upload.modes.anyModel.detail": "Uploads after every model request, whichever provider answered it.",
 				"upload.warnTitle": "Send this Session log to the destination below?",
-				"upload.warnBody": "The log — your messages, tool output, and file paths, including conversations you held with other model providers — will be sent to the destination named below. It leaves this machine, it may be used to improve and train models, and it cannot be undone.",
+				"upload.warnBody": "The log is sent to the destination below. That includes your messages, tool output, file paths, and conversations you held with other model providers. It leaves this machine, it may be used to improve and train models, and it cannot be undone.",
 				"upload.warnConfirm": "Enable upload",
 				"upload.warnCancel": "Cancel",
 				"upload.byteCapLabel": "Byte cap per request",
 				"upload.patternsLabel": "Models to treat as DeepSeek",
-				"upload.patternsHelp": "Substrings matched case-insensitively against the model id. A provider or proxy can serve DeepSeek under another name (for example dfmodel); without an entry here, \"any provider’s DeepSeek\" cannot recognise those sessions. It is used only in that mode: it changes nothing in \"never upload\", \"only the official DeepSeek API\", or \"any model\".",
-				"upload.patternsEmpty": "(none yet — only the default deepseek pattern is applied)",
+				"upload.patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
+				"upload.patternsEmpty": "Nothing added yet. Only the default deepseek pattern is used.",
 				"upload.directoriesLabel": "Never upload sessions from these folders",
-				"upload.directoriesHelp": "One path per line. A session whose working directory is one of these, or inside one, is never uploaded — and DSH’s built-in official-API upload is stopped for it too. Matching ignores case and \\ vs /, and covers subfolders but not folders that merely share a name prefix (secret does not cover secretary). It can only narrow: \"never upload\" still stops everything.",
-				"upload.directoriesEmpty": "(none — nothing is excluded)",
+				"upload.directoriesHelp": "One path per line. Sessions in these folders or their subfolders are not uploaded. DSH’s own official upload is stopped for them too.",
+				"upload.directoriesEmpty": "Nothing excluded.",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "bytes",
@@ -135,16 +135,16 @@ window.__ModuleLoader__.load({
 				"upload.modes.anyModel.label": "上传任何模型",
 				"upload.modes.anyModel.detail": "每一次模型请求之后都上传，不管这次是哪个供应商回答的。",
 				"upload.warnTitle": "要把这次会话日志发送到下面的目标吗？",
-				"upload.warnBody": "会话日志——你的消息、工具输出和文件路径，包括你与其他模型供应商的对话——会发送到下面写明的目标。它会离开这台机器，可能被用于改进和训练模型，且无法撤回。",
+				"upload.warnBody": "会话日志会发送到下面写明的目标，包括你的消息、工具输出、文件路径，以及你与其他模型供应商的对话。它会离开这台机器，可能被用于改进和训练模型，且无法撤回。",
 				"upload.warnConfirm": "开启上传",
 				"upload.warnCancel": "取消",
 				"upload.byteCapLabel": "每次请求的字节上限",
 				"upload.patternsLabel": "把这些模型当作 DeepSeek",
-				"upload.patternsHelp": "按大小写不敏感的子串匹配模型 id。供应商或反代可能用别的名字提供 DeepSeek（例如 dfmodel），名单里不写它就识别不出来。只在这个模式下起作用：“不上传”“只上传官方 API”“上传任何模型”这三种模式下它什么也不影响。",
-				"upload.patternsEmpty": "（空——目前只按默认的 deepseek 匹配）",
+				"upload.patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
+				"upload.patternsEmpty": "还没有添加。只使用默认的 deepseek 匹配。",
 				"upload.directoriesLabel": "这些目录下的会话永不上传",
-				"upload.directoriesHelp": "每行一个路径。会话的工作目录是这些目录之一、或在它们里面，就永不上传——而且 DSH 自带的上传在官方 API 下也会一并停掉。匹配不区分大小写、忽略斜杠方向，包含子目录；但不会误伤只是名字前缀相同的目录（secret 不包含 secretary）。它只能收紧、不能放宽：“不上传”仍然停掉一切。",
-				"upload.directoriesEmpty": "（空——没有排除任何目录）",
+				"upload.directoriesHelp": "每行一个路径。这些目录及其子目录里的会话不会上传。DSH 自带的上传也一并停掉。",
+				"upload.directoriesEmpty": "没有排除任何目录。",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "字节",
@@ -1773,21 +1773,23 @@ window.__ModuleLoader__.load({
 					editableField("maxBytes", maxBytes, function (value) { return String(value); }, capDraft, setCapDraft, "upload.capInvalid", capToWrite)
 				));
 
-				// The model-pattern list. Its whole reason for being editable: a provider or proxy can
-				// serve DeepSeek under a name that does not contain "deepseek", and then
-				// `deepseek-any-provider` cannot recognise it. The copy says so, and says the list is
-				// inert in the other three modes so nobody mistakes it for a widening switch.
-				children.push(listField(
-					"deepseekModelPatterns",
-					t("upload.patternsLabel"),
-					t("upload.patternsHelp"),
-					patterns,
-					patternsDraft,
-					setPatternsDraft
-				));
+				// The model-pattern list is shown ONLY in `deepseek-any-provider`, the one mode that
+				// reads it. Hidden elsewhere rather than shown-and-disabled: a control that looks
+				// live but changes nothing is how a user comes to believe they widened or narrowed
+				// something they did not. `patterns === null` means nothing reported the config, in
+				// which case the mode itself is unknown and a control would be a guess.
+				if (mode === "deepseek-any-provider") {
+					children.push(listField(
+						"deepseekModelPatterns",
+						t("upload.patternsLabel"),
+						t("upload.patternsHelp"),
+						patterns,
+						patternsDraft,
+						setPatternsDraft
+					));
+				}
 
-				// The excluded working directories. Load-bearing sentence in the help text: this also
-				// stops the built-in official-API upload, not just this plugin's own request.
+				// The excluded working directories apply in every mode, so this one is always shown.
 				children.push(listField(
 					"excludedWorkingDirectories",
 					t("upload.directoriesLabel"),

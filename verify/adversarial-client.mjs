@@ -1570,9 +1570,22 @@ check('CONSENT COPY: the dialog names the live destination and makes no brand cl
       )
     }
   }
-  // It must defer to the value on screen instead of asserting a destination of its own.
-  assert.match(en.upload.warnBody, /destination named below/i)
-  assert.match(zh.upload.warnBody, /目标/)
+  // It must defer to the value on screen instead of asserting a destination of its own. The exact
+  // wording is not pinned — only that it points AT the destination shown — so a plainer sentence is
+  // still correct as long as it does not name a destination itself.
+  assert.match(en.upload.warnBody, /destination below|destination named below/i)
+  assert.match(zh.upload.warnBody, /下面写明的目标|目标/)
+  // The substantive disclosures must all survive any rewording. These are the sentences a rewording
+  // can silently drop, and dropping one turns a truthful dialog into a misleading one.
+  for (const required of [/messages/i, /file paths/i, /other model providers/i, /leaves this machine/i, /train models/i, /cannot be undone/i]) {
+    assert.match(en.upload.warnBody, required, `the English consent body lost a disclosure: ${required}`)
+  }
+  for (const required of [/消息/, /文件路径/, /其他模型供应商/, /离开这台机器/, /训练模型/, /无法撤回/]) {
+    assert.match(zh.upload.warnBody, required, `the Chinese consent body lost a disclosure: ${required}`)
+  }
+  // …and neither language uses the em-dash aside construction this pass removed.
+  assert.equal(en.upload.warnBody.includes('\u2014'), false, 'the English consent body still uses an em-dash aside')
+  assert.equal(zh.upload.warnBody.includes('——'), false, 'the Chinese consent body still uses an em-dash aside')
   // Drive it: with a non-default endpoint the dialog names THAT endpoint, not the default and not a brand.
   const form = readyForm('official-only')
   form.snapshot = {
