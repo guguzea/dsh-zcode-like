@@ -97,6 +97,7 @@
     "directoriesScanning": "正在扫描…",
     "directoriesNoSessions": "没有可选的会话。",
     "directoriesChoose": "选择指定目录",
+    "directoriesAdjust": "调整目录",
     "coveredByFolder": "已包含在勾选的目录里",
     "noticeTitle": "使用前请阅读",
     "noticeP1": "本插件默认把会话日志发送到 DeepSeek 官方 API，或发送到下方设置里写明的那一个目标。什么时候发送由你决定；默认设置下，除了 DSH 本来就会发的，不会多发任何东西。",

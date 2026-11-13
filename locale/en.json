@@ -97,6 +97,7 @@
     "directoriesScanning": "Scanning…",
     "directoriesNoSessions": "No sessions found to choose from.",
     "directoriesChoose": "Choose specific folders",
+    "directoriesAdjust": "Adjust folders",
     "coveredByFolder": "Covered by the ticked folder",
     "noticeTitle": "Before you use this plugin",
     "noticeP1": "This plugin sends your Session logs to DeepSeek’s official API by default, or to whatever destination is shown in the settings below. You decide when that happens; on the default setting it sends nothing beyond what DSH already sends.",

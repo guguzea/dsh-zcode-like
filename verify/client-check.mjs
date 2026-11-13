@@ -2892,7 +2892,45 @@ await checkAsync("chooser-cascade", "a ticked folder covers its Sessions: checke
 	return "covered Sessions checked+disabled+hinted, own state restored on untick (including a saved folder), covered ids not saved as Session ids";
 });
 
-// 42 ─ delegated conversations: a child renders after its parent and keeps its own id ─────────
+// 42 ─ an already-saved folder selection can be adjusted again ────────────────────────────────
+// The user-reported defect: after ticking a folder and saving, the chooser could not be reopened.
+// With a saved selection the toggle renders checked, so its ON branch never runs again; without a
+// separate entry point the only affordance left was its OFF branch, which CLEARS the selection.
+await checkAsync("chooser-adjust", "a saved folder selection has an adjust control that reopens the picker with the saved ticks", async () => {
+	const scenario = await chooserScenario(CHOOSER_WORKSPACES, { uploadDirectories: [ "F:\\work\\one" ] });
+	// Fresh render with a saved selection: the picker is closed, so no rows exist yet.
+	const chooserRows = function () {
+		return scenario.runtime.findAll(function (node) {
+			return node.type === "input" && (node.props["data-workspace"] !== undefined || node.props["data-session"] !== undefined);
+		});
+	};
+	assert(chooserRows().length === 0, `chooser rows rendered before the picker was opened: ${chooserRows().length}`);
+	const adjust = scenario.runtime.findAll(function (node) { return node.type === "button" && node.props["data-action"] === "adjust-directories"; })[0];
+	assert(adjust !== undefined, "a saved folder selection has no adjust control");
+	const toggle = scenario.runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	assert(toggle.props.checked === true, "the saved selection is not shown as restricted");
+	// Clicking adjust opens the picker exactly like the opt-in's ON branch, with the scan seeding the draft.
+	adjust.props.onClick({});
+	await settle(scenario.runtime);
+	assert(scenario.runtime.findAll(function (node) { return typeof node.props.className === "string" && node.props.className.indexOf("slu-picker") >= 0; }).length > 0, "adjust did not open the picker");
+	assert(chooserRows().length > 0, "adjust opened the picker but rendered no rows");
+	const savedFolder = chooserCheckbox(scenario.runtime, "workspace", "f:/work/one");
+	assert(savedFolder !== undefined && savedFolder.props.checked === true, "the saved folder row is not ticked in the reopened picker");
+	assert(chooserCheckbox(scenario.runtime, "session", "s1").props.disabled === true, "the saved folder does not cover its Sessions in the reopened picker");
+	// Adjust the selection: untick the saved folder, tick another, save. Only the new folder is written.
+	toggleChooser(scenario.runtime, "workspace", "f:/work/one", false);
+	toggleChooser(scenario.runtime, "workspace", "f:/work/two", true);
+	await saveChooser(scenario.runtime);
+	const directories = scenario.form.sets.filter(function (set) { return set[0] === "uploadDirectories"; });
+	assert(directories.length === 1, `the adjusted save wrote the folder list ${directories.length} times`);
+	assert(JSON.stringify(directories[0][1]) === JSON.stringify([ "F:\\work\\two" ]), `the adjusted save wrote ${JSON.stringify(directories[0][1])}`);
+	// The entry point survives the write and a re-render: it is still there to adjust again.
+	const after = scenario.runtime.findAll(function (node) { return node.type === "button" && node.props["data-action"] === "adjust-directories"; })[0];
+	assert(after !== undefined, "the adjust control disappeared after a save");
+	return "saved folder shows a closed picker + adjust control; adjust opens it with the saved tick; editing and saving writes only the new folder";
+});
+
+// 43 ─ delegated conversations: a child renders after its parent and keeps its own id ─────────
 await checkAsync("foreign-parent", "a delegated child renders after its parent, and still ticks, saves and sends by its own id", async () => {
 	const scenario = await foreignScenario({
 		scan: { body: FOREIGN_PARENT_PAYLOAD },

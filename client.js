@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
 				"upload.directoriesScanning": "Scanning…",
 				"upload.directoriesNoSessions": "No sessions found to choose from.",
 				"upload.directoriesChoose": "Choose specific folders",
+				"upload.directoriesAdjust": "Adjust folders",
 				"upload.coveredByFolder": "Covered by the ticked folder",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
@@ -194,6 +195,7 @@ window.__ModuleLoader__.load({
 				"upload.directoriesScanning": "正在扫描…",
 				"upload.directoriesNoSessions": "没有可选的会话。",
 				"upload.directoriesChoose": "选择指定目录",
+				"upload.directoriesAdjust": "调整目录",
 				"upload.coveredByFolder": "已包含在勾选的目录里",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
@@ -2280,6 +2282,10 @@ window.__ModuleLoader__.load({
 
 					// The opt-in. Turning it on opens the picker (the list is still empty, which still means
 					// "no restriction"); turning it off writes the empty list, which is "upload everything".
+					// Once a selection is saved the box renders checked, so its ON branch can never run
+					// again: the adjust control next to it is the entry point that reopens the picker for
+					// an already-restricted page. Without it the only affordance after a save would be the
+					// toggle's OFF branch, which clears the selection instead of adjusting it.
 					children.push(React.createElement("div", { key: "choose", className: "slu-toggle" },
 						React.createElement("label", { className: "slu-toggleLabel" },
 							React.createElement("input", {
@@ -2295,7 +2301,17 @@ window.__ModuleLoader__.load({
 								}
 							}),
 							React.createElement("span", null, t("upload.directoriesChoose"))
-						)
+						),
+						restricted
+							? React.createElement("button", {
+								key: "adjust",
+								type: "button",
+								className: "slu-btn slu-directoriesAdjust",
+								"data-action": "adjust-directories",
+								disabled: !live ? true : undefined,
+								onClick: function () { setPickerOpen(true); refreshScan(selected); }
+							}, t("upload.directoriesAdjust"))
+							: null
 					));
 
 					if (pickerOpen) {
