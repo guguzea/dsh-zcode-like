@@ -40,6 +40,7 @@ export const label = 'ZCode'            // 界面显示名
  *   error: string | null,
  *   sessions: Array<{
  *     id: string,                        // 该 harness 自己的会话 id，不带前缀
+ *     parentId?: string,                 // 可选：委派出来的子会话所指向的父会话 id
  *     title: string,                     // 拿不到就给 ''
  *     cwd: string,                       // 拿不到就给 ''
  *     createdAt: number,                 // 毫秒；拿不到给 0
@@ -135,7 +136,7 @@ export const FOREIGN_UPLOAD_ROUTE_PATH = '/api/session-log-upload.foreign-upload
     {
       "harness": "zcode", "label": "ZCode", "available": true, "error": null,
       "sessions": [
-        { "id": "zcode/sess_abc", "title": "…", "cwd": "F:\\x", "createdAt": 0,
+        { "id": "zcode/sess_abc", "parentId": "zcode/sess_root", "title": "…", "cwd": "F:\\x", "createdAt": 0,
           "updatedAt": 0, "messageCount": 42, "provider": "…", "model": "…", "bytes": 1234 }
       ]
     }

@@ -127,7 +127,10 @@ function describe(value) {
     return Object.prototype.toString.call(value)
   }
 }
-async function waitFor(predicate, label, timeoutMs = 2000) {
+// Generous on purpose: this is a wait for the plugin's own fire-and-forget upload to settle, and under
+// the full `run-all` sequence the machine is busy. A 2 s budget produced a false failure once; the
+// predicate is still checked every 2 ms, so a real stall is caught quickly.
+async function waitFor(predicate, label, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (predicate()) return true

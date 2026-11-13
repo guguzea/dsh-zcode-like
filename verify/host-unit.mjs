@@ -3055,15 +3055,25 @@ function seedForeignZcode(home) {
   mkdirSync(directory, { recursive: true })
   const db = new DatabaseSync(join(directory, 'db.sqlite'))
   try {
-    db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)')
+    db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)')
     db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT, sequence INTEGER)')
     db.exec('CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, sequence INTEGER, data TEXT)')
-    db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run(
+    db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)').run(
       'sess_fixture',
+      null,
       'Fixture conversation',
       'F:\\fixture-repo',
       TIME,
       TIME + 2000,
+    )
+    // A delegated child: the page indents a row that names a parent, so the payload has to carry one.
+    db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)').run(
+      'sess_child',
+      'sess_fixture',
+      'Fixture child',
+      'F:\\fixture-repo',
+      TIME + 100,
+      TIME + 1500,
     )
     const messages = [
       ['msg-user-1', '{"role":"user","semantics":{"origin":"real_user"}}', 0],
@@ -3081,6 +3091,8 @@ function seedForeignZcode(home) {
     insertPart.run('part-2', 'msg-assistant-1', 'sess_fixture', 0, '{"type":"reasoning","text":"look first"}')
     insertPart.run('part-3', 'msg-assistant-1', 'sess_fixture', 1, '{"type":"text","text":"a fixture repo"}')
     insertPart.run('part-4', 'msg-user-2', 'sess_fixture', 0, '{"type":"text","text":"thanks"}')
+    insertMessage.run('msg-child-1', 'sess_child', TIME + 100, '{"role":"user","semantics":{"origin":"real_user"}}', 0)
+    insertPart.run('part-5', 'msg-child-1', 'sess_child', 0, '{"type":"text","text":"child asks something"}')
   } finally {
     db.close()
   }
@@ -3142,14 +3154,20 @@ await check('scan lists the fixture conversation with metadata only, never messa
     const zcode = payload.harnesses.find((group) => group.harness === 'zcode')
     assert.ok(zcode !== undefined, 'the zcode group is missing from the scan payload')
     assert.equal(zcode.available, true, `the fixture store was not recognised: ${String(zcode.error)}`)
-    assert.equal(zcode.sessions.length, 1, `expected one fixture conversation, got ${zcode.sessions.length}`)
-    const [session] = zcode.sessions
+    assert.equal(zcode.sessions.length, 2, `expected two fixture conversations, got ${zcode.sessions.length}`)
+    const session = zcode.sessions.find((row) => row.id === 'zcode/sess_fixture')
+    const child = zcode.sessions.find((row) => row.id === 'zcode/sess_child')
+    assert.ok(session !== undefined && child !== undefined, 'the fixture conversations are missing from the payload')
     assert.equal(session.id, 'zcode/sess_fixture', 'the scan does not hand back a composite id')
     assert.equal(session.title, 'Fixture conversation')
     assert.equal(session.cwd, 'F:\\fixture-repo')
     assert.equal(session.messageCount, 3)
     assert.equal(session.provider, 'cline-pass')
     assert.equal(session.model, 'deepseek-v4.1-flash')
+    assert.equal(session.parentId, '', 'a top-level conversation must not name a parent')
+    // The page indents a row under its parent, so the lineage has to survive the route; it is advisory
+    // data only and must never change what gets sent.
+    assert.equal(child.parentId, 'zcode/sess_fixture', 'the child row lost its parent id')
     // The chooser needs recognition data, not the conversation. This is the privacy property of the scan.
     const flat = JSON.stringify(payload)
     assert.equal(flat.includes('what is in this repo'), false, 'the scan leaked message text')

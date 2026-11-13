@@ -174,7 +174,9 @@ export async function scan(options) {
     const db = opened.db
     try {
       const rows = db
-        .prepare('SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC, id')
+        .prepare(
+          'SELECT id, parent_id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC, id',
+        )
         .all()
       if (isAborted(signal)) return emptyScan(true, 'aborted')
 
@@ -204,6 +206,10 @@ export async function scan(options) {
         const model = sessionModel(db, sessionId)
         sessions.push({
           id: sessionId,
+          // ZCode marks a delegated child with a parent id. The page uses it only to indent the row under
+          // its parent, so a user can tell a conversation they started from one an agent spawned; it never
+          // changes what is sent or how it is addressed.
+          parentId: textOf(row.parent_id),
           title: textOf(row.title),
           cwd: textOf(row.directory),
           createdAt: rowMillis(row.time_created),

@@ -1235,6 +1235,91 @@ function tickForeign(runtime, id, checked) {
 	runtime.flush();
 }
 
+/** The row element (label) for one foreign conversation. */
+function foreignRowLabel(runtime, id) {
+	return runtime.findAll(function (node) { return typeof node.props["data-foreign-row"] === "string" && node.props["data-foreign-row"] === id; })[0];
+}
+
+/** The foreign row ids in render order. */
+function foreignRowOrder(runtime) {
+	return foreignRows(runtime).map(function (node) { return node.props["data-foreign-id"]; });
+}
+
+/**
+ * A fetch stub for the DSH folder chooser: the session-directory scan, the notice read and the
+ * detailed-log read. The scan payload is supplied by the caller.
+ * @param workspaces - the `workspaces` array the scan route should answer with.
+ */
+function chooserFetch(workspaces) {
+	return function (input) {
+		const url = typeof input === "string" ? input : String(input);
+		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("session-log-upload.scan") >= 0) return Promise.resolve(foreignResponse(200, { workspaces: workspaces }));
+		return Promise.resolve(foreignResponse(200, { generatedAt: 1, directory: "C:\\l", total: 0, sessions: [] }));
+	};
+}
+
+/**
+ * Render the section with a served, writable form and workspaces the folder chooser can list.
+ * @param workspaces - the scan payload's workspaces.
+ * @param config - optional `{uploadDirectories, uploadSessionIds}` initial config.
+ */
+async function chooserScenario(workspaces, config) {
+	const settings = config || {};
+	const form = createWritableForm({
+		mode: "official-only",
+		endpoint: SERVED_ENDPOINT,
+		maxBytes: DEFAULT_CAP,
+		uploadDirectories: settings.uploadDirectories === undefined ? [] : settings.uploadDirectories,
+		uploadSessionIds: settings.uploadSessionIds === undefined ? [] : settings.uploadSessionIds
+	});
+	const runtime = createHookRuntime();
+	applyWith({
+		configForms: createConfigForms({ served: [ "session-log-upload" ], form: form }),
+		fetch: chooserFetch(workspaces)
+	}, runtime);
+	await settle(runtime);
+	return { runtime: runtime, form: form };
+}
+
+/** Open the folder chooser and let its scan settle. */
+async function openChooser(runtime) {
+	const optIn = runtime.findAll(function (node) { return node.props["data-toggle"] === "restrict-directories"; })[0];
+	assert(optIn !== undefined, "the folder chooser's opt-in is missing");
+	optIn.props.onChange({ target: { checked: true } });
+	await settle(runtime);
+}
+
+/** One checkbox in the folder chooser, by `data-workspace` or `data-session`. */
+function chooserCheckbox(runtime, kind, key) {
+	const attribute = kind === "workspace" ? "data-workspace" : "data-session";
+	return runtime.findAll(function (node) { return node.type === "input" && node.props[attribute] === key; })[0];
+}
+
+/** The row element for one folder-chooser entry. */
+function chooserRow(runtime, kind, key) {
+	const identity = kind + ":" + String(key);
+	return runtime.findAll(function (node) { return node.type === "label" && node.props["data-check"] === identity; })[0];
+}
+
+/** Tick or untick one folder-chooser row and re-render. */
+function toggleChooser(runtime, kind, key, checked) {
+	const box = chooserCheckbox(runtime, kind, key);
+	assert(box !== undefined, `no chooser checkbox ${kind} ${key}`);
+	box.props.onChange({ target: { checked: checked } });
+	runtime.flush();
+}
+
+/** Press the folder chooser's Save action and let both writes settle. */
+async function saveChooser(runtime) {
+	const button = runtime.findAll(function (node) {
+		return node.type === "button" && node.props["data-field"] === "uploadDirectories";
+	})[0];
+	assert(button !== undefined, "the folder chooser has no Save action");
+	button.props.onClick({});
+	await settle(runtime);
+}
+
 /** A scan payload with one fully-populated session, one with every optional field missing, and a harness that is not installed. */
 const FOREIGN_SCAN_PAYLOAD = {
 	harnesses: [
@@ -1254,6 +1339,31 @@ const FOREIGN_SCAN_PAYLOAD = {
 		{ harness: "workbuddy", label: "WorkBuddy", available: false, error: "not installed", sessions: [] }
 	]
 };
+
+/**
+ * A scan payload whose child is listed BEFORE its parent (so ordering must be done by the page),
+ * with a row whose parentId names a row that is not in the payload and a row with no parentId at
+ * all. The child and parent are in the same harness, which is the ZCode delegated-child shape.
+ */
+const FOREIGN_PARENT_PAYLOAD = {
+	harnesses: [
+		{
+			harness: "zcode", label: "ZCode", available: true, error: null,
+			sessions: [
+				{ id: "zcode/sess_child", parentId: "zcode/sess_root", title: "Delegated child", cwd: "F:\\work\\a", messageCount: 4, provider: "deepseek", model: "deepseek-flash" },
+				{ id: "zcode/sess_root", parentId: "", title: "Root task", cwd: "F:\\work\\a", messageCount: 10, provider: "deepseek", model: "deepseek-v4" },
+				{ id: "zcode/sess_orphan", parentId: "zcode/sess_missing", title: "Orphan task", cwd: "F:\\work\\b", messageCount: 2, provider: "deepseek", model: "deepseek-flash" },
+				{ id: "zcode/sess_plain", title: "No lineage reported", cwd: "F:\\work\\c", messageCount: 1, provider: "deepseek", model: "deepseek-flash" }
+			]
+		}
+	]
+};
+
+/** The workspaces the folder-chooser scenarios list. */
+const CHOOSER_WORKSPACES = [
+	{ id: "w1", path: "F:\\work\\one", title: "One", sessions: [ { id: "s1", title: "First session" }, { id: "s2", title: "Second session" } ] },
+	{ id: "w2", path: "F:\\work\\two", title: "Two", sessions: [ { id: "s3", title: "Third session" } ] }
+];
 
 // 10 ─ registration + degraded render ───────────────────────────────────────────────────
 await checkAsync("render-fallback", "no served form: controls disabled, no bare save error, manual route last", async () => {
@@ -2731,6 +2841,95 @@ await checkAsync("foreign-truncated", "a truncated import says so instead of onl
 	assert(!whole.includes("first part"), `a complete row was marked truncated: ${JSON.stringify(whole)}`);
 	assert(truncated !== whole, "truncated and complete imports render the same text");
 	return "a truncated import is distinguishable from a complete one";
+});
+
+// 41 ─ the DSH folder chooser cascades: a ticked folder covers its Sessions ──────────────────
+await checkAsync("chooser-cascade", "a ticked folder covers its Sessions: checked, disabled, hinted, and not saved as Session ids", async () => {
+	const scenario = await chooserScenario(CHOOSER_WORKSPACES, { uploadSessionIds: [ "s2" ] });
+	await openChooser(scenario.runtime);
+	// The saved individual tick is the Session's own state before any folder is ticked.
+	assert(chooserCheckbox(scenario.runtime, "session", "s2").props.checked === true, "a saved Session id is not shown as ticked");
+	assert(chooserCheckbox(scenario.runtime, "session", "s2").props.disabled !== true, "a saved Session id is disabled before any folder is ticked");
+	// Ticking the folder covers every Session under it: checked, disabled, and explained in place.
+	toggleChooser(scenario.runtime, "workspace", "f:/work/one", true);
+	for (const id of [ "s1", "s2" ]) {
+		const box = chooserCheckbox(scenario.runtime, "session", id);
+		assert(box !== undefined, `Session ${id} is not rendered under its folder`);
+		assert(box.props.checked === true, `Session ${id} is not checked under a ticked folder`);
+		assert(box.props.disabled === true, `Session ${id} is live under a ticked folder`);
+		const row = chooserRow(scenario.runtime, "session", id);
+		assert(textOf(row).includes("Covered by the ticked folder"), `Session ${id} has no coverage hint: ${textOf(row)}`);
+	}
+	// The cascade does not leak into another folder's Sessions.
+	assert(chooserCheckbox(scenario.runtime, "session", "s3").props.checked === false, "the cascade leaked into another folder");
+	// Unticking the folder returns each row to its own state: s2 keeps its saved tick, s1 is empty.
+	toggleChooser(scenario.runtime, "workspace", "f:/work/one", false);
+	assert(chooserCheckbox(scenario.runtime, "session", "s1").props.checked === false, "s1 stayed checked after the folder was unticked");
+	assert(chooserCheckbox(scenario.runtime, "session", "s1").props.disabled !== true, "s1 stayed disabled after the folder was unticked");
+	assert(chooserCheckbox(scenario.runtime, "session", "s2").props.checked === true, "a saved Session tick was lost when the folder was unticked");
+	assert(chooserCheckbox(scenario.runtime, "session", "s2").props.disabled !== true, "s2 stayed disabled after the folder was unticked");
+	// An individual tick made before the folder covers it is still that row's own state.
+	toggleChooser(scenario.runtime, "session", "s1", true);
+	toggleChooser(scenario.runtime, "workspace", "f:/work/one", true);
+	assert(chooserCheckbox(scenario.runtime, "session", "s1").props.disabled === true, "the individually ticked row was not covered");
+	// Save writes the folder list and only Sessions ticked INDIVIDUALLY: s1 and s2 are merely covered.
+	await saveChooser(scenario.runtime);
+	const directories = scenario.form.sets.filter(function (set) { return set[0] === "uploadDirectories"; });
+	const sessions = scenario.form.sets.filter(function (set) { return set[0] === "uploadSessionIds"; });
+	assert(directories.length === 1 && JSON.stringify(directories[0][1]) === JSON.stringify([ "F:\\work\\one" ]), `the folder write is ${JSON.stringify(directories.map(function (set) { return set[1]; }))}`);
+	assert(sessions.length === 1 && JSON.stringify(sessions[0][1]) === JSON.stringify([]), `the Session write persisted covered ids: ${JSON.stringify(sessions.map(function (set) { return set[1]; }))}`);
+	assert(!/undefined/.test(textOf(scenario.runtime.tree())), "the chooser rendered undefined");
+	// A folder that is ALREADY saved is seeded into the draft, so it shows checked on open AND can
+	// be unticked again: the cascade must not be a one-way street through the saved value.
+	const savedFolder = await chooserScenario(CHOOSER_WORKSPACES, { uploadDirectories: [ "F:\\work\\one" ] });
+	await openChooser(savedFolder.runtime);
+	assert(chooserCheckbox(savedFolder.runtime, "workspace", "f:/work/one").props.checked === true, "a saved folder is not shown as ticked");
+	assert(chooserCheckbox(savedFolder.runtime, "session", "s1").props.disabled === true, "a saved folder does not cover its Sessions");
+	toggleChooser(savedFolder.runtime, "workspace", "f:/work/one", false);
+	assert(chooserCheckbox(savedFolder.runtime, "workspace", "f:/work/one").props.checked === false, "a saved folder could not be unticked");
+	assert(chooserCheckbox(savedFolder.runtime, "session", "s1").props.disabled !== true, "unticking a saved folder left its Sessions disabled");
+	assert(chooserCheckbox(savedFolder.runtime, "session", "s1").props.checked === false, "unticking a saved folder left its Sessions checked");
+	return "covered Sessions checked+disabled+hinted, own state restored on untick (including a saved folder), covered ids not saved as Session ids";
+});
+
+// 42 ─ delegated conversations: a child renders after its parent and keeps its own id ─────────
+await checkAsync("foreign-parent", "a delegated child renders after its parent, and still ticks, saves and sends by its own id", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_PARENT_PAYLOAD },
+		uploads: [ { body: { ok: true, requests: 1 } } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	const order = foreignRowOrder(scenario.runtime);
+	assert(
+		JSON.stringify(order) === JSON.stringify([ "zcode/sess_root", "zcode/sess_child", "zcode/sess_orphan", "zcode/sess_plain" ]),
+		`the row order is ${JSON.stringify(order)}`
+	);
+	const child = foreignRowLabel(scenario.runtime, "zcode/sess_child");
+	const root = foreignRowLabel(scenario.runtime, "zcode/sess_root");
+	const orphan = foreignRowLabel(scenario.runtime, "zcode/sess_orphan");
+	const plain = foreignRowLabel(scenario.runtime, "zcode/sess_plain");
+	assert(child !== undefined && child.props.className.indexOf("slu-checkSessionChild") >= 0, "the child row lost its child class");
+	assert(root.props.className.indexOf("slu-checkSessionChild") < 0, "the parent row was marked as a child");
+	assert(orphan.props.className.indexOf("slu-checkSessionChild") < 0, "a dangling parentId marked the row as a child");
+	assert(plain.props.className.indexOf("slu-checkSessionChild") < 0, "a missing parentId marked the row as a child");
+	assert(!/undefined/.test(textOf(scenario.runtime.tree())), "a parentId rendered as undefined");
+	// A row whose parent is not in the payload is a normal row and is still tickable.
+	tickForeign(scenario.runtime, "zcode/sess_orphan", true);
+	assert(foreignRow(scenario.runtime, "zcode/sess_orphan").props.checked === true, "a row with a dangling parentId cannot be ticked");
+	// The child saves and sends its own id only; the parent is not implied.
+	tickForeign(scenario.runtime, "zcode/sess_orphan", false);
+	tickForeign(scenario.runtime, "zcode/sess_child", true);
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	const written = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(written.length === 1 && JSON.stringify(written[0][1]) === JSON.stringify([ "zcode/sess_child" ]), `the child tick wrote ${JSON.stringify(written.map(function (set) { return set[1]; }))}`);
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 1, `the child send made ${scenario.fetch.uploadCalls.length} POSTs`);
+	assert(scenario.fetch.uploadCalls[0].body.id === "zcode/sess_child", `the child sent ${JSON.stringify(scenario.fetch.uploadCalls[0].body)}`);
+	return "child after parent with the child class, dangling/missing parentId top-level and tickable, child saves and sends its own id";
 });
 
 console.log("");

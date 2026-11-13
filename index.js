@@ -1346,6 +1346,14 @@ export function apply(ctx, rawConfig) {
         const prefix = `${harness}/`
         sessions.push({
           id: rawId.startsWith(prefix) ? rawId : `${prefix}${rawId}`,
+          // Optional: only the harness that records lineage reports it. The page indents a row that names a
+          // parent, and treats a missing or dangling parent as top level.
+          parentId:
+            typeof session.parentId === 'string' && session.parentId.length > 0
+              ? session.parentId.startsWith(prefix)
+                ? session.parentId
+                : `${prefix}${session.parentId}`
+              : '',
           title: typeof session.title === 'string' ? session.title : '',
           cwd: typeof session.cwd === 'string' ? session.cwd : '',
           createdAt: Number.isSafeInteger(session.createdAt) ? session.createdAt : 0,

@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
 				"upload.directoriesScanning": "Scanning…",
 				"upload.directoriesNoSessions": "No sessions found to choose from.",
 				"upload.directoriesChoose": "Choose specific folders",
+				"upload.coveredByFolder": "Covered by the ticked folder",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "bytes",
@@ -193,6 +194,7 @@ window.__ModuleLoader__.load({
 				"upload.directoriesScanning": "正在扫描…",
 				"upload.directoriesNoSessions": "没有可选的会话。",
 				"upload.directoriesChoose": "选择指定目录",
+				"upload.coveredByFolder": "已包含在勾选的目录里",
 				"upload.unitMiB": "MiB",
 				"upload.unitKiB": "KiB",
 				"upload.unitBytes": "字节",
@@ -418,6 +420,11 @@ window.__ModuleLoader__.load({
 .slu-checkPath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .slu-checkWorkspace{font-weight:600;color:var(--dsw-alias-label-primary)}
 .slu-checkSession{padding-left:24px;color:var(--dsw-alias-label-secondary)}
+/* A delegated child conversation: one more indent than a session row, so the lineage is visible.
+   No literal colour here; the row keeps the colours of its base classes. */
+.slu-checkSessionChild{padding-left:48px}
+/* The per-row explanation for a Session covered by a ticked folder. */
+.slu-checkHint{flex:none;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 /* The liability notice: wider than the consent dialog and scrolling, because it is four paragraphs
    a user is meant to actually read. */
 .slu-noticePanel{width:min(560px,calc(100vw - 48px))}
@@ -763,6 +770,9 @@ window.__ModuleLoader__.load({
 							cwd: firstString(record.cwd),
 							provider: firstString(record.provider),
 							model: firstString(record.model),
+							// Optional lineage, composite form. `""`/absent is "no lineage reported",
+							// which is different from a parent id this payload does not contain.
+							parentId: firstString(record.parentId),
 							messageCount: messageCount !== null && messageCount >= 0 ? messageCount : null
 						});
 					}
@@ -775,7 +785,61 @@ window.__ModuleLoader__.load({
 					sessions: sessions
 				});
 			}
+			// Lineage is only a parent when the named row is in this payload. A parentId that is
+			// missing, empty, names this row itself, or names a row the payload does not carry
+			// leaves the row at top level; it never becomes a parent it cannot point at.
+			const known = Object.create(null);
+			for (const group of harnesses) {
+				for (const session of group.sessions) known[session.id] = true;
+			}
+			for (const group of harnesses) {
+				for (const session of group.sessions) {
+					session.child = session.parentId !== null
+						&& session.parentId !== session.id
+						&& known[session.parentId] === true;
+				}
+			}
 			return { harnesses: harnesses, error: firstString(root.error) };
+		}
+		/**
+		 * Order one harness group for rendering so a delegated child row appears immediately after
+		 * the row its `parentId` names, when that parent is in the same group. Rows whose parent is
+		 * in another group still carry the child class, but stay in their own group; rows with no
+		 * resolvable parent stay in payload order. The walk emits each row at most once, so a
+		 * cyclic or self-referential lineage terminates instead of hanging.
+		 *
+		 * @param group - one normalized harness group.
+		 * @returns the sessions in render order.
+		 */
+		function orderForeignSessions(group) {
+			const inGroup = Object.create(null);
+			for (const session of group.sessions) {
+				if (inGroup[session.id] === undefined) inGroup[session.id] = session;
+			}
+			const children = Object.create(null);
+			const tops = [];
+			for (const session of group.sessions) {
+				if (session.parentId !== null && session.parentId !== session.id && inGroup[session.parentId] !== undefined) {
+					if (children[session.parentId] === undefined) children[session.parentId] = [];
+					children[session.parentId].push(session);
+				} else {
+					tops.push(session);
+				}
+			}
+			const ordered = [];
+			const seen = Object.create(null);
+			const emit = function (session) {
+				if (seen[session.id] === true) return;
+				seen[session.id] = true;
+				ordered.push(session);
+				const kids = children[session.id];
+				if (kids === undefined) return;
+				for (const child of kids) emit(child);
+			};
+			for (const session of tops) emit(session);
+			// Anything still unemitted sits in a cycle; emit it in payload order so it is still shown.
+			for (const session of group.sessions) emit(session);
+			return ordered;
 		}
 		/**
 		 * The second line of one scanned-session row: folder, provider/model, message count.
@@ -2202,11 +2266,6 @@ window.__ModuleLoader__.load({
 					const selected = effective === null ? [] : effective;
 					const selectedSessionList = effectiveSessions === null ? [] : effectiveSessions;
 					const restricted = selected.length > 0 || selectedSessionList.length > 0;
-					const selectedKeys = Object.create(null);
-					for (const entry of selected) {
-						const key = normalizeDirectoryPath(entry);
-						if (key !== null) selectedKeys[key] = true;
-					}
 					const selectedSessionIds = Object.create(null);
 					for (const id of selectedSessionList) if (typeof id === "string" && id.length > 0) selectedSessionIds[id] = true;
 					const state = fieldState !== null && fieldState.field === "uploadDirectories" ? fieldState : null;
@@ -2246,11 +2305,11 @@ window.__ModuleLoader__.load({
 						// uploads it even when its workspace is unticked — which is the reason to offer
 						// Session-level rows at all. Sharing one key here (the earlier version) made a
 						// Session impossible to select on its own.
-						const tickRow = function (kind, key, checked, label, extraClass, dataAttrs) {
+						const tickRow = function (kind, key, checked, label, extraClass, dataAttrs, extraDisabled, hint) {
 							const attrs = Object.assign({
 								type: "checkbox",
 								checked: checked === true,
-								disabled: !live ? true : undefined,
+								disabled: !live || extraDisabled === true ? true : undefined,
 								onChange: function (event) {
 									const target = event !== null && event !== undefined ? event.target : null;
 									const on = target !== null && target !== undefined && target.checked === true;
@@ -2264,23 +2323,42 @@ window.__ModuleLoader__.load({
 									else setPicked(apply);
 								}
 							}, dataAttrs || {});
-							return React.createElement("label", { key: kind + "-" + String(key), className: "slu-check " + (extraClass || "") },
+							const rowChildren = [
 								React.createElement("input", attrs),
 								React.createElement("span", { className: "slu-checkPath" }, label)
-							);
+							];
+							// A Session row covered by a ticked folder says so, and is disabled because the
+							// Host ORs the two lists: unticking it here could not take effect.
+							if (hint !== null && hint !== undefined) rowChildren.push(React.createElement("span", { className: "slu-checkHint" }, hint));
+							return React.createElement("label", {
+								key: kind + "-" + String(key),
+								className: "slu-check " + (extraClass || ""),
+								// The row's identity, for the accessibility tree and for tests: the box itself
+								// carries the per-kind attribute already.
+								"data-check": kind + ":" + String(key)
+							}, rowChildren);
 						};
 
 						const rows = [];
 						for (const workspace of directoryOptions) {
 							const workspaceKey = normalizeDirectoryPath(workspace.path);
+							// A ticked folder covers every Session under it. The rows are rendered as checked
+							// and disabled, which is the truth: a per-Session untick inside a ticked folder
+							// is ignored by the Host, so offering it as a live control would be a lie.
+							// The draft is the authority here: `refreshScan` seeds it from the saved
+							// allowlist, so a saved folder is checked on open AND can be unticked again.
+							const workspaceTicked = workspaceKey !== null && picked[workspaceKey] === true;
 							if (workspaceKey !== null) {
-								rows.push(tickRow("workspace", workspaceKey, picked[workspaceKey] === true || selectedKeys[workspaceKey] === true,
+								rows.push(tickRow("workspace", workspaceKey, workspaceTicked,
 									workspace.title || workspace.path || workspaceKey, "slu-checkWorkspace", { "data-workspace": workspaceKey }));
 							}
 							for (const session of workspace.sessions) {
 								const label = session.title && session.title.length > 0 ? session.title : session.id;
-								rows.push(tickRow("session", session.id, pickedSessions[session.id] === true || selectedSessionIds[session.id] === true,
-									label, "slu-checkSession", { "data-session": session.id }));
+								const ownTicked = pickedSessions[session.id] === true || selectedSessionIds[session.id] === true;
+								rows.push(tickRow("session", session.id, workspaceTicked === true ? true : ownTicked,
+									label, "slu-checkSession", { "data-session": session.id },
+									workspaceTicked === true,
+									workspaceTicked === true ? t("upload.coveredByFolder") : null));
 							}
 						}
 
@@ -2301,15 +2379,34 @@ window.__ModuleLoader__.load({
 									disabled: !live || fieldBusy !== null ? true : undefined,
 									onClick: function () {
 										// Two writes, because the two sets are separate config keys: the ticked
-										// directories and the ticked Sessions. Each keeps the spelling the user
-										// saw where we have one, so the saved value stays readable.
+										// directories and the Sessions ticked INDIVIDUALLY. Sessions that are
+										// merely covered by a ticked folder are not written to uploadSessionIds:
+										// the Host ORs the two lists, so the folder already sends them, and an
+										// id that is only covered is not an individual choice.
 										const chosenDirectories = [];
 										for (const key of Object.keys(picked)) {
 											if (picked[key] !== true) continue;
 											const found = directoryOptions.find(function (workspace) { return normalizeDirectoryPath(workspace.path) === key; });
 											chosenDirectories.push(found !== undefined && found.path ? found.path : key);
 										}
-										const chosenSessions = Object.keys(pickedSessions).filter(function (id) { return pickedSessions[id] === true; });
+										const coveredSessions = Object.create(null);
+										for (const workspace of directoryOptions) {
+											const workspaceKey = normalizeDirectoryPath(workspace.path);
+											if (workspaceKey === null || picked[workspaceKey] !== true) continue;
+											for (const session of workspace.sessions) coveredSessions[session.id] = true;
+										}
+										// "Their own state" is the draft tick plus the saved individual allowlist;
+										// the covered ones are removed from that union, never persisted by accident.
+										const individuallyTicked = [];
+										const seenSessions = Object.create(null);
+										const addIndividual = function (id) {
+											if (typeof id !== "string" || id.length === 0 || seenSessions[id] === true) return;
+											seenSessions[id] = true;
+											individuallyTicked.push(id);
+										};
+										for (const id of Object.keys(pickedSessions)) if (pickedSessions[id] === true) addIndividual(id);
+										for (const id of Object.keys(selectedSessionIds)) if (selectedSessionIds[id] === true) addIndividual(id);
+										const chosenSessions = individuallyTicked.filter(function (id) { return coveredSessions[id] !== true; });
 										// One field is saved at a time through the same path the other fields use;
 										// the directory write is the one that reports its own state, so a refusal on
 										// either surfaces rather than being swallowed.
@@ -2787,14 +2884,17 @@ window.__ModuleLoader__.load({
 						foreignChildren.push(React.createElement("div", { key: "empty", className: "slu-note" }, t("foreign.empty")));
 					}
 					const foreignGroupNodes = foreignGroups.map(function (group, groupIndex) {
-						const rowNodes = group.sessions.map(function (session, sessionIndex) {
+						// Delegated children render immediately after the row they name, indented.
+						const orderedSessions = orderForeignSessions(group);
+						const rowNodes = orderedSessions.map(function (session, sessionIndex) {
 							const status = foreignStatus[session.id] !== undefined ? asObject(foreignStatus[session.id]) : null;
 							const statusText = foreignStatusText(status, t);
 							const isFailed = status !== null && status.kind === "failed";
 							return React.createElement("label", {
 								key: "foreign-row-" + groupIndex + "-" + sessionIndex,
-								className: "slu-check slu-foreignRow",
-								"data-foreign-row": session.id
+								className: session.child === true ? "slu-check slu-foreignRow slu-checkSessionChild" : "slu-check slu-foreignRow",
+								"data-foreign-row": session.id,
+								"data-foreign-child": session.child === true ? "true" : undefined
 							},
 								React.createElement("input", {
 									type: "checkbox",

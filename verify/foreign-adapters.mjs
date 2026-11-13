@@ -92,7 +92,12 @@ function jsonl(records) {
 
 /** The contract's session-summary key set, asserted for every scan row. */
 function assertSessionShape(session) {
-  assert.deepEqual(Object.keys(session).sort(), SESSION_KEYS)
+  // `parentId` is optional in the contract: only a harness that records lineage reports it, and an
+  // absent one means "top level", not "unknown". Every other key is mandatory and fixed.
+  const keys = Object.keys(session).sort()
+  const withoutParent = keys.filter((key) => key === 'parentId' ? false : true)
+  assert.deepEqual(withoutParent, SESSION_KEYS)
+  if (keys.includes('parentId')) assert.equal(typeof session.parentId, 'string')
   assert.equal(typeof session.id, 'string')
   assert.equal(typeof session.title, 'string')
   assert.equal(typeof session.cwd, 'string')
