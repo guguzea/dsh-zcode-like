@@ -550,6 +550,29 @@ async function fetchManifestFrom(url, fetchImpl, signal) {
 }
 
 /**
+ * Turn the transport's raw status line into something a user can act on.
+ *
+ * The common real-world failure is not a broken updater: it is a manifest address that answers 404,
+ * which is exactly what GitHub returns for a private repository (or a renamed path, or a file that only
+ * exists on another branch). And 401/403 means the address wants credentials. Saying "http-error: status
+ * 404" leaves the user guessing; these two prefixes name the cause without inventing detail we do not
+ * have.
+ *
+ * @param error the transport error string.
+ * @returns the same string, or a prefixed explanation for 404/401/403.
+ */
+function explainManifestError(error) {
+  if (typeof error !== 'string') return 'manifest-unavailable'
+  if (error.includes('status 404')) {
+    return `not-public: ${error}. A private repository, a renamed path and a file on another branch all answer 404 anonymously`
+  }
+  if (error.includes('status 401') || error.includes('status 403')) {
+    return `unauthorized: ${error}. The update address refuses anonymous access`
+  }
+  return error
+}
+
+/**
  * Fetch and validate the update manifest, applying the fallback rule.
  * @returns `{ok:true, source, manifestUrl, text, manifest}` or `{ok:false, source, manifestUrl, error, aborted}`.
  */
@@ -569,18 +592,20 @@ async function downloadManifest(fetchImpl, configuredUrl, signal) {
     return { ok: true, source: address.source, manifestUrl: address.url, text: primary.text, manifest: primary.manifest }
   }
   const aborted = primary.error === 'aborted'
+  const primaryError = aborted ? primary.error : explainManifestError(primary.error)
   if (aborted || !address.fallbackAllowed) {
-    return { ok: false, error: primary.error, source: address.source, manifestUrl: address.url, aborted }
+    return { ok: false, error: primaryError, source: address.source, manifestUrl: address.url, aborted }
   }
   const fallback = await fetchManifestFrom(FALLBACK_UPDATE_URL, fetchImpl, signal)
   if (fallback.ok) {
     return { ok: true, source: 'fallback', manifestUrl: FALLBACK_UPDATE_URL, text: fallback.text, manifest: fallback.manifest }
   }
+  const fallbackError = fallback.error === 'aborted' ? fallback.error : explainManifestError(fallback.error)
   return {
     ok: false,
     // Both attempts are reported: the user is looking at one error line and needs to know the fallback
     // was tried, otherwise "raw failed" looks like the whole check gave up too early.
-    error: `${primary.error}; fallback: ${fallback.error}`,
+    error: `${primaryError}; fallback: ${fallbackError}`,
     source: address.source,
     manifestUrl: address.url,
     aborted: fallback.error === 'aborted',

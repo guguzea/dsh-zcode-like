@@ -89,8 +89,8 @@
     },
     {
       "path": "host/update.js",
-      "bytes": 50787,
-      "sha256": "62295c541c4623cb12d10d470bcb2e14f407430ef55d1771304206be7ae76a14"
+      "bytes": 52051,
+      "sha256": "a2f802868afe69f6a166a3b6316367ef84fc7002e80238e8dc4dc64ddb37f152"
     },
     {
       "path": "host/upload.js",
@@ -128,5 +128,5 @@
       "sha256": "e7cd9652cbdf701e85ed51bdb691815ff75882bb78cafeefaeee6fba7774942a"
     }
   ],
-  "notes": "Cursor 目录与模型、缓存戳、更新加固、子代理会话"
+  "notes": "更新检查：明确 404/401 的含义"
 }

@@ -653,6 +653,32 @@ await check('a failing custom address is NOT replaced by the fallback', async ()
   assert.equal(state.requests.length, 1)
 })
 
+await check('a 404 on the manifest names the likely cause instead of a bare status', async () => {
+  // A private repository, a renamed path and a file on another branch all answer 404 anonymously, and
+  // that is the failure a user is most likely to hit with their own fork. The wording has to say so.
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0' })
+  state.manifestStatus = 404
+  state.manifest = '404: Not Found'
+  const result = await checkUpdate({ manifestUrl: MANIFEST_URL, directory })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /not-public/)
+  assert.match(result.error, /private repository/)
+  assert.equal(state.requests.length, 1)
+})
+
+await check('a 401 or 403 on the manifest says the address wants credentials', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0' })
+  for (const status of [401, 403]) {
+    state.manifestStatus = status
+    state.manifest = 'denied'
+    const result = await checkUpdate({ manifestUrl: MANIFEST_URL, directory })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /unauthorized/, `status ${status} reads ${result.error}`)
+  }
+})
+
 await check('the default address is reported as source primary when it works', async () => {
   resetRemote()
   const directory = pluginDir({ version: '1.0.0' })
