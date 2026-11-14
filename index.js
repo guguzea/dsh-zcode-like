@@ -444,6 +444,15 @@ export const UPDATE_APPLY_ROUTE_PATH = '/api/session-log-upload.update-apply'
 const PLUGIN_DIRECTORY = fileURLToPath(new URL('.', import.meta.url))
 
 /**
+ * Deadline for one update check or apply, in milliseconds.
+ *
+ * Without it a hung manifest or file request would hold the updater's module-wide `applying` flag until
+ * the socket gave up, and every later attempt would be refused as `already-running`. The whole payload is
+ * well under a megabyte, so two minutes is generous.
+ */
+export const UPDATE_TIMEOUT_MS = 120000
+
+/**
  * How much of one foreign conversation an import reads before giving up, in bytes.
  *
  * This is deliberately NOT `maxBytes`. `maxBytes` caps one *request*, and the send loop already splits a
@@ -1569,11 +1578,27 @@ export function apply(ctx, rawConfig) {
    * on the next check without a row restart, exactly like `endpoint`.
    */
   async function updateCheckPayload() {
-    return await checkUpdate({
-      fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
-      manifestUrl: currentConfig().updateUrl,
-      directory: PLUGIN_DIRECTORY,
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      try {
+        controller.abort(new Error('update check timeout'))
+      } catch {
+        /* ignore */
+      }
+    }, UPDATE_TIMEOUT_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    controllers.add(controller)
+    try {
+      return await checkUpdate({
+        fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
+        manifestUrl: currentConfig().updateUrl,
+        directory: PLUGIN_DIRECTORY,
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timer)
+      controllers.delete(controller)
+    }
   }
 
   /**
@@ -1584,11 +1609,28 @@ export function apply(ctx, rawConfig) {
    * closure. `applyUpdate` is all-or-nothing and restores the backups on any failure.
    */
   async function updateApplyPayload() {
-    const result = await applyUpdate({
-      fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
-      manifestUrl: currentConfig().updateUrl,
-      directory: PLUGIN_DIRECTORY,
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      try {
+        controller.abort(new Error('update apply timeout'))
+      } catch {
+        /* ignore */
+      }
+    }, UPDATE_TIMEOUT_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    controllers.add(controller)
+    let result
+    try {
+      result = await applyUpdate({
+        fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
+        manifestUrl: currentConfig().updateUrl,
+        directory: PLUGIN_DIRECTORY,
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timer)
+      controllers.delete(controller)
+    }
     if (result !== null && result !== undefined && result.ok === true) {
       log('info', `session-log-upload: updated from ${String(result.from)} to ${String(result.to)}; restart DSH to load it`)
     }

@@ -143,7 +143,7 @@ await check('absent/non-object input resolves to the full default set', () => {
     assert.deepEqual(resolveConfig(raw), DEFAULT_CONFIG)
   }
 })
-await check('the resolved object carries exactly the eight frozen keys', () => {
+await check('the resolved object carries exactly the ten frozen keys', () => {
   assert.deepEqual(Object.keys(resolveConfig({ mode: 'off', extra: 1 })).sort(), Object.keys(DEFAULT_CONFIG).sort())
 })
 await check('a valid config round-trips unchanged', () => {
@@ -513,14 +513,19 @@ for (const file of scannedFiles) {
   await check(`${file}: only node: builtins and relative specifiers`, () => {
     const source = readFileSync(join(root, file), 'utf8')
     const specifiers = importSpecifiers(source)
-    // Guard against the parser silently missing an import: an independent loose count of
+    // Guard against the parser silently missing an import: an independent loose scan of
     // `from '...'` / `import '...'` / `import('...')` must agree with the parsed specifier list.
-    // `\bfrom` covers both a single-line import and the closing line of a multi-line one.
-    const loose =
-      (source.match(/\bfrom\s*['"]/g) ?? []).length +
-      (source.match(/^[ \t]*import\s*['"]/gm) ?? []).length +
-      (source.match(/import\s*\(\s*['"]/g) ?? []).length
-    assert.equal(specifiers.length, loose, `parsed ${specifiers.length} of ${loose} import statements`)
+    // Both sides are de-duplicated: two imports of the same module (a legitimate pattern, e.g. a lazy
+    // `node:sqlite` import at two call sites) are one specifier to check, not a parse failure.
+    const looseSpecifiers = new Set()
+    for (const match of source.matchAll(/\bfrom\s*['"]([^'"]+)['"]/g)) looseSpecifiers.add(match[1])
+    for (const match of source.matchAll(/^[ \t]*import\s*['"]([^'"]+)['"]/gm)) looseSpecifiers.add(match[1])
+    for (const match of source.matchAll(/import\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) looseSpecifiers.add(match[1])
+    assert.equal(
+      specifiers.length,
+      looseSpecifiers.size,
+      `parsed ${specifiers.length} of ${looseSpecifiers.size} distinct import specifiers`,
+    )
     for (const specifier of specifiers) {
       const allowed = specifier.startsWith('node:') || specifier.startsWith('./') || specifier.startsWith('../')
       assert.ok(allowed, `bare or unsupported specifier ${JSON.stringify(specifier)}`)
@@ -3467,8 +3472,19 @@ await check('the apply route ignores any request body and is never reachable as 
   assert.ok(source.includes("effect: 'session-log-upload: update apply route'"), 'the apply route lost its wrapped effect')
   // No body is read on the apply path: the manifest and the directory come from this closure, so a
   // crafted body cannot redirect the writer.
-  const applyBlock = source.slice(source.indexOf('async function updateApplyPayload()'), source.indexOf('async function updateApplyPayload()') + 900)
+  const applyBlock = source.slice(source.indexOf('async function updateApplyPayload()'), source.indexOf('async function updateApplyPayload()') + 1400)
   assert.equal(/request\.json\(\)|request\.body/.test(applyBlock), false, 'the apply path reads the request body')
+  // Both update paths must carry a deadline: without one a hung fetch holds the updater's module-wide
+  // `applying` flag until the socket gives up, and every later attempt is refused as already-running.
+  for (const [name, block] of [
+    ['check', source.slice(source.indexOf('async function updateCheckPayload()'), source.indexOf('async function updateCheckPayload()') + 1200)],
+    ['apply', applyBlock],
+  ]) {
+    assert.ok(block.includes('new AbortController()'), `the update ${name} path has no abort controller`)
+    assert.ok(block.includes('signal: controller.signal'), `the update ${name} path passes no signal`)
+    assert.ok(block.includes('clearTimeout(timer)'), `the update ${name} path never clears its deadline`)
+  }
+  assert.equal(indexNamespace.UPDATE_TIMEOUT_MS, 120000)
   assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
 })
 

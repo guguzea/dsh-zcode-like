@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 14286,
-      "sha256": "586e52dc5b461c0dcc6bb3106752e5c420ed07d5099550ffb09d35db9d888ce5"
+      "bytes": 15095,
+      "sha256": "88ae29cfa2114d6dfae02801b74effdd8a158ac307e9fa6ba9ce9132097dcd62"
     },
     {
       "path": "client.js",
@@ -19,8 +19,8 @@
     },
     {
       "path": "host/config.js",
-      "bytes": 20307,
-      "sha256": "58673f226c4457c46b448c057b95b590b3938806f2ab84fff2ec8c22666fb6f8"
+      "bytes": 20309,
+      "sha256": "b65f6ee0efe67cc4afd8f4b142e117325f896fd0b8187e194d4825e186943dd2"
     },
     {
       "path": "host/eligibility.js",
@@ -49,8 +49,8 @@
     },
     {
       "path": "host/foreign/cursor.js",
-      "bytes": 12499,
-      "sha256": "b64084780479f8b1ca05cf0060d3e5f33ea86c30a5770d4b3be89a1b07c621cf"
+      "bytes": 30912,
+      "sha256": "a3453279575997ccf310cb389fcb8ba88d992a85906372b3b20e5058f802950a"
     },
     {
       "path": "host/foreign/index.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "host/foreign/shared.js",
-      "bytes": 24431,
-      "sha256": "d184ef81bc42c2d7e22dee9b91852937363fb509faad3cbe09d2901c1e4e96ec"
+      "bytes": 25012,
+      "sha256": "c0680aa5dfd6ba7384fdfe4001a195da8322af8d1730346717c3d11d5e1e83c7"
     },
     {
       "path": "host/foreign/workbuddy.js",
@@ -89,8 +89,8 @@
     },
     {
       "path": "host/update.js",
-      "bytes": 42014,
-      "sha256": "7b6120eac55ec62c40d2c8a6be378be65e3335e467cd0264215cdf3d05c2baa9"
+      "bytes": 50787,
+      "sha256": "62295c541c4623cb12d10d470bcb2e14f407430ef55d1771304206be7ae76a14"
     },
     {
       "path": "host/upload.js",
@@ -109,8 +109,8 @@
     },
     {
       "path": "index.js",
-      "bytes": 97008,
-      "sha256": "b9d796cd1e7dc695802c16f4669d846fa828b12be6b442aa15195ba2a3c6458b"
+      "bytes": 98303,
+      "sha256": "d2380354435d4c2139bbbc6697ae350644b7647aaac9e3b3cf6c1e94704de587"
     },
     {
       "path": "locale/en.json",
@@ -128,5 +128,5 @@
       "sha256": "e7cd9652cbdf701e85ed51bdb691815ff75882bb78cafeefaeee6fba7774942a"
     }
   ],
-  "notes": "子代理会话全 harness 支持、插件应用内更新、扫描缓存"
+  "notes": "Cursor 目录与模型、缓存戳、更新加固、子代理会话"
 }

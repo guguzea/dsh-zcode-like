@@ -90,6 +90,7 @@ export function applyUpdate({ fetchImpl, manifestUrl, directory, signal })
 - 并发：模块内一个 `applying` 标志，第二次调用直接返回 `{ok:false, error:'already-running'}`。
 - 目录不可写、staging 建不出来、备份失败，都要在动原文件之前返回失败。
 - 检测到 `directory` 不是插件目录（没有 package.json）时一律拒绝。
+- `applyUpdate` 在下载并校验完全部文件之后、第一次写盘之前，还要求清单 `files` 里包含 `package.json`，并且其中 `version` 与清单的 `version` 严格相等：缺少 `package.json` 返回 `missing-package-json`，版本不一致（包括 `package.json` 读不出版本）返回 `version-mismatch`。检查对象是真正将要写入的字节，不是清单自己的声明。
 
 ## 路由契约（lead 实现，client-ui 消费）
 

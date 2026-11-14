@@ -541,9 +541,16 @@ export async function readJsonl(filePath, options, onLine) {
   return { truncated, aborted, error: null }
 }
 
-/** Identity of one transcript version, used as the scan-cache key: harness + absolute path + stat. */
-function scanCacheKey(harness, filePath, info) {
-  return `${textOf(harness)}\u0000${textOf(filePath)}\u0000${String(info.size)}\u0000${String(info.mtimeMs)}\u0000${String(info.ctimeMs)}`
+/**
+ * Identity of one transcript version, used as the scan-cache key: harness + absolute path + stat.
+ *
+ * `extra` appends the identity of any *other* file the cached row depends on (Cursor's cwd/model
+ * come from its state database, so a changed database must invalidate transcript rows too). An
+ * adapter with no such dependency passes nothing and the old key shape is unchanged.
+ */
+function scanCacheKey(harness, filePath, info, extra = '') {
+  const suffix = typeof extra === 'string' && extra.length > 0 ? `\u0000${extra}` : ''
+  return `${textOf(harness)}\u0000${textOf(filePath)}\u0000${String(info.size)}\u0000${String(info.mtimeMs)}\u0000${String(info.ctimeMs)}${suffix}`
 }
 
 /** Whether a value quacks like a scan cache (`get`/`set`); `ScanCache` and `memoryScanCache()` do. */
@@ -631,11 +638,12 @@ export function writeCacheEntry(options, key, value) {
  * @param filePath the transcript path.
  * @param info the file's current `Stats`.
  * @param options the contract's options object; `options.cache` makes it durable.
+ * @param extra optional identity of another file the summary depends on.
  * @returns the cached summary, or `null`.
  */
-export function readScanCache(harness, filePath, info, options) {
+export function readScanCache(harness, filePath, info, options, extra = '') {
   try {
-    return readCacheEntry(options, scanCacheKey(harness, filePath, info))
+    return readCacheEntry(options, scanCacheKey(harness, filePath, info, extra))
   } catch {
     return null
   }
@@ -648,10 +656,11 @@ export function readScanCache(harness, filePath, info, options) {
  * @param info the file's current `Stats`.
  * @param value the contract's session summary row.
  * @param options the contract's options object; `options.cache` makes it durable.
+ * @param extra optional identity of another file the summary depends on.
  */
-export function writeScanCache(harness, filePath, info, value, options) {
+export function writeScanCache(harness, filePath, info, value, options, extra = '') {
   try {
-    writeCacheEntry(options, scanCacheKey(harness, filePath, info), value)
+    writeCacheEntry(options, scanCacheKey(harness, filePath, info, extra), value)
   } catch {
     /* a lost row only costs a recount */
   }

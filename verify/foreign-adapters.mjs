@@ -25,6 +25,12 @@
  *      bytes, never-throw on bad input or corrupt files, a stub cache proving an adapter returns a
  *      cached row instead of reading the transcript, a simulated restart serving a disk row, and a
  *      changed transcript invalidating it; the ZCode row set cached against db + `-wal` identity
+ *  10. Cursor metadata: real cwd/model recovered from its own `state.vscdb` fixture (composerHeaders
+ *      + composerData), the workspaceStorage folder-URI fallback, subagent inheritance, a corrupt
+ *      database degrading to empty values, `readSession` matching its scan row (own and inherited)
+ *      and staying empty when the store is missing, a main-DB change invalidating cached rows while
+ *      a `-wal`-only change keeps them (new conversations still get fresh metadata), and the stamp
+ *      recorded in the cache key
  *
  * The only writes are inside `verify/.tmp-foreign-adapters/`; the suite removes that directory in
  * a `finally` and exits non-zero when any check failed.
@@ -78,6 +84,34 @@ const WORKBUDDY_CHILD_TIME = 1720000010000
 const CACHE_SESSION = 'cache-session-1'
 const CACHE_HOME = join(tmp, 'cache-home')
 const CACHE_TRANSCRIPT = join(CACHE_HOME, '.qoder-cn', 'projects', 'H--cache-work', `${CACHE_SESSION}.jsonl`)
+// Cursor's cwd/model fixture: its own state database with headers + composerData rows.
+const CURSOR_META_HOME = join(tmp, 'cursor-meta-home')
+const CURSOR_META_ID = 'cursor-meta-1'
+const CURSOR_META_PARENT = 'cursor-meta-parent'
+const CURSOR_META_CHILD_INHERIT = 'cursor-meta-child-inherit'
+const CURSOR_META_CHILD_OWN = 'cursor-meta-child-own'
+const CURSOR_META_NOHEADER = 'cursor-meta-noheader'
+const CURSOR_META_WORKSPACE = 'cursor-meta-workspace'
+const CURSOR_META_CHILD_INHERIT_ID = `${CURSOR_META_PARENT}/subagents/${CURSOR_META_CHILD_INHERIT}`
+const CURSOR_META_CHILD_OWN_ID = `${CURSOR_META_PARENT}/subagents/${CURSOR_META_CHILD_OWN}`
+const CURSOR_META_ID_CWD = 'c:\\Users\\fixture\\涓枃鐩綍'
+const CURSOR_META_PARENT_CWD = 'c:\\Users\\fixture\\parent-dir'
+const CURSOR_META_CHILD_CWD = 'c:\\Users\\fixture\\child-own-dir'
+const CURSOR_META_WORKSPACE_CWD = 'c:/Users/fixture/from-workspace-json'
+const CURSOR_META_ID_MODEL = 'claude-fixture-model'
+const CURSOR_META_PARENT_MODEL = 'parent-fixture-model'
+const CURSOR_META_CHILD_MODEL = 'child-own-model'
+const CURSOR_META_WORKSPACE_MODEL = 'workspace-model'
+const CURSOR_BROKEN_HOME = join(tmp, 'cursor-broken-home')
+// A Cursor home whose state DB runs in WAL mode with a live writer, to separate -wal writes from
+// main-DB writes (the case where Cursor runs while the user scans).
+const CURSOR_WAL_HOME = join(tmp, 'cursor-wal-home')
+const CURSOR_WAL_OLD = 'cursor-wal-old'
+const CURSOR_WAL_NEW = 'cursor-wal-new'
+const CURSOR_WAL_OLD_CWD = 'c:\\fixture\\wal-old-dir'
+const CURSOR_WAL_OLD_MODEL = 'wal-old-model'
+const CURSOR_WAL_NEW_CWD = 'c:\\fixture\\wal-new-dir'
+const CURSOR_WAL_NEW_MODEL = 'wal-new-model'
 
 const SESSION_KEYS = ['bytes', 'createdAt', 'cwd', 'id', 'messageCount', 'model', 'provider', 'title', 'updatedAt']
 const RAW_KEYS = ['createdAt', 'cwd', 'error', 'id', 'messages', 'model', 'provider', 'title', 'truncated']
@@ -169,9 +203,9 @@ function assertScanShape(result) {
   assert.equal(Array.isArray(result.sessions), true)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 // fixtures
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 // A freshly closed SQLite file can be held for a few milliseconds by Windows (indexer, antivirus),
 // so the temporary tree is removed with retries rather than failing the suite on a transient lock.
@@ -570,9 +604,83 @@ function buildCacheHome() {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
+/** One minimal Cursor transcript: a user turn (the title) and an assistant turn. */
+function cursorTranscript(question) {
+  return jsonl([
+    { role: 'user', message: { content: [{ type: 'text', text: question }] } },
+    { role: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } },
+  ])
+}
+
+/**
+ * Cursor's own state database fixture: the transcript files carry no metadata, so the cwd/model
+ * must come from `composerHeaders` + `cursorDiskKV` exactly as on a real machine. Also builds the
+ * `workspaceStorage/<workspaceId>/workspace.json` fallback file.
+ */
+function buildCursorMetaStore() {
+  const transcripts = join(CURSOR_META_HOME, '.cursor', 'projects', 'h-meta', 'agent-transcripts')
+  writeFixture(join(transcripts, CURSOR_META_ID, `${CURSOR_META_ID}.jsonl`), cursorTranscript('cursor metadata question'))
+  writeFixture(join(transcripts, CURSOR_META_PARENT, `${CURSOR_META_PARENT}.jsonl`), cursorTranscript('parent question'))
+  writeFixture(join(transcripts, CURSOR_META_NOHEADER, `${CURSOR_META_NOHEADER}.jsonl`), cursorTranscript('no header question'))
+  writeFixture(join(transcripts, CURSOR_META_WORKSPACE, `${CURSOR_META_WORKSPACE}.jsonl`), cursorTranscript('workspace fallback question'))
+  writeFixture(join(transcripts, CURSOR_META_PARENT, 'subagents', `${CURSOR_META_CHILD_INHERIT}.jsonl`), cursorTranscript('child inherit question'))
+  writeFixture(join(transcripts, CURSOR_META_PARENT, 'subagents', `${CURSOR_META_CHILD_OWN}.jsonl`), cursorTranscript('child own question'))
+  if (SQLITE === null) return
+  const globalStorage = join(CURSOR_META_HOME, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage')
+  mkdirSync(globalStorage, { recursive: true })
+  const db = new SQLITE.DatabaseSync(join(globalStorage, 'state.vscdb'))
+  try {
+    db.exec(`
+      CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, workspaceId TEXT, value TEXT);
+      CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);
+    `)
+    const insertHeader = db.prepare('INSERT INTO composerHeaders (composerId, workspaceId, value) VALUES (?,?,?)')
+    const insertData = db.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?,?)')
+    const header = (id, workspaceId, cwd) =>
+      insertHeader.run(
+        id,
+        workspaceId,
+        JSON.stringify({
+          type: 'head',
+          composerId: id,
+          workspaceIdentifier: cwd === '' ? { id: workspaceId } : { id: workspaceId, uri: { fsPath: cwd, scheme: 'file' } },
+        }),
+      )
+    const composerData = (id, model) =>
+      insertData.run(`composerData:${id}`, JSON.stringify({ composerId: id, modelConfig: { modelName: model, selectedModels: [{ modelId: model }] } }))
+
+    header(CURSOR_META_ID, '', CURSOR_META_ID_CWD)
+    header(CURSOR_META_PARENT, '', CURSOR_META_PARENT_CWD)
+    header(CURSOR_META_CHILD_OWN, '', CURSOR_META_CHILD_CWD)
+    // A header that names only a workspaceId: the real cwd comes from workspaceStorage.
+    header(CURSOR_META_WORKSPACE, 'ws-fixture-1', '')
+    composerData(CURSOR_META_ID, CURSOR_META_ID_MODEL)
+    composerData(CURSOR_META_PARENT, CURSOR_META_PARENT_MODEL)
+    composerData(CURSOR_META_CHILD_OWN, CURSOR_META_CHILD_MODEL)
+    composerData(CURSOR_META_WORKSPACE, CURSOR_META_WORKSPACE_MODEL)
+    // Even a composerData row must not give a model to a conversation with no header row.
+    composerData(CURSOR_META_NOHEADER, 'no-header-model-that-must-be-ignored')
+  } finally {
+    db.close()
+  }
+  writeFixture(
+    join(CURSOR_META_HOME, 'AppData', 'Roaming', 'Cursor', 'User', 'workspaceStorage', 'ws-fixture-1', 'workspace.json'),
+    JSON.stringify({ folder: 'file:///c%3A/Users/fixture/from-workspace-json' }),
+  )
+}
+
+/** A Cursor home whose state database is corrupt text, to prove the scan degrades. */
+function buildCursorBrokenHome() {
+  writeFixture(
+    join(CURSOR_BROKEN_HOME, '.cursor', 'projects', 'h-broken', 'agent-transcripts', 'cursor-broken-1', 'cursor-broken-1.jsonl'),
+    cursorTranscript('broken db question'),
+  )
+  writeFixture(join(CURSOR_BROKEN_HOME, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage', 'state.vscdb'), 'this is not a sqlite database')
+}
+
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 // the fixtures are built once, then every check reads them
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 mkdirSync(empty, { recursive: true })
 mkdirSync(home, { recursive: true })
@@ -583,6 +691,8 @@ buildWorkbuddyStore()
 buildClineStore()
 buildBareHome()
 buildCacheHome()
+buildCursorMetaStore()
+buildCursorBrokenHome()
 
 const ZCODE_DB = join(home, '.zcode', 'cli', 'db', 'db.sqlite')
 const CLINE_DB = join(home, '.cline', 'data', 'db', 'sessions.db')
@@ -590,9 +700,9 @@ const zcodeModifiedAt = existsSync(ZCODE_DB) ? statSync(ZCODE_DB).mtimeMs : 0
 const clineModifiedAt = existsSync(CLINE_DB) ? statSync(CLINE_DB).mtimeMs : 0
 
 try {
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 1. missing installation, bare installations, missing ids: the contract shapes
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('a missing home leaves every harness unavailable, with no error and no sessions', async () => {
     for (const adapter of ADAPTERS) {
@@ -626,9 +736,9 @@ try {
     }
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 2. ZCode (SQLite)
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   if (SQLITE === null) {
     await check('ZCode and Cline SQLite checks skipped: node:sqlite is not available on this runtime', () => {
@@ -721,9 +831,9 @@ try {
       assert.equal(statSync(ZCODE_DB).mtimeMs, zcodeModifiedAt, 'the database file must not be written')
     })
 
-    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     // 6. Cline (SQLite, unsupported schema)
-    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     await check('Cline reports available:true with unsupported-schema rather than inventing a mapping', async () => {
       const result = await cline.scan({ home })
@@ -743,9 +853,9 @@ try {
     })
   }
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 3. Qoder (JSONL)
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('Qoder scan recovers id, cwd, model and title from the transcript records', async () => {
     const result = await qoder.scan({ home })
@@ -869,9 +979,9 @@ try {
     assert.equal(viaRegistry.raw.id, QODER_CHILD_DESCRIBED_ID)
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 4. Cursor (JSONL)
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('Cursor scan derives the title from the first user text and keeps cwd empty', async () => {
     const result = await cursor.scan({ home })
@@ -957,9 +1067,9 @@ try {
     assert.equal(viaRegistry.raw.id, CURSOR_CHILD_ID)
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 5. WorkBuddy (JSONL)
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('WorkBuddy scan prefers the generated title and reads cwd/model from the records', async () => {
     const result = await workbuddy.scan({ home })
@@ -1046,9 +1156,9 @@ try {
     ])
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 7. the registry
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('ADAPTERS is the five harnesses in presentation order, each with a label', () => {
     assert.deepEqual(
@@ -1197,9 +1307,9 @@ try {
     }
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 8. total behaviour: hostile options and no-throw guarantees
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   await check('every adapters scan never throws on unusable options', async () => {
     const hostile = {
@@ -1303,9 +1413,9 @@ try {
     }
   })
 
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // 9. the persistent scan cache (host/foreign/cache.js + options.cache)
-  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
   const cacheFileIn = (directory) => join(directory, 'foreign-scan-cache.json')
@@ -1505,8 +1615,12 @@ try {
       assert.equal(row.createdAt, 111)
 
       // The key must be honest: harness + absolute path + size + mtime + ctime of the file.
+      // Cursor's cwd/model come from its state database, so its key also carries that store's stamp
+      // (this fixture home has no state database: `absent`, for the current runtime).
       const info = statSync(transcriptPath)
-      const expectedKey = `${adapter.harness}\u0000${transcriptPath}\u0000${info.size}\u0000${info.mtimeMs}\u0000${info.ctimeMs}`
+      const fileKey = `${adapter.harness}\u0000${transcriptPath}\u0000${info.size}\u0000${info.mtimeMs}\u0000${info.ctimeMs}`
+      const expectedKey =
+        adapter.harness === 'cursor' ? `${fileKey}\u0000cursor-state-v2:node:${process.versions.node}:absent` : fileKey
       assert.ok(keys.includes(expectedKey), `${adapter.harness}: get() received the honest key`)
       assert.equal(writes.includes(expectedKey), false, `${adapter.harness}: a hit must not rewrite the entry`)
     }
@@ -1630,6 +1744,280 @@ try {
         assert.deepEqual(walRows.sessions.map((session) => session.id), [ZCODE_CHILD, ZCODE_ROOT])
       } finally {
         rmSync(`${ZCODE_DB}-wal`, { force: true })
+      }
+    })
+  }
+
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // 10. Cursor metadata (cwd/model come from Cursor's own state database)
+  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+  await check('a corrupt or absent Cursor state database still scans with empty cwd/model', async () => {
+    const broken = await cursor.scan({ home: CURSOR_BROKEN_HOME })
+    assertScanShape(broken)
+    assert.equal(broken.available, true)
+    assert.equal(broken.error, null)
+    assert.equal(broken.sessions.length, 1)
+    assert.equal(broken.sessions[0].id, 'cursor-broken-1')
+    assert.equal(broken.sessions[0].title, 'broken db question')
+    assert.equal(broken.sessions[0].cwd, '', 'a corrupt database cannot yield a cwd')
+    assert.equal(broken.sessions[0].model, '', 'a corrupt database cannot yield a model')
+    assert.equal(broken.sessions[0].provider, '')
+
+    // An absent database (the main fixture home has none) keeps exactly the old behaviour.
+    const absent = await cursor.scan({ home })
+    const absentRow = absent.sessions.find((session) => session.id === CURSOR_ID)
+    assert.equal(absentRow.cwd, '')
+    assert.equal(absentRow.model, '')
+  })
+
+  await check('Cursor readSession keeps empty cwd/model when the state database is absent or corrupt', async () => {
+    const brokenRaw = await cursor.readSession('cursor-broken-1', { home: CURSOR_BROKEN_HOME })
+    assertRawShape(brokenRaw)
+    assert.equal(brokenRaw.error, null)
+    assert.equal(brokenRaw.cwd, '', 'a corrupt database cannot yield a cwd')
+    assert.equal(brokenRaw.model, '', 'a corrupt database cannot yield a model')
+    assert.ok(brokenRaw.messages.length > 0, 'the transcript itself still reads')
+
+    // No state database at all: the raw read behaves exactly as it did before the metadata existed.
+    const absentRaw = await cursor.readSession(CURSOR_ID, { home })
+    assertRawShape(absentRaw)
+    assert.equal(absentRaw.error, null)
+    assert.equal(absentRaw.cwd, '')
+    assert.equal(absentRaw.model, '')
+  })
+
+  await check('the Cursor adapter only touches cursorDiskKV by primary key (never a LIKE scan)', () => {
+    // Strip comments: the module doc explains the ban on `LIKE`, and prose cannot query SQLite.
+    const source = readFileSync(join(here, '..', 'host', 'foreign', 'cursor.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    // A `LIKE 'composerData:%'` scan was measured at >180 s on an 11.6 GB store; the adapter must
+    // always use batched `key IN (...)` primary-key lookups instead.
+    assert.doesNotMatch(source, /LIKE\s+['"]%?composerData/i)
+    assert.match(source, /FROM cursorDiskKV WHERE key IN \(/)
+    assert.match(source, /COMPOSER_LOOKUP_CHUNK/, 'the lookup batch size must stay bounded')
+  })
+
+  if (SQLITE === null) {
+    await check('Cursor metadata checks skipped: node:sqlite is not available on this runtime', () => {
+      assert.ok(true)
+    })
+  } else {
+    await check('Cursor recovers cwd/model from its state database, inheriting for delegated rows', async () => {
+      const result = await cursor.scan({ home: CURSOR_META_HOME })
+      assertScanShape(result)
+      assert.equal(result.available, true)
+      assert.equal(result.error, null)
+      assert.equal(result.sessions.length, 6)
+      for (const session of result.sessions) assertSessionShape(session)
+      const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+
+      const top = sessions.get(CURSOR_META_ID)
+      assert.equal(top.cwd, CURSOR_META_ID_CWD, 'the exact workspace path from composerHeaders (non-ASCII preserved)')
+      assert.equal(top.model, CURSOR_META_ID_MODEL, 'modelConfig.selectedModels[0].modelId from composerData')
+      assert.equal(top.provider, '', 'the serving vendor is not recorded, so it is not invented')
+
+      const noHeader = sessions.get(CURSOR_META_NOHEADER)
+      assert.equal(noHeader.cwd, '', 'no header row means no cwd')
+      assert.equal(noHeader.model, '', 'no header row means no model, even when composerData exists')
+
+      const workspace = sessions.get(CURSOR_META_WORKSPACE)
+      assert.equal(workspace.cwd, CURSOR_META_WORKSPACE_CWD, 'the workspace.json file URI is decoded')
+      assert.equal(workspace.model, CURSOR_META_WORKSPACE_MODEL)
+
+      const parent = sessions.get(CURSOR_META_PARENT)
+      assert.equal(parent.cwd, CURSOR_META_PARENT_CWD)
+      assert.equal(parent.model, CURSOR_META_PARENT_MODEL)
+
+      const inherited = sessions.get(CURSOR_META_CHILD_INHERIT_ID)
+      assert.equal(inherited.parentId, CURSOR_META_PARENT)
+      assert.equal(inherited.cwd, CURSOR_META_PARENT_CWD, 'a delegated row with no header inherits the parent cwd')
+      assert.equal(inherited.model, CURSOR_META_PARENT_MODEL, 'and the parent model')
+      assert.equal(inherited.title, 'child inherit question')
+
+      const own = sessions.get(CURSOR_META_CHILD_OWN_ID)
+      assert.equal(own.parentId, CURSOR_META_PARENT)
+      assert.equal(own.cwd, CURSOR_META_CHILD_CWD, 'its own header row beats the parent')
+      assert.equal(own.model, CURSOR_META_CHILD_MODEL)
+    })
+
+    await check('Cursor readSession returns the same cwd/model as the scan row (own and inherited)', async () => {
+      const scanned = await cursor.scan({ home: CURSOR_META_HOME })
+      const rows = new Map(scanned.sessions.map((session) => [session.id, session]))
+
+      const topRaw = await cursor.readSession(CURSOR_META_ID, { home: CURSOR_META_HOME })
+      assertRawShape(topRaw)
+      assert.equal(topRaw.error, null)
+      assert.equal(topRaw.cwd, rows.get(CURSOR_META_ID).cwd, 'the raw read must match the row cwd')
+      assert.equal(topRaw.cwd, CURSOR_META_ID_CWD)
+      assert.equal(topRaw.model, rows.get(CURSOR_META_ID).model, 'the raw read must match the row model')
+      assert.equal(topRaw.model, CURSOR_META_ID_MODEL)
+      assert.equal(topRaw.provider, '')
+
+      const inheritedRaw = await cursor.readSession(CURSOR_META_CHILD_INHERIT_ID, { home: CURSOR_META_HOME })
+      assertRawShape(inheritedRaw)
+      assert.equal(inheritedRaw.error, null)
+      assert.equal(
+        inheritedRaw.cwd,
+        rows.get(CURSOR_META_CHILD_INHERIT_ID).cwd,
+        'an inherited subagent read must match its scan row',
+      )
+      assert.equal(inheritedRaw.model, rows.get(CURSOR_META_CHILD_INHERIT_ID).model)
+      assert.equal(inheritedRaw.cwd, CURSOR_META_PARENT_CWD)
+      assert.equal(inheritedRaw.model, CURSOR_META_PARENT_MODEL)
+
+      const ownChildRaw = await cursor.readSession(CURSOR_META_CHILD_OWN_ID, { home: CURSOR_META_HOME })
+      assert.equal(ownChildRaw.cwd, CURSOR_META_CHILD_CWD, 'a subagent with its own header uses its own cwd')
+      assert.equal(ownChildRaw.model, CURSOR_META_CHILD_MODEL)
+    })
+
+    await check('a changed main Cursor database invalidates cached cwd/model (metadata stamp)', async () => {
+      const cacheDirectory = join(tmp, 'cache-cursor-metadata')
+      const cacheFile = cacheFileIn(cacheDirectory)
+
+      // Cold scan persists rows keyed by the transcript plus this store version.
+      const coldCache = new ScanCache(cacheDirectory)
+      const coldRow = (await cursor.scan({ home: CURSOR_META_HOME, cache: coldCache })).sessions.find(
+        (session) => session.id === CURSOR_META_ID,
+      )
+      assert.equal(coldRow.cwd, CURSOR_META_ID_CWD)
+      assert.equal(coldRow.model, CURSOR_META_ID_MODEL)
+      coldCache.flush()
+      const stored = JSON.parse(readFileSync(cacheFile, 'utf8'))
+      const cursorKeys = Object.keys(stored.entries).filter((key) => key.startsWith('cursor\u0000'))
+      assert.ok(cursorKeys.length > 0)
+      assert.ok(
+        cursorKeys.every((key) => key.includes('\u0000cursor-state-v2:')),
+        'every cursor row key records the metadata stamp',
+      )
+
+      // Tamper the cached row: a warm hit must return it, proving the cache is what answers.
+      const transcriptPath = join(
+        CURSOR_META_HOME,
+        '.cursor',
+        'projects',
+        'h-meta',
+        'agent-transcripts',
+        CURSOR_META_ID,
+        `${CURSOR_META_ID}.jsonl`,
+      )
+      const rowKey = cursorKeys.find((key) => key.includes(transcriptPath))
+      assert.ok(rowKey !== undefined)
+      stored.entries[rowKey].value = { ...stored.entries[rowKey].value, cwd: 'CACHED-ONLY-CWD', model: 'cached-only-model' }
+      writeFileSync(cacheFile, JSON.stringify(stored), 'utf8')
+      const warmRow = (await cursor.scan({ home: CURSOR_META_HOME, cache: new ScanCache(cacheDirectory) })).sessions.find(
+        (session) => session.id === CURSOR_META_ID,
+      )
+      assert.equal(warmRow.cwd, 'CACHED-ONLY-CWD')
+      assert.equal(warmRow.model, 'cached-only-model')
+
+      // Change Cursor's own store: the stamp must change, so the stale cached row is not served.
+      const databasePath = join(CURSOR_META_HOME, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage', 'state.vscdb')
+      const db = new SQLITE.DatabaseSync(databasePath)
+      try {
+        db.prepare('UPDATE composerHeaders SET value = ? WHERE composerId = ?').run(
+          JSON.stringify({
+            type: 'head',
+            composerId: CURSOR_META_ID,
+            workspaceIdentifier: { uri: { fsPath: 'c:\\Users\\fixture\\updated-dir' } },
+          }),
+          CURSOR_META_ID,
+        )
+      } finally {
+        db.close()
+      }
+      const changedRow = (await cursor.scan({ home: CURSOR_META_HOME, cache: new ScanCache(cacheDirectory) })).sessions.find(
+        (session) => session.id === CURSOR_META_ID,
+      )
+      assert.equal(changedRow.cwd, 'c:\\Users\\fixture\\updated-dir', 'a changed metadata store must not serve the old cwd')
+      assert.notEqual(changedRow.cwd, 'CACHED-ONLY-CWD')
+      assert.equal(changedRow.model, CURSOR_META_ID_MODEL)
+    })
+
+    await check('a -wal-only change keeps cached rows, and a new conversation still gets fresh metadata', async () => {
+      // Fixture home: one conversation, its state DB in WAL mode with a live writer, so commits
+      // touch only the -wal file — the state a running Cursor leaves behind while the user scans.
+      const oldTranscriptPath = join(
+        CURSOR_WAL_HOME,
+        '.cursor',
+        'projects',
+        'h-wal',
+        'agent-transcripts',
+        CURSOR_WAL_OLD,
+        `${CURSOR_WAL_OLD}.jsonl`,
+      )
+      writeFixture(oldTranscriptPath, cursorTranscript('wal old question'))
+      const globalStorage = join(CURSOR_WAL_HOME, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage')
+      mkdirSync(globalStorage, { recursive: true })
+      const databasePath = join(globalStorage, 'state.vscdb')
+      const writer = new SQLITE.DatabaseSync(databasePath)
+      try {
+        writer.exec('CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, workspaceId TEXT, value TEXT)')
+        writer.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)')
+        writer.exec('CREATE TABLE walProbe (id TEXT)')
+        writer
+          .prepare('INSERT INTO composerHeaders VALUES (?,?,?)')
+          .run(CURSOR_WAL_OLD, '', JSON.stringify({ workspaceIdentifier: { uri: { fsPath: CURSOR_WAL_OLD_CWD } } }))
+        writer
+          .prepare('INSERT INTO cursorDiskKV VALUES (?,?)')
+          .run(`composerData:${CURSOR_WAL_OLD}`, JSON.stringify({ modelConfig: { selectedModels: [{ modelId: CURSOR_WAL_OLD_MODEL }] } }))
+        writer.exec('PRAGMA journal_mode = WAL')
+        writer.prepare('INSERT INTO walProbe VALUES (?)').run('start')
+        const mainIdentity = () => {
+          const info = statSync(databasePath)
+          return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`
+        }
+        const mainIdentityBeforeWalWrites = mainIdentity()
+
+        // Cold scan + flush caches the old conversation's row under the main DB's identity.
+        const cacheDirectory = join(tmp, 'cache-cursor-wal')
+        const cacheFile = cacheFileIn(cacheDirectory)
+        const coldCache = new ScanCache(cacheDirectory)
+        const coldRow = (await cursor.scan({ home: CURSOR_WAL_HOME, cache: coldCache })).sessions.find(
+          (session) => session.id === CURSOR_WAL_OLD,
+        )
+        assert.equal(coldRow.cwd, CURSOR_WAL_OLD_CWD)
+        assert.equal(coldRow.model, CURSOR_WAL_OLD_MODEL)
+        coldCache.flush()
+
+        // Tamper the cached row so a cache hit is unmistakable.
+        const stored = JSON.parse(readFileSync(cacheFile, 'utf8'))
+        const rowKey = Object.keys(stored.entries).find((key) => key.includes(oldTranscriptPath))
+        assert.ok(rowKey !== undefined)
+        stored.entries[rowKey].value = { ...stored.entries[rowKey].value, cwd: 'WAL-CACHED-CWD', model: 'wal-cached-model' }
+        writeFileSync(cacheFile, JSON.stringify(stored), 'utf8')
+
+        // A write that only touches the -wal must not invalidate the cached row.
+        writer.prepare('INSERT INTO walProbe VALUES (?)').run('wal-only-change')
+        assert.equal(mainIdentity(), mainIdentityBeforeWalWrites, 'the write must only have touched the -wal file')
+        const walRows = await cursor.scan({ home: CURSOR_WAL_HOME, cache: new ScanCache(cacheDirectory) })
+        const cachedAgain = walRows.sessions.find((session) => session.id === CURSOR_WAL_OLD)
+        assert.equal(cachedAgain.cwd, 'WAL-CACHED-CWD', 'a -wal-only change must not invalidate the cached row')
+        assert.equal(cachedAgain.model, 'wal-cached-model')
+
+        // A NEW conversation is a transcript cache miss: the state DB is opened for that miss and
+        // the fresh composerHeaders/composerData rows (committed through the WAL) are used.
+        writer
+          .prepare('INSERT INTO composerHeaders VALUES (?,?,?)')
+          .run(CURSOR_WAL_NEW, '', JSON.stringify({ workspaceIdentifier: { uri: { fsPath: CURSOR_WAL_NEW_CWD } } }))
+        writer
+          .prepare('INSERT INTO cursorDiskKV VALUES (?,?)')
+          .run(`composerData:${CURSOR_WAL_NEW}`, JSON.stringify({ modelConfig: { selectedModels: [{ modelId: CURSOR_WAL_NEW_MODEL }] } }))
+        writeFixture(
+          join(CURSOR_WAL_HOME, '.cursor', 'projects', 'h-wal', 'agent-transcripts', CURSOR_WAL_NEW, `${CURSOR_WAL_NEW}.jsonl`),
+          cursorTranscript('wal new question'),
+        )
+        assert.equal(mainIdentity(), mainIdentityBeforeWalWrites, 'the new rows must only have touched the -wal file')
+        const mixedRows = await cursor.scan({ home: CURSOR_WAL_HOME, cache: new ScanCache(cacheDirectory) })
+        const stillCached = mixedRows.sessions.find((session) => session.id === CURSOR_WAL_OLD)
+        const newRow = mixedRows.sessions.find((session) => session.id === CURSOR_WAL_NEW)
+        assert.equal(stillCached.cwd, 'WAL-CACHED-CWD', 'the old row is still served from cache')
+        assert.equal(stillCached.model, 'wal-cached-model')
+        assert.equal(newRow.cwd, CURSOR_WAL_NEW_CWD, 'a new conversation gets its fresh cwd from the opened database')
+        assert.equal(newRow.model, CURSOR_WAL_NEW_MODEL, 'and its fresh model')
+      } finally {
+        writer.close()
       }
     })
   }

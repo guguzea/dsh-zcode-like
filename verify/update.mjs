@@ -21,7 +21,8 @@
  *   5. `checkUpdate` (available / current / malformed / custom address / no fallback / oversized /
  *      redirect refusal / abort / no disk writes)
  *   6. `applyUpdate` (byte-count and hash mismatches, one-good-one-bad, traversal, oversize, total cap,
- *      missing package.json, not-newer, concurrent refusal, abort, fetch failure — all proving that
+ *      missing package.json, shipped-package.json version cross-check, symlink/junction containment,
+ *      link-target refusal, not-newer, concurrent refusal, abort, fetch failure — all proving that
  *      nothing on disk changed)
  *   7. a successful apply (new bytes, nested new file, backups kept, unlisted files untouched,
  *      `reload:'restart-required'`, package.json version move)
@@ -34,7 +35,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -723,15 +724,20 @@ await check('a fallback manifest resolves its files against the fallback address
   resetRemote()
   const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
   const fileBytes = Buffer.from('new index', 'utf8')
+  const packageBytes = Buffer.from(packageJsonFor('1.1.0'), 'utf8')
   const manifestBytes = Buffer.from(
     JSON.stringify({
       schema: 1,
       version: '1.1.0',
       notes: '',
-      files: [{ path: 'index.js', bytes: fileBytes.length, sha256: sha256(fileBytes) }],
+      files: [
+        { path: 'index.js', bytes: fileBytes.length, sha256: sha256(fileBytes) },
+        { path: 'package.json', bytes: packageBytes.length, sha256: sha256(packageBytes) },
+      ],
     }),
   )
   const fallbackFileUrl = new URL('index.js', FALLBACK_UPDATE_URL).href
+  const fallbackPackageUrl = new URL('package.json', FALLBACK_UPDATE_URL).href
   const calls = []
   const originalFetch = globalThis.fetch
   try {
@@ -741,14 +747,16 @@ await check('a fallback manifest resolves its files against the fallback address
       if (text === DEFAULT_UPDATE_URL) throw new Error('raw is down')
       if (text === FALLBACK_UPDATE_URL) return fakeResponse(manifestBytes)
       if (text === fallbackFileUrl) return fakeResponse(fileBytes)
+      if (text === fallbackPackageUrl) return fakeResponse(packageBytes)
       throw new Error(`unexpected request ${text}`)
     }
     const result = await applyUpdate({ directory })
     assert.equal(result.ok, true)
     assert.equal(readFileSync(join(directory, 'index.js'), 'utf8'), 'new index')
-    // Manifest from the fallback, then the file resolved with `new URL(path, manifestUrl)` — i.e. the
+    assert.equal(readCurrentVersion(directory), '1.1.0')
+    // Manifest from the fallback, then the files resolved with `new URL(path, manifestUrl)` — i.e. the
     // mirror, not the primary address.
-    assert.deepEqual(calls, [DEFAULT_UPDATE_URL, FALLBACK_UPDATE_URL, fallbackFileUrl])
+    assert.deepEqual(calls, [DEFAULT_UPDATE_URL, FALLBACK_UPDATE_URL, fallbackFileUrl, fallbackPackageUrl])
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -944,6 +952,180 @@ await check('a manifest that is not strictly newer is refused', async () => {
   assert.match(result.error, /not-newer/)
 })
 
+await check('a manifest whose shipped package.json version differs is refused before any write', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  const before = snapshot(directory)
+  const shipped = packageJsonFor('0.9.0')
+  publish(manifestFor({ version: '2.0.0', files: [['index.js', 'new index'], ['package.json', shipped]] }), [
+    ['index.js', 'new index'],
+    ['package.json', shipped],
+  ])
+  const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /version-mismatch/)
+  assert.match(result.error, /2\.0\.0/)
+  assert.match(result.error, /0\.9\.0/)
+  // Everything was downloaded and hash-verified; the refusal is still before the first write.
+  assert.equal(state.requests.length, 3)
+  assert.equal(snapshot(directory), before)
+  assert.deepEqual(updateLeftovers(directory), [])
+})
+
+await check('a manifest without package.json is refused before any write', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  const before = snapshot(directory)
+  publish(manifestFor({ version: '1.1.0', files: [['index.js', 'new index']] }), [['index.js', 'new index']])
+  const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /missing-package-json/)
+  assert.equal(snapshot(directory), before)
+  assert.deepEqual(updateLeftovers(directory), [])
+})
+
+await check('a junction inside the plugin directory cannot redirect a replace outside it', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  const outside = join(PLUGIN_ROOT, 'junction-outside')
+  mkdirSync(outside, { recursive: true })
+  const junction = join(directory, 'junction')
+  let linked = true
+  try {
+    symlinkSync(outside, junction, 'junction')
+  } catch {
+    linked = false
+  }
+  if (!linked) {
+    console.log('        (skipped: this sandbox cannot create a directory junction)')
+    return
+  }
+  try {
+    const shipped = packageJsonFor('1.1.0')
+    publish(
+      manifestFor({ version: '1.1.0', files: [['index.js', 'new index'], ['package.json', shipped], ['junction/pwn.txt', 'escaped']] }),
+      [['index.js', 'new index'], ['package.json', shipped], ['junction/pwn.txt', 'escaped']],
+    )
+    const before = snapshot(directory)
+    const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /target-escapes-plugin/)
+    assert.equal(snapshot(directory), before)
+    assert.deepEqual(updateLeftovers(directory), [])
+    assert.equal(existsSync(join(outside, 'pwn.txt')), false, 'the junction target was written through')
+  } finally {
+    try {
+      rmdirSync(junction)
+    } catch {
+      /* cleanup best effort */
+    }
+  }
+})
+
+await check('a file symlink at a manifest path is refused before any write', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  const outside = join(PLUGIN_ROOT, 'symlink-outside-file')
+  writeFileSync(outside, 'OUTSIDE-SECRET-BYTES')
+  const link = join(directory, 'linked.js')
+  try {
+    symlinkSync(outside, link, 'file')
+  } catch {
+    console.log('        (skipped: this sandbox cannot create a file symlink)')
+    return
+  }
+  try {
+    const shipped = packageJsonFor('1.1.0')
+    publish(
+      manifestFor({ version: '1.1.0', files: [['index.js', 'new index'], ['package.json', shipped], ['linked.js', 'link replacement']] }),
+      [['index.js', 'new index'], ['package.json', shipped], ['linked.js', 'link replacement']],
+    )
+    const before = snapshot(directory)
+    const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /target-is-link/)
+    assert.equal(snapshot(directory), before)
+    assert.deepEqual(updateLeftovers(directory), [])
+    // The backup phase follows a link with copyFileSync; refusing first is what keeps the outside bytes
+    // out of `.update-backup-*` (and off the page).
+    assert.equal(readFileSync(outside, 'utf8'), 'OUTSIDE-SECRET-BYTES')
+  } finally {
+    rmSync(link, { force: true })
+  }
+})
+
+await check('a symlink in a new subdirectory path is refused the same way', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  mkdirSync(join(directory, 'assets', 'new'), { recursive: true })
+  const outside = join(PLUGIN_ROOT, 'symlink-outside-nested')
+  writeFileSync(outside, 'NESTED-OUTSIDE-BYTES')
+  const link = join(directory, 'assets', 'new', 'linked.js')
+  try {
+    symlinkSync(outside, link, 'file')
+  } catch {
+    console.log('        (skipped: this sandbox cannot create a file symlink)')
+    return
+  }
+  try {
+    const shipped = packageJsonFor('1.1.0')
+    publish(
+      manifestFor({
+        version: '1.1.0',
+        files: [['index.js', 'new index'], ['package.json', shipped], ['assets/new/linked.js', 'link replacement']],
+      }),
+      [['index.js', 'new index'], ['package.json', shipped], ['assets/new/linked.js', 'link replacement']],
+    )
+    const before = snapshot(directory)
+    const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /target-is-link/)
+    assert.equal(snapshot(directory), before)
+    assert.deepEqual(updateLeftovers(directory), [])
+    assert.equal(readFileSync(outside, 'utf8'), 'NESTED-OUTSIDE-BYTES')
+  } finally {
+    rmSync(link, { force: true })
+  }
+})
+
+await check('a directory junction at a manifest target is refused as a link', async () => {
+  resetRemote()
+  const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
+  const outsideDir = join(PLUGIN_ROOT, 'junction-at-target')
+  mkdirSync(outsideDir, { recursive: true })
+  const junction = join(directory, 'targetdir')
+  let linked = true
+  try {
+    symlinkSync(outsideDir, junction, 'junction')
+  } catch {
+    linked = false
+  }
+  if (!linked) {
+    console.log('        (skipped: this sandbox cannot create a directory junction)')
+    return
+  }
+  try {
+    const shipped = packageJsonFor('1.1.0')
+    publish(
+      manifestFor({ version: '1.1.0', files: [['index.js', 'new index'], ['package.json', shipped], ['targetdir', 'junction replacement']] }),
+      [['index.js', 'new index'], ['package.json', shipped], ['targetdir', 'junction replacement']],
+    )
+    const before = snapshot(directory)
+    const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /target-is-link/)
+    assert.equal(snapshot(directory), before)
+    assert.deepEqual(updateLeftovers(directory), [])
+    assert.deepEqual(readdirSync(outsideDir), [])
+  } finally {
+    try {
+      rmdirSync(junction)
+    } catch {
+      /* cleanup best effort */
+    }
+  }
+})
+
 await check('a failing manifest fetch is reported and nothing changes', async () => {
   resetRemote()
   const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
@@ -960,7 +1142,11 @@ await check('a failing manifest fetch is reported and nothing changes', async ()
 await check('a second concurrent apply is refused with already-running', async () => {
   resetRemote()
   const directory = pluginDir({ version: '1.0.0', files: { 'index.js': 'old index' } })
-  publish(manifestFor({ files: [['index.js', 'new index']] }), [['index.js', 'new index']])
+  const shipped = packageJsonFor('1.1.0')
+  publish(manifestFor({ files: [['index.js', 'new index'], ['package.json', shipped]] }), [
+    ['index.js', 'new index'],
+    ['package.json', shipped],
+  ])
   state.delayMs = 25
   const first = applyUpdate({ manifestUrl: MANIFEST_URL, directory })
   const second = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
@@ -1021,12 +1207,14 @@ await check('a successful apply installs new bytes, keeps backups, and reports r
     files: [
       ['index.js', 'new index'],
       ['host/new.js', 'a brand new file'],
+      ['fresh/dir/new.js', 'a file in a brand-new tree'],
       ['package.json', newPackageJson],
     ],
   })
   publish(manifest, [
     ['index.js', 'new index'],
     ['host/new.js', 'a brand new file'],
+    ['fresh/dir/new.js', 'a file in a brand-new tree'],
     ['package.json', newPackageJson],
   ])
 
@@ -1046,6 +1234,7 @@ await check('a successful apply installs new bytes, keeps backups, and reports r
   // New bytes, including a file whose parent directory did not exist.
   assert.equal(readFileSync(join(directory, 'index.js'), 'utf8'), 'new index')
   assert.equal(readFileSync(join(directory, 'host/new.js'), 'utf8'), 'a brand new file')
+  assert.equal(readFileSync(join(directory, 'fresh/dir/new.js'), 'utf8'), 'a file in a brand-new tree')
   // Version truth moves with the update, because package.json is one of the listed files. (Without
   // that, the next check would see the old version and offer the same update forever.)
   assert.equal(readCurrentVersion(directory), '1.1.0')
@@ -1058,6 +1247,12 @@ await check('a successful apply installs new bytes, keeps backups, and reports r
   assert.equal(readFileSync(join(result.backupDir, 'package.json'), 'utf8'), originalPackageJson)
   assert.equal(existsSync(join(result.backupDir, 'host/new.js')), false)
   assert.equal(existsSync(join(result.backupDir, 'host/keep.js')), false)
+
+  // The page's own next step: a check now reports the installed version as current.
+  const afterApplyCheck = await checkUpdate({ manifestUrl: MANIFEST_URL, directory })
+  assert.equal(afterApplyCheck.ok, true)
+  assert.equal(afterApplyCheck.current, '1.1.0')
+  assert.equal(afterApplyCheck.available, false)
 
   // Staging is gone; the backup is the one documented remainder.
   assert.deepEqual(
@@ -1079,17 +1274,20 @@ await check('a replace-phase failure rolls every original back byte-for-byte', a
     files: { 'index.js': 'original index', blocked: 'this is a file, not a directory' },
   })
   const before = snapshot(directory)
+  const shipped = packageJsonFor('1.1.0')
   const manifest = manifestFor({
     files: [
       // Replaced first, so the failure has something to roll back.
       ['index.js', 'replacement index'],
       // Its parent `blocked` is a regular file in the target, so placing it must fail mid-replace.
       ['blocked/nested.txt', 'never lands'],
+      ['package.json', shipped],
     ],
   })
   publish(manifest, [
     ['index.js', 'replacement index'],
     ['blocked/nested.txt', 'never lands'],
+    ['package.json', shipped],
   ])
   const result = await applyUpdate({ manifestUrl: MANIFEST_URL, directory })
   assert.equal(result.ok, false)

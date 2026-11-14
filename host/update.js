@@ -25,6 +25,13 @@
  *      manifest does not mention are left alone, including the user's own notes next to the plugin.
  *   4. **No hot reload.** Replacing files on disk cannot reload a mounted Cordis row. Success reports
  *      `reload:'restart-required'`; claiming otherwise would be a lie the page repeats to the user.
+ *   5. **Version truth.** An apply is refused unless the `package.json` it is about to install
+ *      declares exactly the manifest's version (and unless the manifest carries one), so the version
+ *      the checker reports after an update is the version that is actually installed.
+ *   6. **Containment.** Lexical path checks plus a `realpath` check of every target's deepest existing
+ *      ancestor: a symlink or junction inside the plugin directory cannot redirect a written file
+ *      outside it. A target that is itself a link is refused outright (`lstat`), so the backup phase
+ *      never copies a link's outside bytes into the backup directory.
  *
  * The module uses `node:` builtins only, plus one intra-bundle relative import for the shared default
  * address (`./config.js`). It is shipped inside the bundle and loaded from a profile, where a bare
@@ -37,8 +44,10 @@ import { createHash } from 'node:crypto'
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   rmdirSync,
@@ -46,7 +55,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 
 import { DEFAULT_UPDATE_URL } from './config.js'
 
@@ -251,6 +260,27 @@ export function readCurrentVersion(directory) {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     if (typeof parsed.version !== 'string') return null
     return parseVersion(parsed.version) === null ? null : parsed.version
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Read the `version` out of the package.json bytes an update is about to install.
+ *
+ * A manifest can claim any `version` it likes; what the runtime will report after the apply is
+ * whatever this file says. The two must agree, so the check in {@link applyUpdate} runs against the
+ * downloaded bytes, never against the manifest's declaration. Returns `null` when the bytes are not a
+ * JSON object with a string `version`.
+ *
+ * @param bytes the verified downloaded bytes of the manifest's `package.json` entry.
+ * @returns the declared version string, or `null`.
+ */
+function readShippedVersion(bytes) {
+  try {
+    const parsed = JSON.parse(bytes.toString('utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return typeof parsed.version === 'string' ? parsed.version : null
   } catch {
     return null
   }
@@ -729,14 +759,115 @@ function rollbackFiles(directory, backupDir, replaced, originals, createdDirecto
 }
 
 /**
+ * Whether a canonical path is `parent` itself or lies under it.
+ *
+ * Windows paths are compared case-insensitively (the filesystem is), and the separator is part of the
+ * prefix test so `C:\plugin` cannot cover `C:\plugin-evil` by name.
+ */
+function isPathInside(parent, candidate) {
+  const fold = (value) => (process.platform === 'win32' ? value.toLowerCase() : value)
+  const foldedParent = fold(parent)
+  const foldedCandidate = fold(candidate)
+  if (foldedCandidate === foldedParent) return true
+  const boundary = foldedParent.endsWith(sep) ? foldedParent : `${foldedParent}${sep}`
+  return foldedCandidate.startsWith(boundary)
+}
+
+/**
+ * Refuse a replace whose target is redirected outside the plugin directory by a symlink/junction.
+ *
+ * Manifest path validation is lexical: it rejects `..`, absolute paths and separators, but it cannot
+ * know that `host/locale` is a directory junction pointing at `C:\Windows\Temp`. If it were followed,
+ * `rename` would place a file outside the plugin directory while every check above still passed. So,
+ * right before the first write, resolve the deepest EXISTING ancestor of every target with
+ * `realpathSync` and require the result to stay under `realpath(directory)`.
+ *
+ * Walking up matters: a manifest may create `host/foreign/new.js` where `host/foreign` does not exist
+ * yet, and `realpathSync` on a missing path throws. The loop stops at the plugin directory, which is
+ * known to exist. If an ancestor exists but cannot be resolved, that is refused too — an unreadable
+ * path is not a safe path.
+ *
+ * @returns `{ok:true}` or `{ok:false, error}`; never throws.
+ */
+function checkTargetContainment(directory, entries) {
+  let root
+  try {
+    root = realpathSync(directory)
+  } catch (error) {
+    return failure('target-containment-failed', `cannot resolve the plugin directory: ${describeError(error)}`)
+  }
+  for (const entry of entries) {
+    let ancestor = dirname(join(directory, entry.path))
+    try {
+      // The plugin directory always exists, so the walk terminates there even for a brand-new tree.
+      while (ancestor !== directory && !existsSync(ancestor)) {
+        const next = dirname(ancestor)
+        if (next === ancestor) break
+        ancestor = next
+      }
+      const canonical = realpathSync(ancestor)
+      if (!isPathInside(root, canonical)) {
+        return failure('target-escapes-plugin', `${entry.path}: ${ancestor} resolves to ${canonical}, outside ${root}`)
+      }
+    } catch (error) {
+      return failure('target-containment-failed', `${entry.path}: cannot resolve ${ancestor}: ${describeError(error)}`)
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * Refuse a manifest target that is a symbolic link or a junction.
+ *
+ * The replace itself would not write through a link (rename replaces the link entry), but the BACKUP
+ * phase copies each existing target first, and `copyFileSync` follows a file symlink: a pre-existing
+ * link inside the plugin directory could make the updater copy bytes from outside the plugin directory
+ * into `.update-backup-*` and report that directory on the page. So the link must be detected without
+ * touching its target — `lstatSync`, never `statSync`/`existsSync` (both follow, and `existsSync` even
+ * reports a dangling link as absent). A dangling link is refused too: replacing it would still be a
+ * link-directed write decision the manifest did not earn.
+ *
+ * Junction detection on Windows comes for free: a directory junction is a reparse point, and `lstatSync`
+ * reports it as a symbolic link. This runs before the staging directory is created, so a refusal leaves
+ * no trace.
+ *
+ * @returns `{ok:true}` or `{ok:false, error}`; never throws.
+ */
+function checkTargetsAreNotLinks(directory, entries) {
+  for (const entry of entries) {
+    let stats
+    try {
+      stats = lstatSync(join(directory, entry.path))
+    } catch (error) {
+      // An absent target is the normal case (a new file); anything else is refused rather than guessed.
+      if (error !== null && error !== undefined && error.code === 'ENOENT') continue
+      return failure('target-inspection-failed', `${entry.path}: ${describeError(error)}`)
+    }
+    if (stats.isSymbolicLink()) {
+      return failure('target-is-link', `${entry.path} exists as a symbolic link or junction; refusing to replace it`)
+    }
+  }
+  return { ok: true }
+}
+
+/**
  * Write the verified bytes: staging → backup → rename over → read back → drop staging.
  *
  * `entries` is one array of `{path, bytes, sha256}` where `bytes` are the already verified downloaded
- * buffers. All writes below happen only after the whole download and verification phase succeeded.
+ * buffers. All writes below happen only after the whole download and verification phase succeeded, and
+ * after {@link checkTargetContainment} has proven no symlink/junction redirects a target out of the
+ * plugin directory (ancestors) and {@link checkTargetsAreNotLinks} has proven no target is itself a
+ * link (so the backup phase never follows one).
  *
  * @returns `{ok:true, backupDir}` or `{ok:false, error, backupDir?}`; never throws.
  */
 function writeFiles(directory, from, to, entries) {
+  // 0. Refuse redirects and links before creating anything: not even the staging directory exists yet.
+  const containment = checkTargetContainment(directory, entries)
+  if (!containment.ok) return containment
+  const links = checkTargetsAreNotLinks(directory, entries)
+  if (!links.ok) return links
+
   const backupPrefix = `${BACKUP_PREFIX}${String(from).replace(/[^0-9A-Za-z._-]/g, '_')}-`
   const stagingDir = join(directory, freshDirectoryName(directory, STAGING_PREFIX))
   const createdDirectories = []
@@ -763,8 +894,18 @@ function writeFiles(directory, from, to, entries) {
     mkdirSync(backupDir)
     for (const entry of entries) {
       const target = join(directory, entry.path)
-      if (!existsSync(target)) continue
-      if (!statSync(target).isFile()) throw new Error(`${entry.path} exists and is not a regular file`)
+      // lstat, not stat/existsSync: those follow a link. The preflight already refused links, so this
+      // only matters for the race where a local actor swaps the target for a link between the two
+      // phases — and then the backup must fail rather than copy the link's target into `.update-backup-*`.
+      let targetStats
+      try {
+        targetStats = lstatSync(target)
+      } catch (error) {
+        if (error !== null && error !== undefined && error.code === 'ENOENT') continue
+        throw error
+      }
+      if (targetStats.isSymbolicLink()) throw new Error(`${entry.path} became a symbolic link after validation; refusing`)
+      if (!targetStats.isFile()) throw new Error(`${entry.path} exists and is not a regular file`)
       const backupTarget = join(backupDir, entry.path)
       mkdirSync(dirname(backupTarget), { recursive: true })
       copyFileSync(target, backupTarget)
@@ -827,8 +968,13 @@ function writeFiles(directory, from, to, entries) {
  * that happened while writing, the originals are byte-identical to before the call.
  *
  * The function never throws and never rejects. It refuses a second concurrent call with
- * `error:'already-running'`, refuses a directory without a readable `package.json`, and refuses a
- * manifest whose version is not strictly newer than the installed one.
+ * `error:'already-running'`, refuses a directory without a readable `package.json`, refuses a manifest
+ * whose version is not strictly newer than the installed one, refuses a manifest without a
+ * `package.json` entry (`missing-package-json`) or whose downloaded `package.json` version differs from
+ * `manifest.version` (`version-mismatch`), refuses a target redirected outside the plugin directory by
+ * a symlink/junction (`target-escapes-plugin`), and refuses a target that is itself a symbolic link or
+ * junction (`target-is-link`). Every refusal happens before the first write, so the installed tree is
+ * untouched.
  *
  * @param options `{fetchImpl?, manifestUrl?, directory, signal?}`.
  * @returns the result shape above.
@@ -904,6 +1050,25 @@ export async function applyUpdate(options) {
         return fail('byte-count-mismatch', `${file.path}: manifest says ${file.bytes} bytes, downloaded ${bytes.length}`)
       }
       if (sha256Hex(bytes) !== file.sha256) return fail('sha256-mismatch', file.path)
+    }
+
+    // Phase 2b: the version the update will actually install must be the version the manifest claims.
+    //
+    // `readCurrentVersion` reads package.json, so a manifest that never lists package.json can never
+    // move the installed version: the page would offer the same update forever. And a split-brain
+    // manifest could declare 2.0.0 while shipping package.json 0.9.0, making the checker and the
+    // runtime disagree after a "successful" apply. Both cases are refused before the first write, and
+    // the comparison uses the DOWNLOADED bytes — what will really land — not the manifest's claim.
+    const packageIndex = fetched.manifest.files.findIndex((file) => file.path === 'package.json')
+    if (packageIndex === -1) {
+      return fail('missing-package-json', 'the manifest lists no package.json, so an apply could not move the installed version')
+    }
+    const shippedVersion = readShippedVersion(downloaded[packageIndex])
+    if (shippedVersion === null) {
+      return fail('version-mismatch', 'the shipped package.json has no readable version string')
+    }
+    if (shippedVersion !== to) {
+      return fail('version-mismatch', `manifest says ${to}, shipped package.json says ${shippedVersion}`)
     }
 
     // Phase 3: the only phase that writes.

@@ -412,7 +412,7 @@ export function resolveConfig(raw) {
     const resolved = defaults()
     if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) return resolved
 
-    // The six volatile fields are unwrapped; the rest are plain and read directly.
+    // The eight volatile fields are unwrapped; the rest are plain and read directly.
     const mode = readLive(own(raw, 'mode'))
     if (isMode(mode)) resolved.mode = mode
     resolved.deepseekModelPatterns = normalizePatterns(readLive(own(raw, 'deepseekModelPatterns')), resolved.deepseekModelPatterns)
