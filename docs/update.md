@@ -38,6 +38,9 @@ https://cdn.jsdelivr.net/gh/guguzea/dsh-zcode-like@main/update-manifest.json
 
 文件本身按相对清单地址解析：`new URL(path, manifestUrl)`，所以镜像地址下的文件也走镜像。
 
+清单地址必须**匿名可读**。私有仓库、改名、文件只在别的分支，这三种情况 GitHub 都会对匿名请求返回 404，
+检查会报 `not-public`；401/403 报 `unauthorized`。jsDelivr 的回退也只服务公开仓库。
+
 ## 模块契约（adapters 之外，updater 实现）
 
 新文件 `host/update.js`，全部函数**永不抛异常**。

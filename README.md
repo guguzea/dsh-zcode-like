@@ -146,6 +146,8 @@ Cursor 的会话记录里本来没有目录和模型字段，它的项目目录�
 
 清单地址是 `updateUrl` 配置项，默认 `https://raw.githubusercontent.com/guguzea/dsh-zcode-like/main/update-manifest.json`，raw 拉不到时自动回退到 jsDelivr。自己填的地址不会回退。
 
+这个地址必须匿名可读。仓库是私有的话，GitHub 对匿名请求一律返回 404，检查会直接报 `not-public`，并说明私有仓库、改名、分支不对都会长这样。jsDelivr 的镜像也只服务公开仓库，所以私有源换镜像没用。
+
 备份目录形如 `.update-backup-<旧版本>-<时间戳>`，出问题可以直接从里面拷回来。
 - 外部日志比 DSH 的脏。里面有整条命令的输出、文件内容，可能带着密钥。发之前先想清楚这一条要发给谁。
 

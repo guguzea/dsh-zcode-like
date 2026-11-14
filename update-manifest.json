@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "files": [
     {
       "path": "README.md",
-      "bytes": 15095,
-      "sha256": "88ae29cfa2114d6dfae02801b74effdd8a158ac307e9fa6ba9ce9132097dcd62"
+      "bytes": 15370,
+      "sha256": "8c7eee2a5f7e7556be443fdb1ab9b382efbc94487573cf0d3d93f1eb51081003"
     },
     {
       "path": "client.js",
@@ -125,8 +125,8 @@
     {
       "path": "package.json",
       "bytes": 860,
-      "sha256": "e7cd9652cbdf701e85ed51bdb691815ff75882bb78cafeefaeee6fba7774942a"
+      "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
     }
   ],
-  "notes": "更新检查：明确 404/401 的含义"
+  "notes": "公开更新源说明，检查错误的含义"
 }
