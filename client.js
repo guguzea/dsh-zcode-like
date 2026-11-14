@@ -844,6 +844,49 @@ window.__ModuleLoader__.load({
 			return ordered;
 		}
 		/**
+		 * Every id in the lineage subtree rooted at one row: the row itself plus all of its
+		 * descendants, transitively, in payload order. Ticking a conversation in this list means
+		 * "this conversation and the ones it spawned", so a parent tick has to reach a grandchild.
+		 *
+		 * Descendants are resolved across the whole payload, not one harness group: a delegated
+		 * child still belongs to the conversation that started it. The walk is bounded by a visited
+		 * set, so a cyclic lineage cannot loop, and a `parentId` naming no row in the payload
+		 * contributes no edge at all (it cannot pull an unrelated row into the cascade).
+		 *
+		 * @param groups - the normalized harness groups from the scan.
+		 * @param rootId - the id whose subtree is wanted.
+		 * @returns the ids to update, root first then descendants.
+		 */
+		function foreignCascadeIds(groups, rootId) {
+			const known = Object.create(null);
+			for (const group of groups) {
+				for (const session of group.sessions) {
+					if (known[session.id] === undefined) known[session.id] = true;
+				}
+			}
+			const children = Object.create(null);
+			for (const group of groups) {
+				for (const session of group.sessions) {
+					if (session.parentId === null || session.parentId === session.id) continue;
+					if (known[session.parentId] !== true) continue;
+					if (children[session.parentId] === undefined) children[session.parentId] = [];
+					children[session.parentId].push(session.id);
+				}
+			}
+			const ids = [];
+			const seen = Object.create(null);
+			const visit = function (id) {
+				if (seen[id] === true) return;
+				seen[id] = true;
+				ids.push(id);
+				const kids = children[id];
+				if (kids === undefined) return;
+				for (const child of kids) visit(child);
+			};
+			visit(rootId);
+			return ids;
+		}
+		/**
 		 * The second line of one scanned-session row: folder, provider/model, message count.
 		 * Each absent fact is named as unreported instead of being printed as an empty string.
 		 * @param session - one normalized session.
@@ -2541,16 +2584,23 @@ window.__ModuleLoader__.load({
 				};
 
 				/**
-				 * Tick or untick one row in the local draft. Each row keys on its OWN id, so ticking
-				 * one conversation never moves another (they are independent boxes, not a shared key).
+				 * Tick or untick one row in the local draft, together with its whole lineage subtree.
+				 * A tick on `zcode/sess_root` means "this conversation and the ones it spawned", so it
+				 * also ticks every descendant transitively; an untick is symmetric. Unticking a CHILD
+				 * only reaches that child's own subtree, so it never moves the parent and each row
+				 * stays individually controllable: unlike the folder cascade there is no OR
+				 * semantics to protect, and nothing is disabled.
 				 * @param id - the composite session id.
 				 * @param on - whether the box is now ticked.
 				 */
 				const toggleForeign = function (id, on) {
+					const cascade = foreignCascadeIds(foreignGroups, id);
 					setForeignPicked(function (previous) {
 						const next = Object.assign(Object.create(null), previous);
-						if (on === true) next[id] = true;
-						else delete next[id];
+						for (const target of cascade) {
+							if (on === true) next[target] = true;
+							else delete next[target];
+						}
 						return next;
 					});
 				};

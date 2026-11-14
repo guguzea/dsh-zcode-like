@@ -1359,6 +1359,24 @@ const FOREIGN_PARENT_PAYLOAD = {
 	]
 };
 
+/**
+ * A lineage tree for the cascade check: root -> child1 -> grandchild, and root -> child2. The
+ * payload order is deliberately scrambled (grandchild first) so the expansion cannot rely on it.
+ */
+const FOREIGN_TREE_PAYLOAD = {
+	harnesses: [
+		{
+			harness: "zcode", label: "ZCode", available: true, error: null,
+			sessions: [
+				{ id: "zcode/sess_grand", parentId: "zcode/sess_child1", title: "Grandchild task", cwd: "F:\\work\\a", messageCount: 2, provider: "deepseek", model: "deepseek-flash" },
+				{ id: "zcode/sess_root", parentId: "", title: "Root task", cwd: "F:\\work\\a", messageCount: 10, provider: "deepseek", model: "deepseek-v4" },
+				{ id: "zcode/sess_child1", parentId: "zcode/sess_root", title: "First child", cwd: "F:\\work\\a", messageCount: 4, provider: "deepseek", model: "deepseek-flash" },
+				{ id: "zcode/sess_child2", parentId: "zcode/sess_root", title: "Second child", cwd: "F:\\work\\b", messageCount: 3, provider: "deepseek", model: "deepseek-flash" }
+			]
+		}
+	]
+};
+
 /** The workspaces the folder-chooser scenarios list. */
 const CHOOSER_WORKSPACES = [
 	{ id: "w1", path: "F:\\work\\one", title: "One", sessions: [ { id: "s1", title: "First session" }, { id: "s2", title: "Second session" } ] },
@@ -2968,6 +2986,55 @@ await checkAsync("foreign-parent", "a delegated child renders after its parent, 
 	assert(scenario.fetch.uploadCalls.length === 1, `the child send made ${scenario.fetch.uploadCalls.length} POSTs`);
 	assert(scenario.fetch.uploadCalls[0].body.id === "zcode/sess_child", `the child sent ${JSON.stringify(scenario.fetch.uploadCalls[0].body)}`);
 	return "child after parent with the child class, dangling/missing parentId top-level and tickable, child saves and sends its own id";
+});
+
+// 44 ─ ticking a conversation selects its delegated descendants too ───────────────────────────
+await checkAsync("foreign-parent-cascade", "ticking a parent ticks its whole lineage subtree; unticking is symmetric and a child tick stays local", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_TREE_PAYLOAD },
+		uploads: [
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } }
+		]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	const ticked = function (id) { return foreignRow(scenario.runtime, id).props.checked; };
+	const allIds = [ "zcode/sess_root", "zcode/sess_child1", "zcode/sess_grand", "zcode/sess_child2" ];
+	// Ticking the root ticks the children and the grandchild, transitively.
+	tickForeign(scenario.runtime, "zcode/sess_root", true);
+	for (const id of allIds) assert(ticked(id) === true, `ticking the root left ${id} unticked`);
+	// Unticking the root is symmetric: the whole subtree goes with it.
+	tickForeign(scenario.runtime, "zcode/sess_root", false);
+	for (const id of allIds) assert(ticked(id) === false, `unticking the root left ${id} ticked`);
+	// A child tick stays inside that child's own subtree: its parent and sibling are untouched.
+	tickForeign(scenario.runtime, "zcode/sess_child2", true);
+	assert(ticked("zcode/sess_child2") === true, "the ticked child is not ticked");
+	assert(ticked("zcode/sess_root") === false, "ticking a child ticked its parent");
+	assert(ticked("zcode/sess_child1") === false, "ticking a child ticked its sibling");
+	assert(ticked("zcode/sess_grand") === false, "ticking a child ticked an unrelated grandchild");
+	// The expanded parent set is what the config write carries, one id per ticked row.
+	tickForeign(scenario.runtime, "zcode/sess_child2", false);
+	tickForeign(scenario.runtime, "zcode/sess_root", true);
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	const writes = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(writes.length === 1, `the save wrote foreignSessionIds ${writes.length} times`);
+	const expected = [ "zcode/sess_child1", "zcode/sess_child2", "zcode/sess_grand", "zcode/sess_root" ];
+	assert(JSON.stringify(writes[0][1].slice().sort()) === JSON.stringify(expected), `the saved ids are ${JSON.stringify(writes[0][1])}`);
+	// The send uses the same expanded set: one POST per ticked row, the ids unchanged in shape.
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	// Four sequential POSTs need more microtask passes than the default settle provides.
+	for (let pass = 0; pass < 10 && scenario.fetch.uploadCalls.length < 4; pass++) {
+		await settle(scenario.runtime, 2);
+	}
+	const posted = scenario.fetch.uploadCalls.map(function (call) { return call.body.id; }).sort();
+	assert(posted.length === 4, `the send made ${posted.length} POSTs, expected 4`);
+	assert(JSON.stringify(posted) === JSON.stringify(expected), `the sent ids are ${JSON.stringify(posted)}`);
+	return "root tick/untick cascades through all 4 rows, a child tick stays local, save and send carry the expanded set";
 });
 
 console.log("");
