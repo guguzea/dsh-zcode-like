@@ -1,8 +1,10 @@
 # 肥鱼云盘
 
 `dsh-session-log-upload` 
-让用户自己决定会话日志什么时候上传到 DeepSeek。
-让你的DSH会和zcode一样偷代码!
+**让用户自己决定会话日志什么时候上传到 DeepSeek。**
+
+**让你的DSH会和zcode一样偷代码!**
+
 装上之后默认什么都不变。
 
 ## 安装
