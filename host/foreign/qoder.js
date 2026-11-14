@@ -203,10 +203,11 @@ async function readAgentMeta(metaPath) {
  * @param fileName transcript file name, used for the id fallback.
  * @param info the file's `Stats`.
  * @param lineage `null` for a top-level transcript, `{parentId}` for a delegated one.
+ * @param options the contract's options object; `options.cache` makes the summary durable.
  * @returns a contract session summary, or `null` when the file name cannot produce a safe id.
  */
-async function describeTranscript(filePath, fileName, info, lineage) {
-  const cached = readScanCache(filePath, info)
+async function describeTranscript(filePath, fileName, info, lineage, options) {
+  const cached = readScanCache(harness, filePath, info, options)
   if (cached !== null) {
     return { ...cached, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
   }
@@ -233,7 +234,7 @@ async function describeTranscript(filePath, fileName, info, lineage) {
     messageCount: await countJsonlMessages(filePath, isMessageLine),
   }
   if (delegated) summary.parentId = lineage.parentId
-  writeScanCache(filePath, info, summary)
+  writeScanCache(harness, filePath, info, summary, options)
   return { ...summary, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
 }
 
@@ -261,7 +262,7 @@ export async function scan(options) {
           const filePath = join(projectPath, entry.name)
           const info = await statSafe(filePath)
           if (info === null || info.isFile() !== true) continue
-          const row = await describeTranscript(filePath, entry.name, info, null)
+          const row = await describeTranscript(filePath, entry.name, info, null, options)
           if (row !== null) sessions.push(row)
           continue
         }
@@ -276,7 +277,7 @@ export async function scan(options) {
           const subagentPath = join(subagentsDirectory, subagentFile.name)
           const info = await statSafe(subagentPath)
           if (info === null || info.isFile() !== true) continue
-          const row = await describeTranscript(subagentPath, subagentFile.name, info, { parentId })
+          const row = await describeTranscript(subagentPath, subagentFile.name, info, { parentId }, options)
           if (row !== null) sessions.push(row)
         }
       }

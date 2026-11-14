@@ -21,16 +21,21 @@
  *   7. the registry: adapter order, composite-id parsing, scanAll/get-by-composite-id, caching
  *   8. total behaviour: hostile options, missing ids, aborted signals, contract key sets, unsafe
  *      and over-deep raw-id rejection for every JSONL adapter
+ *   9. the persistent scan cache: `ScanCache` round-trip, dirty-only flush, prune by age/entries/
+ *      bytes, never-throw on bad input or corrupt files, a stub cache proving an adapter returns a
+ *      cached row instead of reading the transcript, a simulated restart serving a disk row, and a
+ *      changed transcript invalidating it; the ZCode row set cached against db + `-wal` identity
  *
  * The only writes are inside `verify/.tmp-foreign-adapters/`; the suite removes that directory in
  * a `finally` and exits non-zero when any check failed.
  */
 
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { ScanCache, memoryScanCache } from '../host/foreign/cache.js'
 import * as cline from '../host/foreign/cline.js'
 import * as cursor from '../host/foreign/cursor.js'
 import { ADAPTERS, adapterFor, readForeignSession, scanAll } from '../host/foreign/index.js'
@@ -68,6 +73,11 @@ const WORKBUDDY_CHILD = 'agent-workbuddy-child'
 const WORKBUDDY_CHILD_ID = `${WORKBUDDY_ID}/subagents/${WORKBUDDY_CHILD}`
 const WORKBUDDY_CHILD_TITLE = 'Work the WorkBuddy child'
 const WORKBUDDY_CHILD_TIME = 1720000010000
+// The persistent-cache fixtures: a dedicated home with one Qoder transcript, so a row can be
+// prepopulated/tampered with without touching the fixtures the other checks assert on.
+const CACHE_SESSION = 'cache-session-1'
+const CACHE_HOME = join(tmp, 'cache-home')
+const CACHE_TRANSCRIPT = join(CACHE_HOME, '.qoder-cn', 'projects', 'H--cache-work', `${CACHE_SESSION}.jsonl`)
 
 const SESSION_KEYS = ['bytes', 'createdAt', 'cwd', 'id', 'messageCount', 'model', 'provider', 'title', 'updatedAt']
 const RAW_KEYS = ['createdAt', 'cwd', 'error', 'id', 'messages', 'model', 'provider', 'title', 'truncated']
@@ -537,6 +547,29 @@ function buildBareHome() {
   }
 }
 
+/** The persistent-cache home: one ordinary Qoder session, used only by the scan-cache checks. */
+function buildCacheHome() {
+  writeFixture(
+    CACHE_TRANSCRIPT,
+    jsonl([
+      { type: 'workspace-directories', sessionId: CACHE_SESSION, directories: ['H:\\cache-work'] },
+      { type: 'runtime-config', sessionId: CACHE_SESSION, model: 'cache-model', timestamp: 1730000000000 },
+      {
+        type: 'user',
+        uuid: 'cache-user-1',
+        timestamp: '2024-05-01T00:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'cache question' }] },
+      },
+      {
+        type: 'assistant',
+        uuid: 'cache-assistant-1',
+        timestamp: '2024-05-01T00:00:05.000Z',
+        message: { role: 'assistant', model: 'cache-model', content: [{ type: 'text', text: 'cache answer' }] },
+      },
+    ]),
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // the fixtures are built once, then every check reads them
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -549,6 +582,7 @@ buildCursorStore()
 buildWorkbuddyStore()
 buildClineStore()
 buildBareHome()
+buildCacheHome()
 
 const ZCODE_DB = join(home, '.zcode', 'cli', 'db', 'db.sqlite')
 const CLINE_DB = join(home, '.cline', 'data', 'db', 'sessions.db')
@@ -1268,6 +1302,337 @@ try {
       assert.equal(raw.error, 'not-found', `${adapter.harness}: a well-formed but missing child is not-found`)
     }
   })
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // 9. the persistent scan cache (host/foreign/cache.js + options.cache)
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+
+  const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+  const cacheFileIn = (directory) => join(directory, 'foreign-scan-cache.json')
+
+  await check('ScanCache round-trips rows through disk and writes only when dirty', async () => {
+    const directory = join(tmp, 'cache-roundtrip')
+    const cache = new ScanCache(directory)
+    assert.equal(cache.size(), 0, 'construction must not create entries')
+    assert.equal(cache.get('alpha'), undefined)
+    cache.set('alpha', { title: 'alpha title', messageCount: 2 })
+    cache.set('beta', { title: 'beta title', messageCount: 3 })
+    assert.equal(cache.size(), 2)
+    cache.flush()
+    const filePath = cacheFileIn(directory)
+    assert.equal(existsSync(filePath), true, 'flush must create the documented file')
+    const firstText = readFileSync(filePath, 'utf8')
+    const stored = JSON.parse(firstText)
+    assert.equal(stored.version, 1)
+    assert.equal(typeof stored.entries.alpha.at, 'number')
+    assert.deepEqual(stored.entries.alpha.value, { title: 'alpha title', messageCount: 2 })
+
+    const reloaded = new ScanCache(directory)
+    assert.deepEqual(reloaded.get('alpha'), { title: 'alpha title', messageCount: 2 })
+    assert.deepEqual(reloaded.get('beta'), { title: 'beta title', messageCount: 3 })
+    assert.equal(reloaded.size(), 2)
+    assert.equal(reloaded.get('missing'), undefined, 'an unknown key is not a hit')
+
+    // A flush with nothing changed must not rewrite the file: a scan that changed nothing is free.
+    const beforeMtime = statSync(filePath).mtimeMs
+    reloaded.flush()
+    assert.equal(readFileSync(filePath, 'utf8'), firstText)
+    assert.equal(statSync(filePath).mtimeMs, beforeMtime)
+  })
+
+  await check('ScanCache prunes by age, by entry count and by byte budget', async () => {
+    const ageDirectory = join(tmp, 'cache-prune-age')
+    const aged = new ScanCache(ageDirectory, { maxAgeMs: 40 })
+    aged.set('stale', { title: 'stale' })
+    await sleep(60)
+    aged.set('fresh', { title: 'fresh' })
+    aged.flush()
+    const ageReloaded = new ScanCache(ageDirectory, { maxAgeMs: 40 })
+    assert.equal(ageReloaded.get('stale'), undefined, 'an entry older than maxAgeMs is pruned on flush')
+    assert.deepEqual(ageReloaded.get('fresh'), { title: 'fresh' })
+
+    const countDirectory = join(tmp, 'cache-prune-count')
+    const counted = new ScanCache(countDirectory, { maxEntries: 2 })
+    counted.set('one', { n: 1 })
+    await sleep(3)
+    counted.set('two', { n: 2 })
+    await sleep(3)
+    counted.set('three', { n: 3 })
+    counted.flush()
+    const countReloaded = new ScanCache(countDirectory, { maxEntries: 2 })
+    assert.equal(countReloaded.size(), 2, 'maxEntries bounds the flushed file')
+    assert.equal(countReloaded.get('one'), undefined, 'the oldest entries are the ones dropped')
+    assert.deepEqual(countReloaded.get('three'), { n: 3 })
+
+    const sizeDirectory = join(tmp, 'cache-prune-size')
+    const sized = new ScanCache(sizeDirectory, { maxBytes: 420 })
+    for (let index = 0; index < 8; index += 1) {
+      sized.set(`key-${index}`, { title: 'x'.repeat(80), n: index })
+      await sleep(2)
+    }
+    sized.flush()
+    const sizeFilePath = cacheFileIn(sizeDirectory)
+    assert.ok(statSync(sizeFilePath).size <= 420, 'the flushed file stays within maxBytes')
+    const sizeReloaded = new ScanCache(sizeDirectory, { maxBytes: 420 })
+    assert.ok(sizeReloaded.size() > 0 && sizeReloaded.size() < 8, `expected a size-pruned cache, got ${sizeReloaded.size()}`)
+    assert.deepEqual(sizeReloaded.get('key-7'), { title: 'x'.repeat(80), n: 7 }, 'newest rows survive')
+    assert.equal(sizeReloaded.get('key-0'), undefined)
+  })
+
+  await check('ScanCache never throws on bad input, corrupt files, a foreign version or an oversized file', async () => {
+    // Unusable constructor input and unusable method input: the contract is total.
+    for (const directory of [undefined, null, 42, '', {}, []]) {
+      const cache = new ScanCache(directory)
+      cache.get('key')
+      cache.get(undefined)
+      cache.get(null)
+      cache.set('key', { ok: true })
+      cache.set(undefined, { ok: true })
+      cache.set('other', undefined)
+      cache.flush()
+      cache.size()
+    }
+    const hostileOptions = {
+      get maxEntries() {
+        throw new Error('boom')
+      },
+      get maxBytes() {
+        throw new Error('boom')
+      },
+      get maxAgeMs() {
+        throw new Error('boom')
+      },
+    }
+    const hostile = new ScanCache(join(tmp, 'cache-hostile-options'), hostileOptions)
+    hostile.set('key', { ok: true })
+    hostile.flush()
+
+    // The directory path may not be creatable at all (a file sits where the directory should be).
+    writeFixture(join(tmp, 'cache-not-a-directory'), 'x')
+    const blocked = new ScanCache(join(tmp, 'cache-not-a-directory', 'nested'))
+    blocked.set('key', { ok: true })
+    blocked.flush()
+
+    // A value JSON cannot represent must not make flush throw.
+    const circular = {}
+    circular.self = circular
+    const circularCache = new ScanCache(join(tmp, 'cache-circular'))
+    circularCache.set('loop', circular)
+    circularCache.flush()
+
+    // Missing / corrupt / wrong-shape / foreign-version files all load as empty and keep working.
+    const corruptContents = [
+      '{ definitely not json',
+      '[]',
+      'null',
+      '{"version":2,"entries":{}}',
+      '{"version":1,"entries":[]}',
+      '{"version":1,"entries":{"k":"nope"}}',
+      '',
+    ]
+    for (let index = 0; index < corruptContents.length; index += 1) {
+      const directory = join(tmp, `cache-broken-${index}`)
+      writeFixture(cacheFileIn(directory), corruptContents[index])
+      const cache = new ScanCache(directory)
+      assert.equal(cache.size(), 0, `corrupt cache ${index} must load empty`)
+      cache.set('fresh', { ok: true })
+      cache.flush()
+      assert.deepEqual(new ScanCache(directory).get('fresh'), { ok: true }, `cache ${index} must recover`)
+    }
+
+    // A file larger than the budget loads as empty rather than being parsed.
+    const oversizedDirectory = join(tmp, 'cache-oversized')
+    writeFixture(
+      cacheFileIn(oversizedDirectory),
+      JSON.stringify({ version: 1, entries: { big: { at: Date.now(), value: { text: 'x'.repeat(400) } } } }),
+    )
+    const oversized = new ScanCache(oversizedDirectory, { maxBytes: 200 })
+    assert.equal(oversized.size(), 0, 'an oversized cache file loads empty')
+    oversized.set('fresh', { ok: true })
+    oversized.flush()
+    assert.deepEqual(new ScanCache(oversizedDirectory, { maxBytes: 200 }).get('fresh'), { ok: true })
+  })
+
+  await check('memoryScanCache is a working zero-disk cache with the same surface', async () => {
+    const memory = memoryScanCache()
+    assert.equal(memory.get('alpha'), undefined)
+    memory.set('alpha', { title: 'alpha' })
+    assert.deepEqual(memory.get('alpha'), { title: 'alpha' })
+    assert.equal(memory.size(), 1)
+    memory.flush()
+    assert.deepEqual(memory.get('alpha'), { title: 'alpha' }, 'flush must not clear an in-memory cache')
+    const first = await qoder.scan({ home, cache: memory })
+    const second = await qoder.scan({ home, cache: memory })
+    assert.deepEqual(second, first, 'a memory cache is accepted as options.cache and never stale here')
+  })
+
+  await check('a stub cache serves a scan row without the adapter reading the transcript', async () => {
+    const cases = [
+      [qoder, join(home, '.qoder-cn', 'projects', 'H--qoder-work', `${QODER_ID}.jsonl`), QODER_ID, 'Build a Qoder thing'],
+      [cursor, join(home, '.cursor', 'projects', 'h-work', 'agent-transcripts', CURSOR_ID, `${CURSOR_ID}.jsonl`), CURSOR_ID, 'Add a Cursor button'],
+      [workbuddy, join(home, '.workbuddy', 'projects', 'wb-project', `${WORKBUDDY_ID}.jsonl`), WORKBUDDY_ID, 'Fix the WorkBuddy bug title'],
+    ]
+    for (const [adapter, transcriptPath, sessionId, liveTitle] of cases) {
+      const keys = []
+      const writes = []
+      const cachedRow = {
+        id: sessionId,
+        title: `CACHED ONLY ${adapter.harness}`,
+        cwd: 'C:\\cached',
+        createdAt: 111,
+        provider: 'cached-provider',
+        model: 'cached-model',
+        messageCount: 4242,
+      }
+      const stub = {
+        get(key) {
+          keys.push(key)
+          return typeof key === 'string' && key.includes(transcriptPath) ? cachedRow : undefined
+        },
+        set(key) {
+          writes.push(key)
+        },
+      }
+      const result = await adapter.scan({ home, cache: stub })
+      const row = result.sessions.find((session) => session.id === sessionId)
+      assert.ok(row !== undefined, `${adapter.harness}: the cached row must be listed`)
+      assert.equal(row.title, cachedRow.title, `${adapter.harness}: the title must come from the cache`)
+      assert.notEqual(row.title, liveTitle, `${adapter.harness}: a hit must not re-derive the title from the file`)
+      assert.equal(row.messageCount, 4242, `${adapter.harness}: the count must come from the cache`)
+      assert.equal(row.cwd, 'C:\\cached')
+      assert.equal(row.provider, 'cached-provider')
+      assert.equal(row.model, 'cached-model')
+      assert.equal(row.createdAt, 111)
+
+      // The key must be honest: harness + absolute path + size + mtime + ctime of the file.
+      const info = statSync(transcriptPath)
+      const expectedKey = `${adapter.harness}\u0000${transcriptPath}\u0000${info.size}\u0000${info.mtimeMs}\u0000${info.ctimeMs}`
+      assert.ok(keys.includes(expectedKey), `${adapter.harness}: get() received the honest key`)
+      assert.equal(writes.includes(expectedKey), false, `${adapter.harness}: a hit must not rewrite the entry`)
+    }
+  })
+
+  await check('a persisted cache row is served after a simulated restart, and a changed file misses it', async () => {
+    const cacheDirectory = join(tmp, 'cache-persist')
+    const cacheFile = cacheFileIn(cacheDirectory)
+
+    // Cold process: the scan fills the cache and flush persists it.
+    const coldCache = new ScanCache(cacheDirectory)
+    const coldRows = await qoder.scan({ home: CACHE_HOME, cache: coldCache })
+    assert.equal(coldRows.sessions.length, 1)
+    assert.equal(coldRows.sessions[0].id, CACHE_SESSION)
+    assert.equal(coldRows.sessions[0].messageCount, 2)
+    coldCache.flush()
+
+    // A "restart" is a new ScanCache over the same directory. Tamper the persisted row so only a
+    // real cache hit can produce it, then scan with a fresh instance.
+    const stored = JSON.parse(readFileSync(cacheFile, 'utf8'))
+    assert.equal(stored.version, 1)
+    const cacheKeyForTranscript = Object.keys(stored.entries).find((key) => key.includes(CACHE_TRANSCRIPT))
+    assert.ok(cacheKeyForTranscript !== undefined, 'the scan must have persisted a row keyed by the transcript')
+    stored.entries[cacheKeyForTranscript].value = {
+      ...stored.entries[cacheKeyForTranscript].value,
+      title: 'DISK SENTINEL TITLE',
+      messageCount: 999,
+    }
+    writeFileSync(cacheFile, JSON.stringify(stored), 'utf8')
+    const warmRows = await qoder.scan({ home: CACHE_HOME, cache: new ScanCache(cacheDirectory) })
+    assert.equal(warmRows.sessions[0].title, 'DISK SENTINEL TITLE', 'the row came from disk, not the transcript')
+    assert.equal(warmRows.sessions[0].messageCount, 999)
+
+    // Any change to the transcript (size/mtime/ctime) must miss and recompute.
+    appendFileSync(
+      CACHE_TRANSCRIPT,
+      `\n${JSON.stringify({
+        type: 'user',
+        uuid: 'cache-user-2',
+        timestamp: '2024-05-01T00:00:10.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'second cache question' }] },
+      })}`,
+      'utf8',
+    )
+    const changedRows = await qoder.scan({ home: CACHE_HOME, cache: new ScanCache(cacheDirectory) })
+    assert.equal(changedRows.sessions[0].messageCount, 3, 'a changed file must be recounted')
+    assert.notEqual(changedRows.sessions[0].title, 'DISK SENTINEL TITLE', 'a changed file must not reuse the old row')
+    assert.equal(changedRows.sessions[0].title, 'cache question')
+  })
+
+  await check('a corrupt or absent cache file still yields a working cold scan', async () => {
+    const corruptDirectory = join(tmp, 'cache-corrupt-adapter')
+    writeFixture(cacheFileIn(corruptDirectory), '{ definitely not json')
+    const corruptCache = new ScanCache(corruptDirectory)
+    assert.equal(corruptCache.size(), 0)
+    const corruptRows = await qoder.scan({ home: CACHE_HOME, cache: corruptCache })
+    assert.equal(corruptRows.available, true)
+    assert.equal(corruptRows.error, null)
+    assert.equal(corruptRows.sessions[0].messageCount, 3)
+    corruptCache.set('fresh', { ok: true })
+    corruptCache.flush()
+    assert.deepEqual(new ScanCache(corruptDirectory).get('fresh'), { ok: true })
+
+    const absentCache = new ScanCache(join(tmp, 'cache-absent-directory'))
+    assert.equal(absentCache.size(), 0)
+    const absentRows = await cursor.scan({ home, cache: absentCache })
+    assert.equal(absentRows.sessions.length, 2, 'a cold scan works with an absent cache file')
+  })
+
+  if (SQLITE === null) {
+    await check('ZCode scan-cache check skipped: node:sqlite is not available on this runtime', () => {
+      assert.ok(true)
+    })
+  } else {
+    await check('ZCode caches its SQLite row set against the db and -wal identity', async () => {
+      const cacheDirectory = join(tmp, 'cache-zcode')
+      const cacheFile = cacheFileIn(cacheDirectory)
+      const coldCache = new ScanCache(cacheDirectory)
+      const coldRows = await zcode.scan({ home, cache: coldCache })
+      assert.equal(coldRows.sessions.length, 2)
+      coldCache.flush()
+
+      const stored = JSON.parse(readFileSync(cacheFile, 'utf8'))
+      const keys = Object.keys(stored.entries)
+      assert.equal(keys.length, 1, 'one store version, one cached row set')
+      const storeKey = keys[0]
+      assert.ok(storeKey.startsWith('zcode\u0000'))
+      assert.ok(storeKey.includes(ZCODE_DB))
+      assert.ok(storeKey.includes('\u0000wal:missing'), 'a missing -wal is part of the key')
+      stored.entries[storeKey].value = {
+        sessions: [
+          {
+            id: 'sess_cached_only',
+            parentId: '',
+            title: 'CACHED SQL ROWS',
+            cwd: '',
+            createdAt: 0,
+            updatedAt: 0,
+            messageCount: 7,
+            provider: '',
+            model: '',
+            bytes: 1,
+          },
+        ],
+      }
+      writeFileSync(cacheFile, JSON.stringify(stored), 'utf8')
+
+      // A fresh instance over the same directory ("restart") returns the tampered row set: the SQL
+      // statements did not run.
+      const warmRows = await zcode.scan({ home, cache: new ScanCache(cacheDirectory) })
+      assert.equal(warmRows.error, null)
+      assert.deepEqual(warmRows.sessions.map((session) => session.id), ['sess_cached_only'])
+      assert.equal(warmRows.sessions[0].title, 'CACHED SQL ROWS')
+
+      // The -wal file appearing makes the cached row set stale, so the scan must run SQL again.
+      writeFileSync(`${ZCODE_DB}-wal`, '', 'utf8')
+      try {
+        const walRows = await zcode.scan({ home, cache: new ScanCache(cacheDirectory) })
+        assert.equal(walRows.error, null)
+        assert.equal(walRows.sessions.length, 2, 'a new -wal file invalidates the cached SQL rows')
+        assert.deepEqual(walRows.sessions.map((session) => session.id), [ZCODE_CHILD, ZCODE_ROOT])
+      } finally {
+        rmSync(`${ZCODE_DB}-wal`, { force: true })
+      }
+    })
+  }
 } finally {
   rmSync(tmp, REMOVE_OPTIONS)
 }

@@ -494,6 +494,7 @@ await check('every shipped host file is present', () => {
     join('host', 'eligibility.js'),
     join('host', 'failure.js'),
     join('host', 'foreign-forge.js'),
+    join('host', 'foreign', 'cache.js'),
     join('host', 'foreign', 'cline.js'),
     join('host', 'foreign', 'cursor.js'),
     join('host', 'foreign', 'index.js'),

@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 13556,
-      "sha256": "3821081bc349765a82d364b1ac4d3c6badf70fdd48741a1447f42683eb70e5a1"
+      "bytes": 14286,
+      "sha256": "586e52dc5b461c0dcc6bb3106752e5c420ed07d5099550ffb09d35db9d888ce5"
     },
     {
       "path": "client.js",
@@ -38,14 +38,19 @@
       "sha256": "c7570f2abacde90d68a7221a46eeff09518fc1405e46dca4841de42122f79f84"
     },
     {
+      "path": "host/foreign/cache.js",
+      "bytes": 10701,
+      "sha256": "f7c2baaa6198264b9696a7a0c4685091b20a3fe08c12ca3bb16c4152e2f0f17a"
+    },
+    {
       "path": "host/foreign/cline.js",
       "bytes": 5169,
       "sha256": "96c9adb50421b303713be61a320c7584f31d697c175bf2361432287c4a90645b"
     },
     {
       "path": "host/foreign/cursor.js",
-      "bytes": 12319,
-      "sha256": "488b7fb8c22028187f8832e49de258c3e56dc8edfeeb819b224ebcea4b0fb7e3"
+      "bytes": 12499,
+      "sha256": "b64084780479f8b1ca05cf0060d3e5f33ea86c30a5770d4b3be89a1b07c621cf"
     },
     {
       "path": "host/foreign/index.js",
@@ -54,23 +59,23 @@
     },
     {
       "path": "host/foreign/qoder.js",
-      "bytes": 17164,
-      "sha256": "c9a2f28946c525e3d4e68bbb74d8132774afacd2687f54f6c627baed3a443702"
+      "bytes": 17319,
+      "sha256": "0a47d9331585bee166229b1f82b2c764a790d6477b0a698df85d749639bd8e16"
     },
     {
       "path": "host/foreign/shared.js",
-      "bytes": 21451,
-      "sha256": "be7d3bfa4a7fc2673559d881393232b1cf4021614bd4ad91ec65d76609d658b5"
+      "bytes": 24431,
+      "sha256": "d184ef81bc42c2d7e22dee9b91852937363fb509faad3cbe09d2901c1e4e96ec"
     },
     {
       "path": "host/foreign/workbuddy.js",
-      "bytes": 17183,
-      "sha256": "731606a03c73a4d625825ad8e8916ded00b90cc37dbadd29f9f8997551d8e0fb"
+      "bytes": 17338,
+      "sha256": "c0a67e15fddf19cd4ece729fc001666d752529d406fbe403b22642afc7f01258"
     },
     {
       "path": "host/foreign/zcode.js",
-      "bytes": 15387,
-      "sha256": "51a54e61b0928ea5c6f10b4cfa654da265d03a52701ef056b54e5c25d6cf6df1"
+      "bytes": 17145,
+      "sha256": "c9c0cd380f37ca831fa71ffc706b29638b6e2ec58c86958dce14e5e9df2371cc"
     },
     {
       "path": "host/logfield.js",
@@ -104,8 +109,8 @@
     },
     {
       "path": "index.js",
-      "bytes": 96274,
-      "sha256": "4f0798d28b036d4a183f182d896fc829d90b81f2838c3cf13d7ec74bfd22367f"
+      "bytes": 97008,
+      "sha256": "b9d796cd1e7dc695802c16f4669d846fa828b12be6b442aa15195ba2a3c6458b"
     },
     {
       "path": "locale/en.json",
@@ -123,5 +128,5 @@
       "sha256": "e7cd9652cbdf701e85ed51bdb691815ff75882bb78cafeefaeee6fba7774942a"
     }
   ],
-  "notes": "子代理会话全 harness 支持 + 插件应用内更新"
+  "notes": "子代理会话全 harness 支持、插件应用内更新、扫描缓存"
 }

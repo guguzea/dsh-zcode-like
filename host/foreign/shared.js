@@ -17,10 +17,11 @@
  *   - never guess a value: a missing title/cwd/model is `''` and a missing time is `0`, exactly as
  *     `docs/foreign-import.md` states.
  *
- * The scan cache is the one piece of module state. It exists because counting messages means one
- * whole-file pass per session (3 GB on this machine); keyed by path + size + mtime + ctime it can
- * never return a count for a file that changed, and the map is bounded so a huge store cannot grow
- * memory without limit.
+ * The scan cache exists because counting messages means one whole-file pass per session (3 GB on
+ * this machine); keyed by harness + path + size + mtime + ctime it can never return a count for a
+ * file that changed. The caller supplies a persistent cache as `options.cache` (see `cache.js`), so
+ * the metadata survives a DSH restart; the module-local bounded map is only the fallback when no
+ * cache is supplied, and it cannot grow without limit.
  *
  * @module session-log-upload/foreign/shared
  */
@@ -540,37 +541,119 @@ export async function readJsonl(filePath, options, onLine) {
   return { truncated, aborted, error: null }
 }
 
-/** Identity of one file version, used as the scan-cache key. */
-function cacheKey(filePath, info) {
-  return `${filePath}\u0000${String(info.size)}\u0000${String(info.mtimeMs)}\u0000${String(info.ctimeMs)}`
+/** Identity of one transcript version, used as the scan-cache key: harness + absolute path + stat. */
+function scanCacheKey(harness, filePath, info) {
+  return `${textOf(harness)}\u0000${textOf(filePath)}\u0000${String(info.size)}\u0000${String(info.mtimeMs)}\u0000${String(info.ctimeMs)}`
+}
+
+/** Whether a value quacks like a scan cache (`get`/`set`); `ScanCache` and `memoryScanCache()` do. */
+function isCacheObject(value) {
+  try {
+    return (
+      value !== null &&
+      typeof value === 'object' &&
+      typeof value.get === 'function' &&
+      typeof value.set === 'function'
+    )
+  } catch {
+    return false
+  }
 }
 
 /**
- * The cached scan metadata for exactly this file version, or `null`.
- * @param filePath transcript path.
- * @param info the file's current `Stats`.
- * @returns the cached `{id,title,cwd,createdAt,provider,model,messageCount}` or `null`.
+ * The caller-supplied scan cache, or `null`.
+ *
+ * `docs/foreign-import.md` lets the route own persistence: `index.js` builds one `ScanCache` per
+ * process and passes it as `options.cache`, so adapter modules stay stateless. Tests pass a stub to
+ * prove a row is served from cache. An unusable value falls back to the module-local memory cache.
+ *
+ * @param options the contract's options object, or anything else.
+ * @returns the cache object, or `null` for the in-memory fallback.
  */
-export function readScanCache(filePath, info) {
+export function cacheOf(options) {
   try {
-    return scanCache.get(cacheKey(filePath, info)) ?? null
+    if (options === null || options === undefined || typeof options !== 'object') return null
+    const cache = options.cache
+    return isCacheObject(cache) ? cache : null
   } catch {
     return null
   }
 }
 
 /**
- * Remember scan metadata for exactly this file version.
- * @param filePath transcript path.
- * @param info the file's current `Stats`.
- * @param value `{id,title,cwd,createdAt,provider,model,messageCount}`.
+ * Read one arbitrary cache entry: `options.cache` when present, the module-local map otherwise.
+ * @param options the contract's options object.
+ * @param key the honest identity of the observation.
+ * @returns the cached value, or `null`.
  */
-export function writeScanCache(filePath, info, value) {
+export function readCacheEntry(options, key) {
   try {
+    if (typeof key !== 'string' || key.length === 0) return null
+    const cache = cacheOf(options)
+    if (cache !== null) {
+      const value = cache.get(key)
+      return value === undefined ? null : value
+    }
+    return scanCache.get(key) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remember one arbitrary cache entry. Never throws; a lost row only costs a rescan.
+ * @param options the contract's options object.
+ * @param key the honest identity of the observation.
+ * @param value the value to remember.
+ */
+export function writeCacheEntry(options, key, value) {
+  try {
+    if (typeof key !== 'string' || key.length === 0 || value === undefined) return
+    const cache = cacheOf(options)
+    if (cache !== null) {
+      cache.set(key, value)
+      return
+    }
     if (scanCache.size >= SCAN_CACHE_LIMIT) scanCache.clear()
-    scanCache.set(cacheKey(filePath, info), value)
+    scanCache.set(key, value)
   } catch {
     /* the cache is an optimisation; losing it only costs a recount */
+  }
+}
+
+/**
+ * The cached scan summary for exactly this file version, or `null`.
+ *
+ * The whole summary row is cached (title, cwd, model, message count, parent lineage), not just the
+ * count, so a hit lets `scan()` return the row without opening the transcript at all.
+ *
+ * @param harness the adapter's stable harness id, part of the key.
+ * @param filePath the transcript path.
+ * @param info the file's current `Stats`.
+ * @param options the contract's options object; `options.cache` makes it durable.
+ * @returns the cached summary, or `null`.
+ */
+export function readScanCache(harness, filePath, info, options) {
+  try {
+    return readCacheEntry(options, scanCacheKey(harness, filePath, info))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remember the scan summary for exactly this file version.
+ * @param harness the adapter's stable harness id, part of the key.
+ * @param filePath the transcript path.
+ * @param info the file's current `Stats`.
+ * @param value the contract's session summary row.
+ * @param options the contract's options object; `options.cache` makes it durable.
+ */
+export function writeScanCache(harness, filePath, info, value, options) {
+  try {
+    writeCacheEntry(options, scanCacheKey(harness, filePath, info), value)
+  } catch {
+    /* a lost row only costs a recount */
   }
 }
 

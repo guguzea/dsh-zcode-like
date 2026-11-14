@@ -48,6 +48,7 @@ import { decideUpload, suppressShipped } from './host/eligibility.js'
 import { buildLogField, jsonBytes } from './host/logfield.js'
 import { FailureStore } from './host/failure.js'
 import { scanAll, readForeignSession } from './host/foreign/index.js'
+import { ScanCache } from './host/foreign/cache.js'
 import { forgeSession, buildForeignField } from './host/foreign-forge.js'
 import { NoticeStore } from './host/notice.js'
 import { applyUpdate, checkUpdate } from './host/update.js'
@@ -611,6 +612,12 @@ export function apply(ctx, rawConfig) {
   const notice = new NoticeStore(watermark.directory, {
     log: (message) => log('warn', message),
   })
+
+  // The other-harness scan cache. Kept beside the watermark so it lives with the plugin's other owned
+  // state: a scan is expensive (Qoder's first pass reads gigabytes to count messages), and without a
+  // disk-backed cache every DSH restart paid that cost again. One instance per loaded row; the route
+  // flushes it after each scan, and every write is atomic and total.
+  const scanCache = new ScanCache(watermark.directory)
 
   // ── The official-API suppression for mode `off` ───────────────────────────────────────────────
   // Dossier §3.5: the exclusion predicate runs inside the `dsh_session_log` prepare callback, so
@@ -1347,9 +1354,13 @@ export function apply(ctx, rawConfig) {
   async function foreignScanPayload() {
     let entries
     try {
-      entries = await scanAll({ home: homedir(), maxBytes: currentConfig().maxBytes })
+      entries = await scanAll({ home: homedir(), maxBytes: currentConfig().maxBytes, cache: scanCache })
     } catch (error) {
       return { harnesses: [], error: messageOf(error) }
+    } finally {
+      // Persist whatever this scan learned. `flush()` is total and prunes, so a scan that hit every cache
+      // entry costs nothing here, and a broken cache file can never fail the scan.
+      scanCache.flush()
     }
     const list = entries !== null && entries !== undefined && Array.isArray(entries.harnesses) ? entries.harnesses : []
     const harnesses = []

@@ -35,9 +35,12 @@ import {
   isSafeSessionId,
   maxBytesOf,
   messageOf,
+  readCacheEntry,
   signalOf,
+  statSafe,
   textOf,
   toolPlaceholder,
+  writeCacheEntry,
 } from './shared.js'
 
 /** Stable harness id; part of every composite id and of the forged session id. */
@@ -107,6 +110,23 @@ function databasePath(home) {
   return join(home, '.zcode', 'cli', 'db', 'db.sqlite')
 }
 
+/**
+ * The scan-cache key of the current SQLite store version.
+ *
+ * ZCode writes through a `-wal` file, so the database file's own identity is not enough: a scan can
+ * see a stale main file while committed data sits in the WAL. Both are part of the key, and a
+ * missing `-wal` is recorded as such, so the file appearing later invalidates the entry.
+ *
+ * @param dbPath the database path.
+ * @param dbInfo the database `Stats`.
+ * @param walInfo the `-wal` `Stats`, or `null` when the file does not exist.
+ * @returns the honest cache key.
+ */
+function scanCacheKey(dbPath, dbInfo, walInfo) {
+  const wal = walInfo === null ? 'missing' : `${String(walInfo.size)}:${String(walInfo.mtimeMs)}`
+  return `${harness}\u0000${dbPath}\u0000db:${String(dbInfo.size)}:${String(dbInfo.mtimeMs)}:${String(dbInfo.ctimeMs)}\u0000wal:${wal}`
+}
+
 /** A row's timestamp as the contract's millisecond number. */
 function rowMillis(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
@@ -165,6 +185,16 @@ export async function scan(options) {
     const dbPath = databasePath(home)
     // Installed but never run: there is no database yet, which is an empty store, not a failure.
     if (!existsSync(dbPath)) return emptyScan(true, null)
+    const dbInfo = await statSafe(dbPath)
+    if (dbInfo === null || dbInfo.isFile() !== true) return emptyScan(true, null)
+    if (isAborted(signal)) return emptyScan(true, 'aborted')
+    // A warm scan may skip every statement: the row set is only stale when the store (or its WAL)
+    // changes, and both identities are in the key.
+    const cacheKeyOfStore = scanCacheKey(dbPath, dbInfo, await statSafe(`${dbPath}-wal`))
+    const cached = readCacheEntry(options, cacheKeyOfStore)
+    if (cached !== null && Array.isArray(cached.sessions)) {
+      return { available: true, error: null, sessions: cached.sessions }
+    }
     const opened = await openDatabase(dbPath)
     if (opened.db === null) {
       if (opened.sqliteMissing) return emptyScan(false, null)
@@ -220,6 +250,9 @@ export async function scan(options) {
           bytes: (messageBytes.get(sessionId) ?? 0) + (partCounts.get(sessionId) ?? 0) * ESTIMATED_PART_BYTES,
         })
       }
+      // Remember the whole row set for this store version: a warm scan then skips the four grouped
+      // statements entirely and the next process restart inherits the result from disk.
+      writeCacheEntry(options, cacheKeyOfStore, { sessions })
       return { available: true, error: null, sessions }
     } catch (error) {
       return emptyScan(true, messageOf(error))

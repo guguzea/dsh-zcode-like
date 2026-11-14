@@ -123,10 +123,11 @@ async function transcriptFile(directory, id) {
  * @param id the raw id `readSession` resolves again (one segment, or `parent/subagents/child`).
  * @param info the file's `Stats`.
  * @param parentId the parent conversation id for a delegated transcript, `''` for a top-level one.
+ * @param options the contract's options object; `options.cache` makes the summary durable.
  * @returns a contract session summary; never throws.
  */
-async function describeFile(filePath, id, info, parentId = '') {
-  const cached = readScanCache(filePath, info)
+async function describeFile(filePath, id, info, parentId = '', options = null) {
+  const cached = readScanCache(harness, filePath, info, options)
   if (cached !== null) {
     return { ...cached, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
   }
@@ -141,7 +142,7 @@ async function describeFile(filePath, id, info, parentId = '') {
     messageCount: await countJsonlMessages(filePath, isMessageLine),
   }
   if (parentId.length > 0) summary.parentId = parentId
-  writeScanCache(filePath, info, summary)
+  writeScanCache(harness, filePath, info, summary, options)
   return { ...summary, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
 }
 
@@ -171,7 +172,7 @@ export async function scan(options) {
         if (filePath !== null) {
           const info = await statSafe(filePath)
           if (info !== null && info.isFile() === true) {
-            sessions.push(await describeFile(filePath, conversation.name, info))
+            sessions.push(await describeFile(filePath, conversation.name, info, '', options))
           }
         }
         // Delegated transcripts live one level down and are listed even when the parent transcript
@@ -192,6 +193,7 @@ export async function scan(options) {
               formatSubagentId(conversation.name, subagentId),
               info,
               conversation.name,
+              options,
             ),
           )
         }

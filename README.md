@@ -126,6 +126,8 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 - 目录和会话白名单只管 DSH 会话，管不到导入。导入也不改变四种模式，它是另一条独立的路径。
 - 扫描只读元数据：标题、目录、模型、消息数。正文只有在你点发送、并且目标会话就是那一行时才会被读出来。
 
+扫描结果按文件的大小和修改时间缓存到磁盘，所以第二次扫描、以及重启 DSH 之后的第一次扫描都是秒回。文件变了才会重读那一个。缓存文件在 `$DSH_HOME/session-log-upload/foreign-scan-cache.json`，删掉只是让下次扫描慢一次。
+
 子代理会话（ZCode 里带父会话的那种）缩进显示在父会话下面。本机 366 条 ZCode 会话里有 316 条是这类，它们照样可以单独勾选。ZCode、Qoder、Cursor、WorkBuddy 四家的子代理记录都能扫出来、能发送；默认折叠，按钮上写着隐藏了多少条。勾一个父会话会连带勾上它下面整棵子代理树。
 
 ## 插件更新
@@ -212,8 +214,11 @@ attribution 头都是**尽力而为**：拿不到就省略，不会自己编一�
 都跟着 `$DSH_HOME` 走（非空的 `DSH_HOME` 优先，`~` 会展开，否则 `~/.dsh`）：
 
 - `session-log-upload/watermarks.json` — 每个会话传到哪了（导入的外部会话按合成 id 记在里面）
+- `session-log-upload/foreign-scan-cache.json` — 其他 harness 的扫描缓存（按文件大小、修改时间判断是否还能用）
 - `session-log-upload/last-failure.json` — 上次失败
 - `session-log-upload/notice-acknowledged.json` — 免责说明点过没有
+
+扫描缓存只存索引：文件路径、标题、模型、消息条数。第一次扫描要真的读一遍（Qoder 那边是 2 GB 级的子代理记录），之后只要文件没变就直接命中，重启 DSH 也算命中。删掉这个文件只会让下一次扫描变慢，不会丢东西。
 
 删掉水印文件不会损坏会话，只是让插件忘记进度、下次重发。
 
