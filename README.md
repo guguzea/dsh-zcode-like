@@ -1,8 +1,9 @@
+# 肥鱼云盘
 # dsh-session-log-upload
 
 给 DSH 用的插件：让用户自己决定会话日志什么时候上传到 DeepSeek。
 
-装上之后默认什么都不变。要放宽，得你自己点，而且得点两次。
+装上之后默认什么都不变。
 
 ## 四种模式
 
@@ -21,39 +22,19 @@
 
 附件只是**引用**，图片和文件的字节内容不会上传。
 
-## 第一次打开会弹免责说明
 
 装好后第一次进入设置页，会出现一段免责说明。勾选"我已阅读并理解"并继续之后，就不会再出现。
 
-它不能点背景关掉，也不能按 Esc 关掉；勾选框没勾时"继续"是灰的。只有 Host 确认记录成功之后，弹窗才会消失。关掉一个没记录成功的弹窗，下次还会弹出来，而你不知道为什么。
-
-记录存在 `$DSH_HOME/session-log-upload/notice-acknowledged.json`，只有一个布尔值和时间戳。想让它重新弹出来，删掉这个文件即可。
-
 ## 会传到哪里
 
-`endpoint` 默认是 DeepSeek 的 Anthropic 兼容端点 `https://api.deepseek.com/anthropic/v1/messages`，可以在设置页改。
+`endpoint` 默认是 DeepSeek 的 Anthropic 兼容端点 `https://api.deepseek.com/anthropic/v1/messages`，可以在设置页改。你如果知道其他AI公司的接受端点,也可以发送给他们
 
 确认弹窗里写的是当时生效的那个 endpoint，不是写死的"DeepSeek"。你把 endpoint 指到自己的收集器，弹窗就说数据发到你的收集器。说不出真实去向的同意弹窗没有意义。
 
 ## 安装
-
-在 profile 的目录下：
-
-```powershell
-cd C:\Users\<you>\.dsh\profiles\desktop
-```
-
-然后任选一种。
-
 **A. 插件管理器（推荐）**
 
-在 DSH 设置里的插件页安装，或者：
-
-```
-plugin_manager install_bundle, target = <bundle-root>
-```
-
-它会把 `@local/dsh-session-log-upload` 写进 profile 的 `package.json`，作为 `link:` 依赖并加入 `dsh.profile.bundles`。
+在 DSH 设置里的插件页安装，
 
 **B. 手动挂载**
 
@@ -146,28 +127,9 @@ Cursor 的会话记录里本来没有目录和模型字段，它的项目目录�
 
 清单地址是 `updateUrl` 配置项，默认 `https://raw.githubusercontent.com/guguzea/dsh-zcode-like/main/update-manifest.json`，raw 拉不到时自动回退到 jsDelivr。自己填的地址不会回退。
 
-这个地址必须匿名可读。仓库是私有的话，GitHub 对匿名请求一律返回 404，检查会直接报 `not-public`，并说明私有仓库、改名、分支不对都会长这样。jsDelivr 的镜像也只服务公开仓库，所以私有源换镜像没用。
-
 备份目录形如 `.update-backup-<旧版本>-<时间戳>`，出问题可以直接从里面拷回来。
 - 外部日志比 DSH 的脏。里面有整条命令的输出、文件内容，可能带着密钥。发之前先想清楚这一条要发给谁。
-
-单个会话的读取上限是 64 MiB。超过就只发送前面的部分，这一行会写"只发送了这段对话的前一部分"，不会假装整段都发了。按本机的数据，594 段里 10 段会触发这个上限。
-
 支持范围随各 harness 自己的存储格式走。它们改版本可能就扫不出来，扫不出来会报错而不是静默少列。
-
-## 不用界面切换模式
-
-```
-/session-log-upload                      报告当前模式和目标，不写任何东西
-/session-log-upload off                  缩小范围，立刻生效
-/session-log-upload official-only        缩小范围，立刻生效
-/session-log-upload any-model            打印披露提示，什么都不写
-/session-log-upload any-model confirm    真正执行放宽
-/session-log-upload uploaded             列出已上传的会话
-```
-
-放宽模式必须带 `confirm`。少这个参数就只是打印提示。
-
 ## 已上传的会话
 
 设置 → 会话日志上传 → 详细日志 列出每个上传过的会话：会话 id、传到第几个事件、时间、格式版本。
@@ -228,15 +190,7 @@ attribution 头都是**尽力而为**：拿不到就省略，不会自己编一�
 
 删掉水印文件不会损坏会话，只是让插件忘记进度、下次重发。
 
-## 开发
 
-```
-node verify/run-all.mjs
-```
-
-九套检查：host 单测、client 检查、其他 harness 适配器、信封伪造、payload 与官方上传器的差分保真、两套对抗测试、对着 `app.asar` 里真实 schemastery 的 schema 检查、主题令牌检查。
-
-`verify/REPORT.md` 是独立验收报告，写清了哪些结论被驱动验证过、哪些没有。
 
 ## 卸载
 
