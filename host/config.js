@@ -49,6 +49,15 @@ export const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 export const DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 
 /**
+ * Default address of the update manifest.
+ *
+ * The in-app update downloads files and replaces this plugin's own source, so this address is the
+ * trust root for that whole path. Kept as one exported constant so `index.js`, `host/update.js` and the
+ * page can never disagree about where updates come from.
+ */
+export const DEFAULT_UPDATE_URL = 'https://raw.githubusercontent.com/guguzea/dsh-zcode-like/main/update-manifest.json'
+
+/**
  * Default directory allowlist: empty, meaning **every** Session is uploaded.
  *
  * Listing directories here restricts uploads to those directories (and their subdirectories). An
@@ -381,6 +390,7 @@ function defaults() {
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
     maxBytes: DEFAULT_MAX_BYTES,
+    updateUrl: DEFAULT_UPDATE_URL,
   }
 }
 
@@ -420,6 +430,10 @@ export function resolveConfig(raw) {
     if (credentialRef !== undefined && isCredentialRef(credentialRef)) resolved.credentialRef = credentialRef
     const maxBytes = normalizeMaxBytes(readLive(own(raw, 'maxBytes')))
     if (maxBytes !== undefined) resolved.maxBytes = maxBytes
+    // Same two-gate rule as `endpoint`: this narrows a bad value back to the default, and `host/update.js`
+    // refuses a non-http(s) address again at the transport, so an unvalidated value can never be fetched.
+    const updateUrl = normalizeEndpoint(readLive(own(raw, 'updateUrl')))
+    if (updateUrl !== undefined) resolved.updateUrl = updateUrl
 
     return resolved
   } catch {

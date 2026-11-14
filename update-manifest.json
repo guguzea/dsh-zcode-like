@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "version": "1.1.0",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 13556,
+      "sha256": "3821081bc349765a82d364b1ac4d3c6badf70fdd48741a1447f42683eb70e5a1"
+    },
+    {
+      "path": "client.js",
+      "bytes": 186038,
+      "sha256": "6e6993c41882bba52f9b428585192f6c024acf420afc439303cc9e939cd9568e"
+    },
+    {
+      "path": "cordis.patch.yml",
+      "bytes": 1158,
+      "sha256": "31d6172e3ed2d7f09e61fd1569553abd91c05814cb3f0e8ba96d4ab542bc9e12"
+    },
+    {
+      "path": "host/config.js",
+      "bytes": 20307,
+      "sha256": "58673f226c4457c46b448c057b95b590b3938806f2ab84fff2ec8c22666fb6f8"
+    },
+    {
+      "path": "host/eligibility.js",
+      "bytes": 5586,
+      "sha256": "c334d17efe4934affe44dbcc49a29d7bab889d97200d18e5222ac3f40bc03494"
+    },
+    {
+      "path": "host/failure.js",
+      "bytes": 10093,
+      "sha256": "c9ae47fddcba4b61c4ed51001493f711f6ca991b3bb51c59fb48fdec9287f662"
+    },
+    {
+      "path": "host/foreign-forge.js",
+      "bytes": 16873,
+      "sha256": "c7570f2abacde90d68a7221a46eeff09518fc1405e46dca4841de42122f79f84"
+    },
+    {
+      "path": "host/foreign/cline.js",
+      "bytes": 5169,
+      "sha256": "96c9adb50421b303713be61a320c7584f31d697c175bf2361432287c4a90645b"
+    },
+    {
+      "path": "host/foreign/cursor.js",
+      "bytes": 12319,
+      "sha256": "488b7fb8c22028187f8832e49de258c3e56dc8edfeeb819b224ebcea4b0fb7e3"
+    },
+    {
+      "path": "host/foreign/index.js",
+      "bytes": 5289,
+      "sha256": "476a6834be1872199aa9034d89bb4a8e47f66d2b6af0574118e009610c533f6b"
+    },
+    {
+      "path": "host/foreign/qoder.js",
+      "bytes": 17164,
+      "sha256": "c9a2f28946c525e3d4e68bbb74d8132774afacd2687f54f6c627baed3a443702"
+    },
+    {
+      "path": "host/foreign/shared.js",
+      "bytes": 21451,
+      "sha256": "be7d3bfa4a7fc2673559d881393232b1cf4021614bd4ad91ec65d76609d658b5"
+    },
+    {
+      "path": "host/foreign/workbuddy.js",
+      "bytes": 17183,
+      "sha256": "731606a03c73a4d625825ad8e8916ded00b90cc37dbadd29f9f8997551d8e0fb"
+    },
+    {
+      "path": "host/foreign/zcode.js",
+      "bytes": 15387,
+      "sha256": "51a54e61b0928ea5c6f10b4cfa654da265d03a52701ef056b54e5c25d6cf6df1"
+    },
+    {
+      "path": "host/logfield.js",
+      "bytes": 10063,
+      "sha256": "b59f99d1444028676b8ec6aa59525492f7c4892f6d517d13a4f0446daafd95ab"
+    },
+    {
+      "path": "host/notice.js",
+      "bytes": 5073,
+      "sha256": "170e5b531e07760d1816c77377f00c12af270592185462d2d11c5f6eb0778266"
+    },
+    {
+      "path": "host/update.js",
+      "bytes": 42014,
+      "sha256": "7b6120eac55ec62c40d2c8a6be378be65e3335e467cd0264215cdf3d05c2baa9"
+    },
+    {
+      "path": "host/upload.js",
+      "bytes": 17129,
+      "sha256": "b70fe09ccc9366b987f932134fc4d4752008312cc2d53321630a1d141d602969"
+    },
+    {
+      "path": "host/watermark.js",
+      "bytes": 10030,
+      "sha256": "fa5e3376646c877c11381273aab1c7424ef5382e12da265112c820c733465557"
+    },
+    {
+      "path": "icon.svg",
+      "bytes": 403,
+      "sha256": "c9bb9405a9dcdd37bcb8721c2258df9b5a05b8ae7f3cd8c5ec2356c42b7facbe"
+    },
+    {
+      "path": "index.js",
+      "bytes": 96274,
+      "sha256": "4f0798d28b036d4a183f182d896fc829d90b81f2838c3cf13d7ec74bfd22367f"
+    },
+    {
+      "path": "locale/en.json",
+      "bytes": 10308,
+      "sha256": "46c7c02b756bd3846efa78f9b97ce4d6a5031fb4b187f3cbdba8fab9800723d9"
+    },
+    {
+      "path": "locale/zh.json",
+      "bytes": 9866,
+      "sha256": "752930ab88de6cfec41523054f21a69ef55f0ffee0fafcb76decd5c9c2613e6f"
+    },
+    {
+      "path": "package.json",
+      "bytes": 860,
+      "sha256": "e7cd9652cbdf701e85ed51bdb691815ff75882bb78cafeefaeee6fba7774942a"
+    }
+  ],
+  "notes": "子代理会话全 harness 支持 + 插件应用内更新"
+}

@@ -157,7 +157,30 @@ window.__ModuleLoader__.load({
 				"foreign.statusUnknown": "unknown error",
 				"foreign.warnTitle": "Send these conversations to the destination?",
 				"foreign.warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
-				"foreign.warnConfirm": "Send"
+				"foreign.warnConfirm": "Send",
+				"update.title": "Plugin update",
+				"update.currentVersion": "Current version",
+				"update.manifestUrl": "Manifest address",
+				"update.notReported": "Not reported by the Host",
+				"update.check": "Check for updates",
+				"update.checking": "Checking…",
+				"update.upToDate": "Already up to date ({version}).",
+				"update.available": "Version {version} is available.",
+				"update.notes": "Notes",
+				"update.fileCount": "Files: {count}",
+				"update.checkFailed": "Update check failed:",
+				"update.checkUnreadable": "the Host's answer could not be read.",
+				"update.upgrade": "Upgrade now",
+				"update.warnTitle": "Upgrade the plugin now?",
+				"update.warnBody": "The plugin's own files will be downloaded and replaced. If the update fails it rolls back automatically. DSH must be restarted afterwards for the new version to take effect. The manifest is not signed; the trust root is HTTPS to the manifest address.",
+				"update.warnConfirm": "Upgrade",
+				"update.phaseDownloading": "Downloading the update…",
+				"update.phaseWriting": "Writing the files…",
+				"update.done": "Updated to version {version}.",
+				"update.backupDir": "Backup folder",
+				"update.restartHint": "Restart DSH for the new version to take effect.",
+				"update.applyFailed": "Update failed:",
+				"update.applyErrorUnknown": "unknown error"
 			},
 			"zh": {
 				"upload.sectionTitle": "会话日志上传",
@@ -276,7 +299,30 @@ window.__ModuleLoader__.load({
 				"foreign.statusUnknown": "未知错误",
 				"foreign.warnTitle": "要把这些会话发送到下面的目标吗？",
 				"foreign.warnBody": "这些不是 DSH 会话。发出去的内容会被包装成一段 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
-				"foreign.warnConfirm": "发送"
+				"foreign.warnConfirm": "发送",
+				"update.title": "插件更新",
+				"update.currentVersion": "当前版本",
+				"update.manifestUrl": "清单地址",
+				"update.notReported": "宿主未报告",
+				"update.check": "检查更新",
+				"update.checking": "正在检查…",
+				"update.upToDate": "已是最新版本（{version}）。",
+				"update.available": "发现新版本 {version}。",
+				"update.notes": "更新说明",
+				"update.fileCount": "文件数：{count}",
+				"update.checkFailed": "检查更新失败：",
+				"update.checkUnreadable": "没有读到宿主的结果。",
+				"update.upgrade": "立即升级",
+				"update.warnTitle": "要立即升级插件吗？",
+				"update.warnBody": "会下载并替换插件自己的文件。升级失败会自动回滚。升级完成后需要重启 DSH，新版本才会生效。这个清单没有签名，信任根是本机到清单地址的 HTTPS。",
+				"update.warnConfirm": "立即升级",
+				"update.phaseDownloading": "正在下载更新…",
+				"update.phaseWriting": "正在写入文件…",
+				"update.done": "已升级到 {version}。",
+				"update.backupDir": "备份目录",
+				"update.restartHint": "重启 DSH 后新版本才会生效。",
+				"update.applyFailed": "升级失败：",
+				"update.applyErrorUnknown": "未知错误"
 			}
 		};
 		//#endregion
@@ -341,6 +387,21 @@ window.__ModuleLoader__.load({
 		const FOREIGN_SCAN_ROUTE = FOREIGN_SCAN_PATH.slice(1);
 		const FOREIGN_UPLOAD_PATH = "/api/session-log-upload.foreign-upload";
 		const FOREIGN_UPLOAD_ROUTE = FOREIGN_UPLOAD_PATH.slice(1);
+		/**
+		 * Host routes for the plugin self-update (docs/update.md §路由契约). These mirror
+		 * `UPDATE_CHECK_ROUTE_PATH` / `UPDATE_APPLY_ROUTE_PATH` as index.js exports them; the page
+		 * fetches the document-relative forms, exactly like the ledger route above.
+		 */
+		const UPDATE_CHECK_PATH = "/api/session-log-upload.update-check";
+		const UPDATE_CHECK_ROUTE = UPDATE_CHECK_PATH.slice(1);
+		const UPDATE_APPLY_PATH = "/api/session-log-upload.update-apply";
+		const UPDATE_APPLY_ROUTE = UPDATE_APPLY_PATH.slice(1);
+		/**
+		 * How long into an in-flight apply the page switches its phase label from "downloading" to
+		 * "writing". The apply route reports only completion, so this is a best-effort indication of
+		 * the phase the Host is likely in; completion clears it either way.
+		 */
+		const UPDATE_WRITE_DELAY_MS = 600;
 		/** Session ids longer than this are shortened in the middle; the full value stays in `title`. */
 		const LEDGER_ID_LIMIT = 28;
 		/** The state a ledger read publishes when nothing at all could be read. */
@@ -466,6 +527,11 @@ window.__ModuleLoader__.load({
 .slu-foreignMeta{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .slu-foreignStatus{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .slu-foreignStatus.slu-error{color:var(--dsw-alias-state-error-primary)}
+/* The plugin self-update block: its own panel so it reads as a separate action from the upload
+   settings. Same border/radius tokens as the other panels; no literal colour. */
+.slu-update{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}
+.slu-updateTitle{margin:0;font-size:14px;line-height:20px;font-weight:600}
+.slu-updateValue{margin:0;color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;overflow-wrap:anywhere}
 `;
 
 		//#region style registration
@@ -940,6 +1006,38 @@ window.__ModuleLoader__.load({
 		 */
 		function foreignSendLabel(t, count) {
 			return t("foreign.send").replace("{count}", String(count));
+		}
+		/**
+		 * Turn one Host update-check payload into the fields the block renders.
+		 *
+		 * The payload is untrusted and every field is optional. `current` and `latest` are kept as
+		 * reported strings or null: the block says "not reported" instead of naming a version the
+		 * Host did not report. `files` is only counted, never read for content, because the page
+		 * shows how many files an update replaces and never touches the file data itself.
+		 *
+		 * @param body - the parsed GET payload.
+		 * @returns the normalized check, or null when the body is not an object at all.
+		 */
+		function normalizeUpdateCheck(body) {
+			const root = asObject(body);
+			if (root === null) return null;
+			let fileCount = 0;
+			if (Array.isArray(root.files)) {
+				for (const raw of root.files) {
+					if (asObject(raw) !== null) fileCount++;
+				}
+			}
+			return {
+				ok: root.ok === true,
+				current: firstString(root.current),
+				latest: firstString(root.latest),
+				available: root.available === true,
+				notes: firstString(root.notes),
+				manifestUrl: firstString(root.manifestUrl),
+				source: firstString(root.source),
+				fileCount: fileCount,
+				error: firstString(root.error)
+			};
 		}
 		/**
 		 * Turn one Host ledger payload into the rows the section renders.
@@ -1580,6 +1678,100 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Ask the Host what version is available. This is a GET and the ONLY network call the
+			 * update block makes on a check: it never runs on mount, and it never writes anything.
+			 *
+			 * Total: a missing route, a refused credential, an unreadable body and a transport
+			 * failure each become a record with an error string the block can show, so the component
+			 * never throws. A non-2xx response is reported as `HTTP <status>`.
+			 *
+			 * @returns a normalized check record, or null when nothing could be read at all.
+			 */
+			async function readUpdateCheck() {
+				const fetcher = pageFetcher();
+				if (fetcher === null) return null;
+				let response;
+				try {
+					response = await fetcher(UPDATE_CHECK_ROUTE, { headers: { accept: "application/json" } });
+				} catch (_error) {
+					return null;
+				}
+				const status = response !== null && response !== undefined && typeof response.status === "number" ? response.status : null;
+				let body = null;
+				try {
+					body = response !== null && response !== undefined && typeof response.json === "function" ? await response.json() : null;
+				} catch (_error) {
+					body = null;
+				}
+				const record = asObject(body);
+				if (record === null || response === null || response === undefined || response.ok !== true) {
+					return {
+						ok: false,
+						current: null,
+						latest: null,
+						available: false,
+						notes: null,
+						manifestUrl: null,
+						source: null,
+						files: [],
+						error: status !== null ? "HTTP " + String(status) : null
+					};
+				}
+				return record;
+			}
+
+			/**
+			 * Download, verify, back up and replace the plugin's files. A POST, because it changes
+			 * the filesystem; the request body is exactly `{}` per docs/update.md.
+			 *
+			 * Never throws: a transport failure, a non-2xx answer and an unreadable body each become
+			 * a failure record the block can show. The Host is the one that rolls back on failure,
+			 * so the page only reports what the Host says happened.
+			 *
+			 * @returns `{ok, from, to, files, backupDir, reload, error, status}`.
+			 */
+			async function applyUpdate() {
+				const failed = function (status, error) {
+					return { ok: false, from: null, to: null, files: [], backupDir: null, reload: null, error: firstString(error), status: numberOrNull(status) };
+				};
+				const fetcher = pageFetcher();
+				if (fetcher === null) return failed(null, null);
+				let response;
+				try {
+					response = await fetcher(UPDATE_APPLY_ROUTE, {
+						method: "POST",
+						headers: { accept: "application/json", "content-type": "application/json" },
+						body: "{}"
+					});
+				} catch (_error) {
+					return failed(null, null);
+				}
+				const status = response !== null && response !== undefined && typeof response.status === "number" ? response.status : null;
+				let body = null;
+				try {
+					body = response !== null && response !== undefined && typeof response.json === "function" ? await response.json() : null;
+				} catch (_error) {
+					body = null;
+				}
+				const record = asObject(body);
+				if (record === null) return failed(status, null);
+				const files = [];
+				if (Array.isArray(record.files)) {
+					for (const entry of record.files) if (typeof entry === "string" && entry.length > 0) files.push(entry);
+				}
+				return {
+					ok: record.ok === true && response.ok === true,
+					from: firstString(record.from),
+					to: firstString(record.to),
+					files: files,
+					backupDir: firstString(record.backupDir),
+					reload: firstString(record.reload),
+					error: firstString(record.error),
+					status: status
+				};
+			}
+
+			/**
 			 * Read whether the liability notice has been acknowledged.
 			 *
 			 * Total: an absent route, a refused credential, an unreadable body and a transport failure
@@ -1659,7 +1851,7 @@ window.__ModuleLoader__.load({
 				return persistField("mode", nextMode);
 			}
 
-			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, readForeignScan: readForeignScan, uploadForeign: uploadForeign, readNotice: readNotice, writeNotice: writeNotice, writeField: writeField, writeMode: writeMode };
+			return { getForm: getForm, formState: formState, readDocument: readDocument, readLedger: readLedger, readScan: readDirectoryScan, readForeignScan: readForeignScan, uploadForeign: uploadForeign, readUpdateCheck: readUpdateCheck, applyUpdate: applyUpdate, readNotice: readNotice, writeNotice: writeNotice, writeField: writeField, writeMode: writeMode };
 		}
 		//#endregion
 
@@ -2098,6 +2290,29 @@ window.__ModuleLoader__.load({
 				// 316 are children is mostly noise. This only controls VISIBILITY; ticks, the cascade
 				// and the send count always run over the whole payload.
 				const [ foreignShowChildren, setForeignShowChildren ] = React.useState(false);
+				// The plugin self-update block. Nothing is fetched on mount: `updateCheckPayload` stays
+				// null until the user clicks Check. `updatePhase` tracks the observable phases
+				// (checking / downloading / writing / done / failed) and keeps the block rendered.
+				const [ updateCheckPayload, setUpdateCheckPayload ] = React.useState(null);
+				const [ updateChecking, setUpdateChecking ] = React.useState(false);
+				const [ updateReadFailed, setUpdateReadFailed ] = React.useState(false);
+				const [ updateConfirm, setUpdateConfirm ] = React.useState(false);
+				const [ updatePhase, setUpdatePhase ] = React.useState(null);
+				const [ updateResult, setUpdateResult ] = React.useState(null);
+				const [ updateError, setUpdateError ] = React.useState(null);
+				const updateWriteTimer = React.useRef(null);
+				React.useEffect(function () {
+					// No timer may outlive the mount: a completion or a close clears its own timer, and
+					// this covers the case where the page is left while an apply is still in flight.
+					return function () {
+						if (updateWriteTimer.current !== null && typeof clearTimeout === "function") {
+							try {
+								clearTimeout(updateWriteTimer.current);
+							} catch (_error) {}
+						}
+						updateWriteTimer.current = null;
+					};
+				}, []);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
@@ -2688,6 +2903,112 @@ window.__ModuleLoader__.load({
 				};
 
 				/**
+				 * Ask the Host what version is available. Only the Check button reaches here: the
+				 * block never fetches on mount, and this GET never writes anything.
+				 */
+				const checkForUpdate = function () {
+					setUpdateReadFailed(false);
+					if (typeof bridge.readUpdateCheck !== "function") {
+						setUpdateReadFailed(true);
+						return;
+					}
+					setUpdateChecking(true);
+					let attempt;
+					try {
+						attempt = Promise.resolve(bridge.readUpdateCheck());
+					} catch (_error) {
+						attempt = Promise.resolve(null);
+					}
+					void attempt.then(function (raw) {
+						setUpdateChecking(false);
+						const normalized = normalizeUpdateCheck(raw);
+						if (normalized === null) {
+							setUpdateCheckPayload(null);
+							setUpdateReadFailed(true);
+							return;
+						}
+						setUpdateCheckPayload(normalized);
+					}, function () {
+						setUpdateChecking(false);
+						setUpdateCheckPayload(null);
+						setUpdateReadFailed(true);
+					});
+				};
+
+				/** Clear the in-flight phase timer, if one is set. */
+				const clearUpdateTimer = function () {
+					if (updateWriteTimer.current === null) return;
+					if (typeof clearTimeout === "function") {
+						try {
+							clearTimeout(updateWriteTimer.current);
+						} catch (_error) {}
+					}
+					updateWriteTimer.current = null;
+				};
+
+				/** Open the consent gate. Nothing is downloaded or replaced before it is confirmed. */
+				const startUpdate = function () {
+					if (updatePhase === "downloading" || updatePhase === "writing") return;
+					setUpdateConfirm(true);
+				};
+
+				const cancelUpdate = function () {
+					setUpdateConfirm(false);
+				};
+
+				/**
+				 * Run the confirmed upgrade. The block stays rendered through every phase: the apply
+				 * route reports only completion, so the page labels the in-flight request as
+				 * downloading and switches to writing after a short delay; both clear on completion.
+				 * A failed apply is shown as the Host reported it and leaves the block usable to retry.
+				 */
+				const confirmUpdate = function () {
+					setUpdateConfirm(false);
+					setUpdateResult(null);
+					setUpdateError(null);
+					if (typeof bridge.applyUpdate !== "function") {
+						setUpdatePhase("failed");
+						return;
+					}
+					setUpdatePhase("downloading");
+					if (typeof setTimeout === "function") {
+						updateWriteTimer.current = setTimeout(function () {
+							updateWriteTimer.current = null;
+							setUpdatePhase(function (previous) {
+								return previous === "downloading" ? "writing" : previous;
+							});
+						}, UPDATE_WRITE_DELAY_MS);
+					}
+					let attempt;
+					try {
+						attempt = Promise.resolve(bridge.applyUpdate());
+					} catch (_error) {
+						attempt = Promise.resolve(null);
+					}
+					void attempt.then(function (result) {
+						clearUpdateTimer();
+						const outcome = asObject(result);
+						if (outcome !== null && outcome.ok === true) {
+							setUpdatePhase("done");
+							setUpdateResult({
+								from: firstString(outcome.from),
+								to: firstString(outcome.to),
+								files: Array.isArray(outcome.files) ? outcome.files.length : 0,
+								backupDir: firstString(outcome.backupDir),
+								reload: firstString(outcome.reload)
+							});
+							return;
+						}
+						setUpdatePhase("failed");
+						setUpdateError(outcome === null ? null : firstString(outcome.error));
+					}, function () {
+						clearUpdateTimer();
+						setUpdatePhase("failed");
+						setUpdateError(null);
+					});
+				};
+
+				/**
 				 * Build one editable field: the value in use (read-only, already narrowed) plus an
 				 * input and a Save action for it.
 				 * @param field - `endpoint` or `maxBytes`.
@@ -3121,6 +3442,89 @@ window.__ModuleLoader__.load({
 				}
 				children.push(React.createElement("div", { key: "ledger", className: "slu-ledger" }, ledgerChildren));
 
+				// ── plugin self-update ─────────────────────────────────────────────────────────
+				// The current version and manifest address come from the Host's check payload; the
+				// block says "not reported" instead of inventing a value. Nothing is fetched until
+				// the Check button is clicked, and nothing is written until the consent dialog is
+				// confirmed. Every phase keeps this block rendered.
+				const updateCurrent = updateCheckPayload === null ? null : updateCheckPayload.current;
+				const updateManifest = updateCheckPayload === null ? null : updateCheckPayload.manifestUrl;
+				const updateAvailable = updateCheckPayload !== null
+					&& updateCheckPayload.available === true
+					&& updateCheckPayload.error === null;
+				const updateBusy = updateChecking || updatePhase === "downloading" || updatePhase === "writing";
+				const updateChildren = [];
+				updateChildren.push(React.createElement("h3", { key: "title", className: "slu-updateTitle" }, t("update.title")));
+				updateChildren.push(React.createElement("div", { key: "values", className: "slu-field" },
+					React.createElement("div", { className: "slu-fieldLabel" }, t("update.currentVersion")),
+					React.createElement("code", { className: "slu-updateValue", "data-update-field": "current" }, updateCurrent === null ? t("update.notReported") : updateCurrent),
+					React.createElement("div", { className: "slu-fieldLabel" }, t("update.manifestUrl")),
+					React.createElement("code", { className: "slu-updateValue", "data-update-field": "manifest" }, updateManifest === null ? t("update.notReported") : updateManifest)
+				));
+				const updateActions = [
+					React.createElement("button", {
+						key: "check",
+						type: "button",
+						className: "slu-btn slu-updateCheck",
+						"data-update-action": "check",
+						disabled: updateBusy ? true : undefined,
+						onClick: function () { checkForUpdate(); }
+					}, t(updateChecking ? "update.checking" : "update.check"))
+				];
+				// The upgrade action exists only when the Host says an update is available. After a
+				// completed apply it is gone; after a failed one it stays, so the user can retry.
+				if (updateAvailable && updatePhase !== "done") {
+					updateActions.push(React.createElement("button", {
+						key: "upgrade",
+						type: "button",
+						className: "slu-btn slu-btnPrimary slu-updateUpgrade",
+						"data-update-action": "upgrade",
+						disabled: updateBusy ? true : undefined,
+						onClick: function () { startUpdate(); }
+					}, t("update.upgrade")));
+				}
+				updateChildren.push(React.createElement("div", { key: "actions", className: "slu-fieldRow" }, updateActions));
+				if (updateChecking) {
+					updateChildren.push(React.createElement("div", { key: "checking", className: "slu-status", role: "status" }, t("update.checking")));
+				} else if (updatePhase === "downloading") {
+					updateChildren.push(React.createElement("div", { key: "downloading", className: "slu-status", role: "status" }, t("update.phaseDownloading")));
+				} else if (updatePhase === "writing") {
+					updateChildren.push(React.createElement("div", { key: "writing", className: "slu-status", role: "status" }, t("update.phaseWriting")));
+				} else if (updatePhase === "done" && updateResult !== null) {
+					updateChildren.push(React.createElement("div", { key: "done", className: "slu-status", role: "status" },
+						t("update.done").replace("{version}", updateResult.to === null ? t("update.notReported") : updateResult.to)));
+					if (updateResult.backupDir !== null) {
+						updateChildren.push(React.createElement("div", { key: "backup", className: "slu-field" },
+							React.createElement("div", { className: "slu-fieldLabel" }, t("update.backupDir")),
+							React.createElement("code", { className: "slu-updateValue", "data-update-field": "backup" }, updateResult.backupDir)
+						));
+					}
+					updateChildren.push(React.createElement("div", { key: "restart", className: "slu-note slu-updateRestart" }, t("update.restartHint")));
+				} else if (updatePhase === "failed") {
+					updateChildren.push(React.createElement("div", { key: "failed", className: "slu-error", role: "alert" },
+						t("update.applyFailed") + " " + (updateError === null ? t("update.applyErrorUnknown") : updateError)));
+				} else if (updateReadFailed) {
+					updateChildren.push(React.createElement("div", { key: "readFailed", className: "slu-error", role: "alert" },
+						t("update.checkFailed") + " " + t("update.checkUnreadable")));
+				} else if (updateCheckPayload !== null) {
+					if (updateCheckPayload.ok !== true || updateCheckPayload.error !== null) {
+						updateChildren.push(React.createElement("div", { key: "checkFailed", className: "slu-error", role: "alert" },
+							t("update.checkFailed") + " " + (updateCheckPayload.error === null ? t("update.checkUnreadable") : updateCheckPayload.error)));
+					} else if (updateCheckPayload.available === true) {
+						updateChildren.push(React.createElement("div", { key: "available", className: "slu-status", role: "status" },
+							t("update.available").replace("{version}", updateCheckPayload.latest === null ? t("update.notReported") : updateCheckPayload.latest)));
+						if (updateCheckPayload.notes !== null) {
+							updateChildren.push(React.createElement("div", { key: "notes", className: "slu-note" }, t("update.notes") + ": " + updateCheckPayload.notes));
+						}
+						updateChildren.push(React.createElement("div", { key: "files", className: "slu-note", "data-update-files": "true" },
+							t("update.fileCount").replace("{count}", String(updateCheckPayload.fileCount))));
+					} else {
+						updateChildren.push(React.createElement("div", { key: "latest", className: "slu-status", role: "status" },
+							t("update.upToDate").replace("{version}", updateCurrent === null ? t("update.notReported") : updateCurrent)));
+					}
+				}
+				children.push(React.createElement("div", { key: "update", className: "slu-update" }, updateChildren));
+
 				if (showManual) {
 					const commandMode = lastAttempt || mode || DEFAULT_COMMAND_MODE;
 					// A collapsed disclosure on purpose: the manual route is the last resort, not
@@ -3167,6 +3571,20 @@ window.__ModuleLoader__.load({
 					["onCancel"]: cancelForeignSend
 				});
 
+				// The plugin-update gate. Same consent dialog, and its endpoint line names the manifest
+				// address the update is verified against, which is the trust root the body spells out.
+				// No download or file replacement happens until this dialog is confirmed.
+				const updateDialog = updateConfirm === true ? React.createElement(ConfirmDialog, {
+					title: t("update.warnTitle"),
+					body: t("update.warnBody"),
+					endpointLabel: t("update.manifestUrl"),
+					endpoint: updateManifest === null ? t("update.notReported") : updateManifest,
+					confirmLabel: t("update.warnConfirm"),
+					cancelLabel: t("upload.warnCancel"),
+					["onConfirm"]: confirmUpdate,
+					["onCancel"]: cancelUpdate
+				}) : null;
+
 				// The liability notice. Shown whenever the Host has NOT recorded an acknowledgement —
 				// including while the read is still in flight as `null`? No: `null` renders nothing, so
 				// the dialog never flashes for a user who already accepted on a previous visit. A failed
@@ -3196,6 +3614,7 @@ window.__ModuleLoader__.load({
 					React.createElement("div", { className: "slu-section" }, children),
 					dialog,
 					foreignDialog,
+					updateDialog,
 					noticeDialog
 				);
 			}

@@ -88,8 +88,9 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 | `uploadModel` | string | `deepseek-flash` | 那条请求的 `model` 字段。必须是官方 API 认识的名字（`deepseek-flash` 或 `deepseek-v4-pro`）。 |
 | `credentialRef` | string | `DEEPSEEK_API_KEY` | 通过 `ctx.credentials.resolve(ref)` 解析。 |
 | `maxBytes` | int ≥ 1 | `20971520` | 单次请求里 `dsh_session_log` 字段的最大字节数。 |
+| `updateUrl` | string | 本仓库的 GitHub raw 清单地址 | 插件更新清单的地址。必须是绝对 `http(s)` URL，否则回落到默认值。 |
 
-`mode`、`deepseekModelPatterns`、`uploadDirectories`、`uploadSessionIds`、`foreignSessionIds`、`endpoint`、`maxBytes` 都是 **volatile**，所以设置页能读能写。
+`mode`、`deepseekModelPatterns`、`uploadDirectories`、`uploadSessionIds`、`foreignSessionIds`、`endpoint`、`maxBytes`、`updateUrl` 都是 **volatile**，所以设置页能读能写。
 
 ### 反代改了模型名怎么办
 
@@ -125,7 +126,21 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 - 目录和会话白名单只管 DSH 会话，管不到导入。导入也不改变四种模式，它是另一条独立的路径。
 - 扫描只读元数据：标题、目录、模型、消息数。正文只有在你点发送、并且目标会话就是那一行时才会被读出来。
 
-子代理会话（ZCode 里带父会话的那种）缩进显示在父会话下面。本机 366 条 ZCode 会话里有 316 条是这类，它们照样可以单独勾选。
+子代理会话（ZCode 里带父会话的那种）缩进显示在父会话下面。本机 366 条 ZCode 会话里有 316 条是这类，它们照样可以单独勾选。ZCode、Qoder、Cursor、WorkBuddy 四家的子代理记录都能扫出来、能发送；默认折叠，按钮上写着隐藏了多少条。勾一个父会话会连带勾上它下面整棵子代理树。
+
+## 插件更新
+
+设置 → 会话日志上传 → 「插件更新」：显示当前版本和清单地址，点「检查更新」比对远端清单，有新版本时可以一键升级。
+
+升级做的事：下载清单里列出的文件 → 逐个校验 SHA-256 和字节数 → 写备份 → 替换 → 回读校验。任何一步失败都会用备份还原，原文件保持逐字节不变。只替换清单里列出的文件，清单里没有的旧文件不会删。
+
+升级完成后需要重启 DSH 才生效。插件不会自己去改 profile，也不会自己热重载。
+
+清单没有签名。信任根是「本机到清单地址的 HTTPS」这一条：清单地址默认指向本仓库，可以被改成你自己的镜像或 fork，改完之后就要由你为那个地址负责。这一点在升级确认框里写明。
+
+清单地址是 `updateUrl` 配置项，默认 `https://raw.githubusercontent.com/guguzea/dsh-zcode-like/main/update-manifest.json`，raw 拉不到时自动回退到 jsDelivr。自己填的地址不会回退。
+
+备份目录形如 `.update-backup-<旧版本>-<时间戳>`，出问题可以直接从里面拷回来。
 - 外部日志比 DSH 的脏。里面有整条命令的输出、文件内容，可能带着密钥。发之前先想清楚这一条要发给谁。
 
 单个会话的读取上限是 64 MiB。超过就只发送前面的部分，这一行会写"只发送了这段对话的前一部分"，不会假装整段都发了。按本机的数据，594 段里 10 段会触发这个上限。

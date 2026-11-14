@@ -9,20 +9,25 @@
  * Coverage:
  *   1. missing installation / empty store / malformed rows for all five harnesses
  *   2. ZCode: SQLite read-only open, session listing, synthetic records excluded, part mapping,
- *      the message/byte cap, the not-found path, and that the database is untouched
- *   3. Qoder: metadata recovery, sidechain-style tool results, string vs typed content, truncation
- *   4. Cursor: title from the first user text, the lossy-cwd decision (`''`), tool placeholders
- *   5. WorkBuddy: metadata records, ai-title preference, reasoning folding, tool placeholder
+ *      the message/byte cap, the not-found path, delegated child sessions (`parentId` lineage), and
+ *      that the database is untouched
+ *   3. Qoder: metadata recovery, sidechain-style tool results, string vs typed content, truncation,
+ *      delegated `subagents/agent-*.jsonl` rows, the `.meta.json` title priority, and reading them
+ *   4. Cursor: title from the first user text, the lossy-cwd decision (`''`), tool placeholders,
+ *      delegated `subagents/<subagentId>.jsonl` rows and reads
+ *   5. WorkBuddy: metadata records, ai-title preference, reasoning folding, tool placeholder,
+ *      delegated `subagents/agent-*.jsonl` rows (with the non-transcript files in the same tree)
  *   6. Cline: `available: true` with `unsupported-schema` instead of a guessed mapping
  *   7. the registry: adapter order, composite-id parsing, scanAll/get-by-composite-id, caching
- *   8. total behaviour: hostile options, missing ids, aborted signals, contract key sets
+ *   8. total behaviour: hostile options, missing ids, aborted signals, contract key sets, unsafe
+ *      and over-deep raw-id rejection for every JSONL adapter
  *
  * The only writes are inside `verify/.tmp-foreign-adapters/`; the suite removes that directory in
  * a `finally` and exits non-zero when any check failed.
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -46,8 +51,23 @@ const QODER_ID = 'qoder-session-1'
 const QODER_BIG = 'qoder-session-big'
 const QODER_USER_TIME = Date.parse('2024-03-09T16:00:00.000Z')
 const QODER_ASSISTANT_TIME = Date.parse('2024-03-09T16:00:05.000Z')
+// One delegated Qoder transcript per title source: meta description, meta agentType, first user text.
+const QODER_CHILD_DESCRIBED = 'agent-qoder-child-described'
+const QODER_CHILD_TYPED = 'agent-qoder-child-typed'
+const QODER_CHILD_PLAIN = 'agent-qoder-child-plain'
+const QODER_CHILD_DESCRIBED_ID = `${QODER_ID}/subagents/${QODER_CHILD_DESCRIBED}`
+const QODER_CHILD_TYPED_ID = `${QODER_ID}/subagents/${QODER_CHILD_TYPED}`
+const QODER_CHILD_PLAIN_ID = `${QODER_ID}/subagents/${QODER_CHILD_PLAIN}`
+const QODER_CHILD_DESCRIBED_TITLE = 'Audit the Qoder delegation'
 const CURSOR_ID = 'cursor-session-1'
+const CURSOR_CHILD = 'cursor-subagent-1'
+const CURSOR_CHILD_ID = `${CURSOR_ID}/subagents/${CURSOR_CHILD}`
+const CURSOR_CHILD_TITLE = 'Ask the Cursor subagent'
 const WORKBUDDY_ID = 'workbuddy-session-1'
+const WORKBUDDY_CHILD = 'agent-workbuddy-child'
+const WORKBUDDY_CHILD_ID = `${WORKBUDDY_ID}/subagents/${WORKBUDDY_CHILD}`
+const WORKBUDDY_CHILD_TITLE = 'Work the WorkBuddy child'
+const WORKBUDDY_CHILD_TIME = 1720000010000
 
 const SESSION_KEYS = ['bytes', 'createdAt', 'cwd', 'id', 'messageCount', 'model', 'provider', 'title', 'updatedAt']
 const RAW_KEYS = ['createdAt', 'cwd', 'error', 'id', 'messages', 'model', 'provider', 'title', 'truncated']
@@ -304,6 +324,70 @@ function buildQoderStore() {
     })
   }
   writeFixture(join(project, `${QODER_BIG}.jsonl`), jsonl(bigLines))
+
+  // Delegated Qoder conversations: `<sessionId>/subagents/agent-<id>.jsonl` plus `.meta.json`.
+  const subagents = join(project, QODER_ID, 'subagents')
+  writeFixture(
+    join(subagents, `${QODER_CHILD_DESCRIBED}.jsonl`),
+    jsonl([
+      {
+        type: 'user',
+        uuid: 'q-child-user-1',
+        timestamp: '2024-03-09T16:05:00.000Z',
+        message: { role: 'user', content: 'Delegated Qoder prompt' },
+        sessionId: QODER_ID,
+        agentId: 'ageneral-purpose-fixture',
+        isSidechain: true,
+        cwd: 'H:\\qoder-work',
+      },
+      {
+        type: 'assistant',
+        uuid: 'q-child-assistant-1',
+        timestamp: '2024-03-09T16:05:30.000Z',
+        message: {
+          role: 'assistant',
+          model: 'qchildmodel',
+          content: [{ type: 'thinking', thinking: 'child plan' }, { type: 'text', text: 'child answer' }, { type: 'tool_use', name: 'Grep', input: {} }],
+        },
+        sessionId: QODER_ID,
+        agentId: 'ageneral-purpose-fixture',
+        isSidechain: true,
+        cwd: 'H:\\qoder-work',
+      },
+    ]),
+  )
+  writeFixture(
+    join(subagents, `${QODER_CHILD_DESCRIBED}.meta.json`),
+    JSON.stringify({ agentType: 'general-purpose', toolUseId: 'call_fixture', description: QODER_CHILD_DESCRIBED_TITLE, invocationName: 'fixture-leg', color: '#123456' }),
+  )
+  writeFixture(
+    join(subagents, `${QODER_CHILD_TYPED}.jsonl`),
+    jsonl([
+      {
+        type: 'user',
+        uuid: 'q-child-typed-1',
+        timestamp: '2024-03-09T16:06:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'typed child prompt' }] },
+        cwd: 'H:\\qoder-work',
+      },
+    ]),
+  )
+  // Only an agentType: it wins over the turn text, which is a worse title.
+  writeFixture(join(subagents, `${QODER_CHILD_TYPED}.meta.json`), JSON.stringify({ agentType: 'explore' }))
+  writeFixture(
+    join(subagents, `${QODER_CHILD_PLAIN}.jsonl`),
+    jsonl([
+      {
+        type: 'user',
+        uuid: 'q-child-plain-1',
+        timestamp: '2024-03-09T16:07:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'plain child question' }] },
+        cwd: 'H:\\qoder-work',
+      },
+    ]),
+  )
+  // Real Qoder `subagents/` dirs mix transcripts with task JSON; only `.jsonl` files are conversations.
+  writeFixture(join(subagents, 'task-a003469dc70e6464d.json'), JSON.stringify({ type: 'task' }))
 }
 
 /** The Cursor workspace tree. */
@@ -325,6 +409,14 @@ function buildCursorStore() {
       },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', name: 'Read', input: { path: 'x' } }] } },
       '{not json',
+    ]),
+  )
+  // Delegated Cursor conversations use the same line shape, one directory down.
+  writeFixture(
+    join(directory, 'subagents', `${CURSOR_CHILD}.jsonl`),
+    jsonl([
+      { role: 'user', message: { content: [{ type: 'text', text: `<user_query>${CURSOR_CHILD_TITLE}</user_query>` }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'child ok' }, { type: 'tool_use', name: 'Grep', input: {} }] } },
     ]),
   )
 }
@@ -368,6 +460,48 @@ function buildWorkbuddyStore() {
       { id: 'wb-result-1', timestamp: 1720000000500, type: 'function_call_result', name: 'Bash', callId: 'call_1', output: 'ok' },
       { id: 'wb-title-1', timestamp: 1720000000600, type: 'ai-title', aiTitle: 'Fix the WorkBuddy bug title', sessionId: WORKBUDDY_ID, cwd: 'G:\\wb' },
       '{not json',
+    ]),
+  )
+  // Delegated WorkBuddy conversations: `<sessionId>/subagents/agent-<id>.jsonl`. The parent session
+  // directory also holds `call_*.txt` tool output and `agent-*` working directories, none of which
+  // is a transcript; the record `sessionId` there names the sub-agent itself, not the parent.
+  const sessionDirectory = join(home, '.workbuddy', 'projects', 'wb-project', WORKBUDDY_ID)
+  writeFixture(join(sessionDirectory, 'call_1.txt'), 'tool output\n')
+  writeFixture(join(sessionDirectory, 'subagents', `agent-${WORKBUDDY_CHILD.slice('agent-'.length)}`), 'not a transcript')
+  writeFixture(
+    join(sessionDirectory, 'subagents', `${WORKBUDDY_CHILD}.jsonl`),
+    jsonl([
+      {
+        id: 'wb-child-user',
+        timestamp: WORKBUDDY_CHILD_TIME,
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: WORKBUDDY_CHILD_TITLE }],
+        sessionId: 'child-own-session',
+        cwd: 'G:\\wb',
+      },
+      {
+        id: 'wb-child-reasoning',
+        timestamp: WORKBUDDY_CHILD_TIME + 100,
+        type: 'reasoning',
+        providerData: {},
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'child thinking' }],
+        sessionId: 'child-own-session',
+        cwd: 'G:\\wb',
+      },
+      {
+        id: 'wb-child-assistant',
+        timestamp: WORKBUDDY_CHILD_TIME + 200,
+        type: 'message',
+        role: 'assistant',
+        providerData: { requestModelId: 'wb-child-model', model: 'wb-child-model' },
+        content: [{ type: 'output_text', text: 'child answer' }],
+        sessionId: 'child-own-session',
+        cwd: 'G:\\wb',
+      },
+      { id: 'wb-child-call', timestamp: WORKBUDDY_CHILD_TIME + 300, type: 'function_call', name: 'Write', callId: 'call_2', arguments: '{}', cwd: 'G:\\wb' },
+      { id: 'wb-child-result', timestamp: WORKBUDDY_CHILD_TIME + 400, type: 'function_call_result', name: 'Write', callId: 'call_2', output: 'ok', cwd: 'G:\\wb' },
     ]),
   )
 }
@@ -528,6 +662,24 @@ try {
       assert.equal(raw.error, 'not-found')
     })
 
+    await check('ZCode lists delegated child sessions with parentId and reads them by id', async () => {
+      const result = await zcode.scan({ home })
+      const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+      assert.equal(sessions.get(ZCODE_ROOT).parentId, '', 'a top-level session has no parent')
+      assert.equal(sessions.get(ZCODE_CHILD).parentId, ZCODE_ROOT, 'the child points at its parent session')
+      const child = await zcode.readSession(ZCODE_CHILD, { home })
+      assertRawShape(child)
+      assert.equal(child.error, null)
+      assert.equal(child.id, ZCODE_CHILD)
+      assert.deepEqual(child.messages, [
+        { role: 'user', time: 1700000007000, blocks: [{ type: 'text', text: 'child ask' }] },
+        { role: 'assistant', time: 1700000008000, blocks: [{ type: 'text', text: 'child answer' }] },
+      ])
+      const viaRegistry = await readForeignSession(`zcode/${ZCODE_CHILD}`, { home })
+      assert.equal(viaRegistry.error, null)
+      assert.equal(viaRegistry.raw.id, ZCODE_CHILD)
+    })
+
     await check('the ZCode database is opened read-only and left untouched', () => {
       assert.equal(existsSync(`${ZCODE_DB}-journal`), false, 'a read must not leave a rollback journal')
       assert.equal(existsSync(`${ZCODE_DB}-wal`), false, 'a read must not leave a WAL')
@@ -567,7 +719,10 @@ try {
     assert.equal(result.available, true)
     assert.equal(result.error, null)
     const sessions = new Map(result.sessions.map((session) => [session.id, session]))
-    assert.deepEqual([...sessions.keys()].sort(), [QODER_BIG, QODER_ID].sort())
+    assert.deepEqual(
+      [...sessions.keys()].sort(),
+      [QODER_BIG, QODER_ID, QODER_CHILD_DESCRIBED_ID, QODER_CHILD_PLAIN_ID, QODER_CHILD_TYPED_ID].sort(),
+    )
     for (const session of result.sessions) assertSessionShape(session)
     const session = sessions.get(QODER_ID)
     assert.equal(session.title, 'Build a Qoder thing')
@@ -616,6 +771,70 @@ try {
     assert.ok(raw.messages.length < 200, `expected a partial read, got ${raw.messages.length} messages`)
   })
 
+  await check('Qoder lists delegated subagent rows with parentId and the meta title priority', async () => {
+    const result = await qoder.scan({ home })
+    const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+    assert.equal(sessions.size, 5)
+    for (const session of result.sessions) assertSessionShape(session)
+
+    const described = sessions.get(QODER_CHILD_DESCRIBED_ID)
+    assertSessionShape(described)
+    assert.equal(described.parentId, QODER_ID)
+    assert.equal(described.title, QODER_CHILD_DESCRIBED_TITLE, 'meta.description is the best title')
+    assert.equal(described.cwd, 'H:\\qoder-work', 'a delegated transcript carries cwd on its turns')
+    assert.equal(described.model, 'qchildmodel')
+    assert.equal(described.provider, '')
+    assert.equal(described.messageCount, 2)
+    const describedPath = join(home, '.qoder-cn', 'projects', 'H--qoder-work', QODER_ID, 'subagents', `${QODER_CHILD_DESCRIBED}.jsonl`)
+    assert.equal(described.bytes, statSync(describedPath).size)
+
+    const typed = sessions.get(QODER_CHILD_TYPED_ID)
+    assert.equal(typed.parentId, QODER_ID)
+    assert.equal(typed.title, 'explore', 'meta.agentType beats the first user text')
+    assert.equal(typed.messageCount, 1)
+
+    const plain = sessions.get(QODER_CHILD_PLAIN_ID)
+    assert.equal(plain.parentId, QODER_ID)
+    assert.equal(plain.title, 'plain child question', 'with no meta the first user text is the title')
+    assert.equal(plain.messageCount, 1)
+
+    // The `task-*.json` file in the same directory is not a conversation; only the three JSONL files are rows.
+    assert.deepEqual(
+      [...sessions.keys()].filter((id) => id.includes('/')).sort(),
+      [QODER_CHILD_DESCRIBED_ID, QODER_CHILD_PLAIN_ID, QODER_CHILD_TYPED_ID].sort(),
+    )
+  })
+
+  await check('Qoder readSession resolves <parent>/subagents/<child> and maps its messages', async () => {
+    const raw = await qoder.readSession(QODER_CHILD_DESCRIBED_ID, { home })
+    assertRawShape(raw)
+    assert.equal(raw.error, null)
+    assert.equal(raw.id, QODER_CHILD_DESCRIBED_ID)
+    assert.equal(raw.title, QODER_CHILD_DESCRIBED_TITLE, 'the read matches the scan row title')
+    assert.equal(raw.cwd, 'H:\\qoder-work')
+    assert.equal(raw.model, 'qchildmodel')
+    assert.equal(raw.provider, '')
+    assert.equal(raw.truncated, false)
+    assert.deepEqual(raw.messages, [
+      { role: 'user', time: Date.parse('2024-03-09T16:05:00.000Z'), blocks: [{ type: 'text', text: 'Delegated Qoder prompt' }] },
+      {
+        role: 'assistant',
+        time: Date.parse('2024-03-09T16:05:30.000Z'),
+        blocks: [
+          { type: 'reasoning', text: 'child plan' },
+          { type: 'text', text: 'child answer' },
+          { type: 'text', text: '[tool: Grep]' },
+        ],
+      },
+    ])
+    const truncated = await qoder.readSession(QODER_CHILD_DESCRIBED_ID, { home, maxBytes: 1 })
+    assert.equal(truncated.truncated, true, 'a delegated read honours the byte budget too')
+    assert.equal(truncated.error, null)
+    const viaRegistry = await readForeignSession(`qoder/${QODER_CHILD_DESCRIBED_ID}`, { home })
+    assert.equal(viaRegistry.error, null)
+    assert.equal(viaRegistry.raw.id, QODER_CHILD_DESCRIBED_ID)
+  })
+
   // ───────────────────────────────────────────────────────────────────────────────────────────────
   // 4. Cursor (JSONL)
   // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -625,10 +844,10 @@ try {
     assertScanShape(result)
     assert.equal(result.available, true)
     assert.equal(result.error, null)
-    assert.equal(result.sessions.length, 1)
-    const session = result.sessions[0]
+    assert.equal(result.sessions.length, 2)
+    const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+    const session = sessions.get(CURSOR_ID)
     assertSessionShape(session)
-    assert.equal(session.id, CURSOR_ID)
     assert.equal(session.title, 'Add a Cursor button')
     assert.equal(session.cwd, '', 'the encoded workspace directory name is not a path to report')
     assert.equal(session.provider, '')
@@ -665,6 +884,45 @@ try {
     assert.equal(raw.truncated, true)
   })
 
+  await check('Cursor lists the delegated subagent row with parentId, and reads it by composite id', async () => {
+    const result = await cursor.scan({ home })
+    const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+    const child = sessions.get(CURSOR_CHILD_ID)
+    assertSessionShape(child)
+    assert.equal(child.parentId, CURSOR_ID)
+    assert.equal(child.title, CURSOR_CHILD_TITLE, 'the first user text, with the user_query wrapper removed')
+    assert.equal(child.cwd, '')
+    assert.equal(child.provider, '')
+    assert.equal(child.model, '')
+    assert.equal(child.messageCount, 2)
+    const childPath = join(home, '.cursor', 'projects', 'h-work', 'agent-transcripts', CURSOR_ID, 'subagents', `${CURSOR_CHILD}.jsonl`)
+    assert.equal(child.bytes, statSync(childPath).size)
+    assert.equal(child.createdAt, Math.trunc(statSync(childPath).birthtimeMs) || 0)
+
+    const raw = await cursor.readSession(CURSOR_CHILD_ID, { home })
+    assertRawShape(raw)
+    assert.equal(raw.error, null)
+    assert.equal(raw.id, CURSOR_CHILD_ID)
+    assert.equal(raw.title, CURSOR_CHILD_TITLE)
+    assert.equal(raw.truncated, false)
+    assert.deepEqual(raw.messages, [
+      { role: 'user', time: 0, blocks: [{ type: 'text', text: `<user_query>${CURSOR_CHILD_TITLE}</user_query>` }] },
+      {
+        role: 'assistant',
+        time: 0,
+        blocks: [
+          { type: 'text', text: 'child ok' },
+          { type: 'text', text: '[tool: Grep]' },
+        ],
+      },
+    ])
+    const truncated = await cursor.readSession(CURSOR_CHILD_ID, { home, maxBytes: 100 })
+    assert.equal(truncated.truncated, true)
+    const viaRegistry = await readForeignSession(`cursor/${CURSOR_CHILD_ID}`, { home })
+    assert.equal(viaRegistry.error, null)
+    assert.equal(viaRegistry.raw.id, CURSOR_CHILD_ID)
+  })
+
   // ───────────────────────────────────────────────────────────────────────────────────────────────
   // 5. WorkBuddy (JSONL)
   // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -674,10 +932,10 @@ try {
     assertScanShape(result)
     assert.equal(result.available, true)
     assert.equal(result.error, null)
-    assert.equal(result.sessions.length, 1)
-    const session = result.sessions[0]
+    assert.equal(result.sessions.length, 2)
+    const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+    const session = sessions.get(WORKBUDDY_ID)
     assertSessionShape(session)
-    assert.equal(session.id, WORKBUDDY_ID)
     assert.equal(session.title, 'Fix the WorkBuddy bug title')
     assert.equal(session.cwd, 'G:\\wb')
     assert.equal(session.model, 'wb-model')
@@ -686,6 +944,50 @@ try {
     assert.equal(session.messageCount, 2, 'reasoning and tool records are not messages')
     const filePath = join(home, '.workbuddy', 'projects', 'wb-project', `${WORKBUDDY_ID}.jsonl`)
     assert.equal(session.bytes, statSync(filePath).size)
+  })
+
+  await check('WorkBuddy lists the delegated subagent row and ignores non-transcript files', async () => {
+    const result = await workbuddy.scan({ home })
+    const sessions = new Map(result.sessions.map((session) => [session.id, session]))
+    // `call_1.txt` and the extensionless `agent-*` entry in the same tree are not conversations.
+    assert.deepEqual([...sessions.keys()].sort(), [WORKBUDDY_ID, WORKBUDDY_CHILD_ID].sort())
+    const child = sessions.get(WORKBUDDY_CHILD_ID)
+    assertSessionShape(child)
+    assert.equal(child.parentId, WORKBUDDY_ID)
+    assert.equal(child.title, WORKBUDDY_CHILD_TITLE, 'the first user text')
+    assert.equal(child.cwd, 'G:\\wb')
+    assert.equal(child.model, 'wb-child-model')
+    assert.equal(child.provider, '')
+    assert.equal(child.createdAt, WORKBUDDY_CHILD_TIME)
+    assert.equal(child.messageCount, 2, 'reasoning and tool records are not messages')
+    const childPath = join(home, '.workbuddy', 'projects', 'wb-project', WORKBUDDY_ID, 'subagents', `${WORKBUDDY_CHILD}.jsonl`)
+    assert.equal(child.bytes, statSync(childPath).size)
+
+    const raw = await workbuddy.readSession(WORKBUDDY_CHILD_ID, { home })
+    assertRawShape(raw)
+    assert.equal(raw.error, null)
+    assert.equal(raw.id, WORKBUDDY_CHILD_ID)
+    assert.equal(raw.title, WORKBUDDY_CHILD_TITLE)
+    assert.equal(raw.cwd, 'G:\\wb')
+    assert.equal(raw.model, 'wb-child-model')
+    assert.equal(raw.truncated, false)
+    assert.deepEqual(raw.messages, [
+      { role: 'user', time: WORKBUDDY_CHILD_TIME, blocks: [{ type: 'text', text: WORKBUDDY_CHILD_TITLE }] },
+      {
+        role: 'assistant',
+        time: WORKBUDDY_CHILD_TIME + 200,
+        blocks: [
+          { type: 'reasoning', text: 'child thinking' },
+          { type: 'text', text: 'child answer' },
+          { type: 'text', text: '[tool: Write]' },
+        ],
+      },
+    ])
+    const truncated = await workbuddy.readSession(WORKBUDDY_CHILD_ID, { home, maxBytes: 1 })
+    assert.equal(truncated.truncated, true)
+    const viaRegistry = await readForeignSession(`workbuddy/${WORKBUDDY_CHILD_ID}`, { home })
+    assert.equal(viaRegistry.error, null)
+    assert.equal(viaRegistry.raw.id, WORKBUDDY_CHILD_ID)
   })
 
   await check('WorkBuddy readSession folds reasoning into the following assistant message', async () => {
@@ -764,15 +1066,48 @@ try {
     assert.equal(clineGroup.error, 'unsupported-schema')
     const zcodeGroup = result.harnesses.find((group) => group.harness === 'zcode')
     if (SQLITE !== null) assert.equal(zcodeGroup.sessions.length, 2)
-    assert.equal(result.harnesses.find((group) => group.harness === 'qoder').sessions.length, 2)
-    assert.equal(result.harnesses.find((group) => group.harness === 'cursor').sessions.length, 1)
-    assert.equal(result.harnesses.find((group) => group.harness === 'workbuddy').sessions.length, 1)
+    assert.equal(result.harnesses.find((group) => group.harness === 'qoder').sessions.length, 5)
+    assert.equal(result.harnesses.find((group) => group.harness === 'cursor').sessions.length, 2)
+    assert.equal(result.harnesses.find((group) => group.harness === 'workbuddy').sessions.length, 2)
+    // Every delegated row reaches the page with the lineage it needs to indent under its parent.
+    const delegated = result.harnesses.flatMap((group) => group.sessions.filter((session) => session.id.includes('/subagents/')).map((session) => [group.harness, session]))
+    assert.deepEqual(
+      delegated.map(([harnessName, session]) => `${harnessName}:${session.id}`).sort(),
+      [
+        `qoder:${QODER_CHILD_DESCRIBED_ID}`,
+        `qoder:${QODER_CHILD_PLAIN_ID}`,
+        `qoder:${QODER_CHILD_TYPED_ID}`,
+        `cursor:${CURSOR_CHILD_ID}`,
+        `workbuddy:${WORKBUDDY_CHILD_ID}`,
+      ].sort(),
+    )
+    for (const [, session] of delegated) assert.equal(typeof session.parentId, 'string')
   })
 
   await check('a second scanAll reports the same rows (the per-file count cache is consistent)', async () => {
     const first = await scanAll({ home })
     const second = await scanAll({ home })
     assert.deepEqual(second, first)
+  })
+
+  await check('a changed delegated transcript invalidates its cached message count', async () => {
+    const before = (await qoder.scan({ home })).sessions.find((session) => session.id === QODER_CHILD_PLAIN_ID)
+    assert.equal(before.messageCount, 1)
+    const childPath = join(home, '.qoder-cn', 'projects', 'H--qoder-work', QODER_ID, 'subagents', `${QODER_CHILD_PLAIN}.jsonl`)
+    appendFileSync(
+      childPath,
+      `${JSON.stringify({
+        type: 'assistant',
+        uuid: 'q-child-plain-2',
+        timestamp: '2024-03-09T16:07:30.000Z',
+        message: { role: 'assistant', model: 'qchildmodel', content: [{ type: 'text', text: 'plain child answer' }] },
+      })}\n`,
+      'utf8',
+    )
+    const after = (await qoder.scan({ home })).sessions.find((session) => session.id === QODER_CHILD_PLAIN_ID)
+    assert.equal(after.messageCount, 2, 'a rescan must count the new turn, not reuse the old cache entry')
+    const raw = await qoder.readSession(QODER_CHILD_PLAIN_ID, { home })
+    assert.equal(raw.messages.length, 2)
   })
 
   await check('readForeignSession splits the composite id and returns the adapter plus the raw read', async () => {
@@ -892,6 +1227,45 @@ try {
       assertScanShape(result)
       const missing = await adapter.readSession('missing-session', { home })
       assertRawShape(missing)
+    }
+  })
+
+  await check('the JSONL adapters reject unsafe, composite-shaped and over-deep raw ids', async () => {
+    const adapters = [
+      [qoder, QODER_ID],
+      [cursor, CURSOR_ID],
+      [workbuddy, WORKBUDDY_ID],
+    ]
+    for (const [adapter, parentId] of adapters) {
+      for (const id of [
+        // traversal
+        '..',
+        '../escape',
+        `${parentId}/subagents/..`,
+        `${parentId}/subagents/../../escape`,
+        '../subagents/child',
+        // absolute (POSIX and Windows forms)
+        '/absolute/path',
+        'C:\\Users\\secret',
+        // wrong shape: not a delegated id, an empty segment, or a deeper path than the contract allows
+        `${parentId}/subagents`,
+        `${parentId}/other/child`,
+        `${parentId}//child`,
+        `${parentId}/subagents/`,
+        `${parentId}/subagents/child/extra`,
+        'a/b/c/d/e',
+      ]) {
+        const raw = await adapter.readSession(id, { home })
+        assertRawShape(raw)
+        assert.equal(raw.error, 'invalid-id', `${adapter.harness}/${id} must be rejected as an invalid id`)
+        assert.deepEqual(raw.messages, [])
+      }
+    }
+    // The well-formed shape is not over-rejected: a missing child is `not-found`, never `invalid-id`.
+    for (const [adapter, parentId] of adapters) {
+      const raw = await adapter.readSession(`${parentId}/subagents/does-not-exist`, { home })
+      assertRawShape(raw)
+      assert.equal(raw.error, 'not-found', `${adapter.harness}: a well-formed but missing child is not-found`)
     }
   })
 } finally {

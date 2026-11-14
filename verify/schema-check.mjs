@@ -29,6 +29,7 @@ import {
   DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
+  DEFAULT_UPDATE_URL,
   DEFAULT_UPLOAD_MODEL,
   MODES,
   resolveConfig,
@@ -107,6 +108,7 @@ const build = new Function(
   'DEFAULT_UPLOAD_SESSION_IDS',
   'DEFAULT_FOREIGN_SESSION_IDS',
   'DEFAULT_MAX_BYTES',
+  'DEFAULT_UPDATE_URL',
   'DEFAULT_UPLOAD_MODEL',
   `${region}\nreturn { schema: ${literal.replace('Config = ', '')}, MODE_PATTERN, modeField };`,
 )
@@ -120,13 +122,14 @@ const built = build(
   DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
+  DEFAULT_UPDATE_URL,
   DEFAULT_UPLOAD_MODEL,
 )
 const schema = built.schema
 
 check('the plugin declaration builds a real schemastery object schema', () => {
   assert.equal(schema.type, 'object')
-  assert.deepEqual(Object.keys(schema.dict).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
+  assert.deepEqual(Object.keys(schema.dict).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
 })
 
 check('H2: MODE_PATTERN is an exact anchored alternation of the four frozen ids', () => {
@@ -150,6 +153,7 @@ check('H2: the pattern escapes regex metacharacters when MODES is hostile', () =
     DEFAULT_UPLOAD_SESSION_IDS,
     DEFAULT_FOREIGN_SESSION_IDS,
     DEFAULT_MAX_BYTES,
+    DEFAULT_UPDATE_URL,
     DEFAULT_UPLOAD_MODEL,
   )
   assert.equal(hostile.MODE_PATTERN.source, '^(?:a\\.b|x\\(y\\)|p\\+q|literal)$')
@@ -243,7 +247,7 @@ check('H2 FIXED: an unknown mode STRING is now REJECTED by the schema', () => {
   assert.equal(resolveConfig({ mode: 'offf' }).mode, 'official-only')
 })
 
-check('exactly seven fields carry the volatile marker: `mode`, the four lists, `endpoint`, `maxBytes`', () => {
+check('exactly eight fields carry the volatile marker: `mode`, the four lists, `endpoint`, `maxBytes`, `updateUrl`', () => {
   // `schema.toJSON()` is a uid/refs graph: {uid, refs:{id: node}, ...}. The live Config inspect
   // projection re-renders the same marker as `x-cordis.volatile` (observed: Config.listConfigs
   // entry `include:session-log-upload`).
@@ -252,9 +256,9 @@ check('exactly seven fields carry the volatile marker: `mode`, the four lists, `
   const volatileIds = Object.entries(json.refs)
     .filter(([, node]) => node?.meta?.volatile === true)
     .map(([id]) => id)
-  assert.equal(volatileIds.length, 7, `expected exactly seven volatile nodes, found ${volatileIds.length}`)
+  assert.equal(volatileIds.length, 8, `expected exactly eight volatile nodes, found ${volatileIds.length}`)
   // The volatile nodes are exactly the ids these keys point at.
-  const VOLATILE_KEYS = [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]
+  const VOLATILE_KEYS = [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadSessionIds' ]
   const volatileKeys = VOLATILE_KEYS.filter((key) => volatileIds.includes(String(root.dict[key])))
   assert.deepEqual(volatileKeys.sort(), [...VOLATILE_KEYS].sort(), `volatile fields: ${volatileKeys.join(', ')}`)
   for (const key of VOLATILE_KEYS) {
@@ -359,12 +363,12 @@ check('the schema declares no secret fields (so the redaction stub above is exac
 
 // RETARGETED (was: "the settings FORM projects exactly one field — mode"). That WAS the reported
 // bug: a non-volatile field never reaches the browser, so the page could not show the destination.
-check('RETARGETED: the settings FORM projects exactly the seven volatile fields', () => {
+check('RETARGETED: the settings FORM projects exactly the eight volatile fields', () => {
   const form = projection.volatileForm(schema)
   assert.ok(form !== undefined, 'no form is projected at all')
   assert.deepEqual(
     Object.keys(form.dict).sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadSessionIds' ],
     `the form exposed ${Object.keys(form.dict).join(', ')}`,
   )
 })
@@ -374,8 +378,8 @@ check('RETARGETED: the settings FORM projects exactly the seven volatile fields'
 // are refused, because they decide which credential is used and which model this plugin spends money
 // on. `deepseekModelPatterns` moved to the writable side on purpose: it is how a user says that a
 // proxy's renamed model (`dfmodel`) is DeepSeek.
-check('RETARGETED: the write guard admits exactly the seven volatile fields, refuses the other two', () => {
-  for (const key of [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ]) {
+check('RETARGETED: the write guard admits exactly the eight volatile fields, refuses the other two', () => {
+  for (const key of [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadSessionIds' ]) {
     assert.equal(projection.isVolatilePath(schema, [key]), true, `${key} is not writable — the page could not save it`)
   }
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -392,7 +396,7 @@ check('RETARGETED: the write guard admits exactly the seven volatile fields, ref
 
 // RETARGETED: the projection now carries the five volatile fields, and nothing else — no
 // `uploadModel`, no `credentialRef`.
-check('RETARGETED: projectForm exposes the seven volatile fields and never the whole config', () => {
+check('RETARGETED: projectForm exposes the eight volatile fields and never the whole config', () => {
   const form = projection.volatileForm(schema)
   const value = validate({
     endpoint: 'https://api.deepseek.com/anthropic/v1/messages',
@@ -403,7 +407,7 @@ check('RETARGETED: projectForm exposes the seven volatile fields and never the w
   const projected = projection.projectForm(form, value)
   assert.deepEqual(
     Object.keys(projected).sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadSessionIds' ],
   )
   for (const key of ['uploadModel', 'credentialRef']) {
     assert.equal(key in projected, false, `${key} leaked into the browser projection`)

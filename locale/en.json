@@ -135,5 +135,30 @@
     "warnTitle": "Send these conversations to the destination?",
     "warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
     "warnConfirm": "Send"
+  },
+  "update": {
+    "title": "Plugin update",
+    "currentVersion": "Current version",
+    "manifestUrl": "Manifest address",
+    "notReported": "Not reported by the Host",
+    "check": "Check for updates",
+    "checking": "Checking…",
+    "upToDate": "Already up to date ({version}).",
+    "available": "Version {version} is available.",
+    "notes": "Notes",
+    "fileCount": "Files: {count}",
+    "checkFailed": "Update check failed:",
+    "checkUnreadable": "the Host's answer could not be read.",
+    "upgrade": "Upgrade now",
+    "warnTitle": "Upgrade the plugin now?",
+    "warnBody": "The plugin's own files will be downloaded and replaced. If the update fails it rolls back automatically. DSH must be restarted afterwards for the new version to take effect. The manifest is not signed; the trust root is HTTPS to the manifest address.",
+    "warnConfirm": "Upgrade",
+    "phaseDownloading": "Downloading the update…",
+    "phaseWriting": "Writing the files…",
+    "done": "Updated to version {version}.",
+    "backupDir": "Backup folder",
+    "restartHint": "Restart DSH for the new version to take effect.",
+    "applyFailed": "Update failed:",
+    "applyErrorUnknown": "unknown error"
   }
 }

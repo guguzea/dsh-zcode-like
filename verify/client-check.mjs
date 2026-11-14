@@ -89,7 +89,30 @@ const REQUIRED_KEYS = [
 	"foreign.statusUnknown",
 	"foreign.warnTitle",
 	"foreign.warnBody",
-	"foreign.warnConfirm"
+	"foreign.warnConfirm",
+	"update.title",
+	"update.currentVersion",
+	"update.manifestUrl",
+	"update.notReported",
+	"update.check",
+	"update.checking",
+	"update.upToDate",
+	"update.available",
+	"update.notes",
+	"update.fileCount",
+	"update.checkFailed",
+	"update.checkUnreadable",
+	"update.upgrade",
+	"update.warnTitle",
+	"update.warnBody",
+	"update.warnConfirm",
+	"update.phaseDownloading",
+	"update.phaseWriting",
+	"update.done",
+	"update.backupDir",
+	"update.restartHint",
+	"update.applyFailed",
+	"update.applyErrorUnknown"
 ];
 
 let passed = 0;
@@ -134,10 +157,12 @@ function sortedKeys(object) {
 	return Object.keys(object).sort();
 }
 
-/** The client half owns `upload.*` and `foreign.*`; `meta.*` is Host display metadata. */
+/** The client half owns `upload.*`, `foreign.*` and `update.*`; `meta.*` is Host display metadata. */
 function clientOnly(flat) {
 	const out = {};
-	for (const key of Object.keys(flat)) if (key.startsWith("upload.") || key.startsWith("foreign.")) out[key] = flat[key];
+	for (const key of Object.keys(flat)) {
+		if (key.startsWith("upload.") || key.startsWith("foreign.") || key.startsWith("update.")) out[key] = flat[key];
+	}
 	return out;
 }
 
@@ -269,13 +294,13 @@ check("locale-keys", "every t(...) key and every upload.* / foreign.* literal ex
 	const tKeys = new Set();
 	const tCall = /\bt\(\s*(["'])([A-Za-z0-9_.]+)\1/g;
 	for (const match of clientSource.matchAll(tCall)) {
-		if (/^(?:upload|foreign)(\.[A-Za-z0-9]+)+$/.test(match[2])) tKeys.add(match[2]);
+		if (/^(?:upload|foreign|update)(\.[A-Za-z0-9]+)+$/.test(match[2])) tKeys.add(match[2]);
 	}
 	assert(tKeys.size > 0, "no literal t(\"upload.*\") key found");
 	const literals = new Set();
 	const literalPattern = /(["'])((?:(?!\1)[^\\\r\n]|\\.)*)\1/g;
 	for (const match of clientSource.matchAll(literalPattern)) {
-		if (/^(?:upload|foreign)(\.[A-Za-z0-9]+)+$/.test(match[2])) literals.add(match[2]);
+		if (/^(?:upload|foreign|update)(\.[A-Za-z0-9]+)+$/.test(match[2])) literals.add(match[2]);
 	}
 	const missing = [];
 	for (const key of [...tKeys, ...literals].sort()) {
@@ -607,11 +632,16 @@ function createHookRuntime() {
 /** Apply the module against a stubbed Host context and return what it registered. */
 function applyWith(sources, runtime, options) {
 	const settings = options || {};
+	// `setTimeout`/`clearTimeout` are browser globals the module may use for phase labels. They are
+	// handed in only when a scenario supplies them, so a test can drive the timer deterministically.
+	const globals = { fetch: sources.fetch };
+	if (sources.setTimeout !== undefined) globals.setTimeout = sources.setTimeout;
+	if (sources.clearTimeout !== undefined) globals.clearTimeout = sources.clearTimeout;
 	const exportsObject = instantiateFactory(function (specifier) {
 		if (specifier === "react") return runtime.React;
 		// react-dom stays unavailable on purpose: this exercises the in-place dialog branch.
 		throw new Error(`unavailable module: ${specifier}`);
-	}, runtime.window, { fetch: sources.fetch });
+	}, runtime.window, globals);
 	const registrations = [];
 	const dictionaries = {};
 	const ctx = {
@@ -1382,6 +1412,154 @@ const CHOOSER_WORKSPACES = [
 	{ id: "w1", path: "F:\\work\\one", title: "One", sessions: [ { id: "s1", title: "First session" }, { id: "s2", title: "Second session" } ] },
 	{ id: "w2", path: "F:\\work\\two", title: "Two", sessions: [ { id: "s3", title: "Third session" } ] }
 ];
+
+// ── plugin self-update (docs/update.md) ────────────────────────────────────────────────────
+/** A check payload that says an update is available. */
+const UPDATE_AVAILABLE = {
+	status: 200,
+	body: {
+		ok: true, current: "1.0.0", latest: "1.2.0", available: true,
+		notes: "Adds the in-app update block",
+		manifestUrl: "https://example.test/update-manifest.json",
+		source: "primary",
+		files: [
+			{ path: "index.js", bytes: 10, sha256: "a".repeat(64) },
+			{ path: "client.js", bytes: 20, sha256: "b".repeat(64) }
+		],
+		error: null
+	}
+};
+
+/** A check payload that says the install is already current. */
+const UPDATE_LATEST = {
+	status: 200,
+	body: {
+		ok: true, current: "1.2.0", latest: "1.2.0", available: false,
+		notes: "", manifestUrl: "https://example.test/update-manifest.json",
+		source: "primary", files: [], error: null
+	}
+};
+
+/** A check payload in which the Host could not read the manifest. */
+const UPDATE_CHECK_ERROR = {
+	status: 200,
+	body: {
+		ok: false, current: "1.0.0", latest: null, available: false,
+		notes: "", manifestUrl: "https://example.test/update-manifest.json",
+		source: "primary", files: [], error: "manifest unreachable"
+	}
+};
+
+/** A successful apply payload. */
+const UPDATE_APPLY_OK = {
+	ok: true, from: "1.0.0", to: "1.2.0", files: [ "index.js", "client.js" ],
+	backupDir: "C:\\plugins\\session-log-upload\\.update-backup-1.0.0-1700000000000",
+	reload: "restart-required", error: null
+};
+
+/**
+ * The page fetcher stub for the update block. Notice and ledger are answered so the mount reads
+ * stay out of the way; each GET update-check consumes one queued reply; update-apply uses the
+ * `apply` reply, and `{defer:true}` keeps it pending for the test to release.
+ * @param settings - `{checks: replies[], apply: reply}`.
+ */
+function updateFetch(settings) {
+	const options = settings || {};
+	const checks = Array.isArray(options.checks) ? options.checks.slice() : [];
+	const applyReply = options.apply === undefined ? { status: 200, body: UPDATE_APPLY_OK } : options.apply;
+	const calls = [];
+	const controls = [];
+	const respond = function (reply) {
+		if (reply !== undefined && reply.defer === true) {
+			return new Promise(function (resolve, reject) {
+				controls.push({
+					resolve: function (body) { resolve(foreignResponse(200, body === undefined ? UPDATE_APPLY_OK : body)); },
+					reject: function (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+				});
+			});
+		}
+		if (reply !== undefined && reply.reject !== undefined) return Promise.reject(new Error(String(reply.reject)));
+		const status = reply !== undefined && typeof reply.status === "number" ? reply.status : 200;
+		return Promise.resolve(foreignResponse(status, reply === undefined ? {} : reply.body));
+	};
+	const stub = function (input, init) {
+		const url = typeof input === "string" ? input : String(input);
+		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
+		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("update-check") >= 0) {
+			calls.push({ url: url, method: method, body: null });
+			const reply = checks.length > 1 ? checks.shift() : checks[0];
+			return respond(reply);
+		}
+		if (url.indexOf("update-apply") >= 0) {
+			const body = init !== null && init !== undefined && typeof init.body === "string" ? init.body : null;
+			calls.push({ url: url, method: method, body: body });
+			return respond(applyReply);
+		}
+		return Promise.resolve(foreignResponse(200, { generatedAt: 1, directory: "C:\\l", total: 0, sessions: [] }));
+	};
+	return {
+		calls: calls,
+		get checkCalls() { return calls.filter(function (call) { return call.url.indexOf("update-check") >= 0; }); },
+		get applyCalls() { return calls.filter(function (call) { return call.url.indexOf("update-apply") >= 0; }); },
+		controls: controls,
+		fetch: stub
+	};
+}
+
+/**
+ * Render the section with a served, writable form and the update fetch stub.
+ * A deterministic clock is supplied when `fakeTimer` is set, so a test can fire the phase timer by
+ * hand instead of waiting on wall time.
+ * @param settings - `{checks, apply, fakeTimer}`.
+ */
+async function updateScenario(settings) {
+	const options = settings || {};
+	const stub = updateFetch(options);
+	const form = createWritableForm({
+		mode: "official-only",
+		endpoint: SERVED_ENDPOINT,
+		maxBytes: DEFAULT_CAP,
+		uploadDirectories: [],
+		uploadSessionIds: [],
+		foreignSessionIds: []
+	});
+	const timers = [];
+	const sources = {
+		configForms: createConfigForms({ served: [ "session-log-upload" ], form: form }),
+		fetch: stub.fetch
+	};
+	if (options.fakeTimer === true) {
+		sources.setTimeout = function (fn) {
+			timers.push(fn);
+			return timers.length;
+		};
+		sources.clearTimeout = function (id) {
+			timers[id - 1] = null;
+		};
+	}
+	const runtime = createHookRuntime();
+	applyWith(sources, runtime);
+	await settle(runtime);
+	return { runtime: runtime, form: form, fetch: stub, timers: timers };
+}
+
+/** The update block's display value for one field. */
+function updateValue(runtime, field) {
+	const node = runtime.findAll(function (node) { return node.props["data-update-field"] === field; })[0];
+	return node === undefined ? undefined : textOf(node);
+}
+
+/** The update block's check / upgrade action. */
+function updateButton(runtime, action) {
+	return runtime.findAll(function (node) { return node.type === "button" && node.props["data-update-action"] === action; })[0];
+}
+
+/** The update block's rendered text. */
+function updateText(runtime) {
+	const node = runtime.findAll(function (node) { return typeof node.props.className === "string" && node.props.className.indexOf("slu-update") >= 0 && node.type === "div"; })[0];
+	return node === undefined ? "" : textOf(node);
+}
 
 // 10 ─ registration + degraded render ───────────────────────────────────────────────────
 await checkAsync("render-fallback", "no served form: controls disabled, no bare save error, manual route last", async () => {
@@ -3100,6 +3278,110 @@ await checkAsync("foreign-collapse", "delegated conversations are hidden by defa
 		assert(foreignStatusTextOf(scenario.runtime, id).includes("Sent"), `${id} lost its status after collapse and expand`);
 	}
 	return "collapsed by default with the hidden count, hidden rows still cascade into save and send, expand restores rows with ticks and statuses intact";
+});
+
+// 46 ─ the plugin update block: click-only checks with three honest result states ─────────────
+await checkAsync("update-check", "the update block fetches only on click and renders the three check states", async () => {
+	const scenario = await updateScenario({ checks: [ UPDATE_LATEST, UPDATE_AVAILABLE, UPDATE_CHECK_ERROR ] });
+	const runtime = scenario.runtime;
+	// Nothing on mount: no check call, and both reported values say so instead of inventing one.
+	assert(scenario.fetch.checkCalls.length === 0, `the page checked on mount: ${scenario.fetch.checkCalls.length} calls`);
+	assert(updateText(runtime).includes("Plugin update"), "the update block is missing");
+	assert(updateValue(runtime, "current") === "Not reported by the Host", `current version: ${JSON.stringify(updateValue(runtime, "current"))}`);
+	assert(updateValue(runtime, "manifest") === "Not reported by the Host", `manifest value: ${JSON.stringify(updateValue(runtime, "manifest"))}`);
+	assert(updateButton(runtime, "upgrade") === undefined, "the upgrade control exists before any check");
+	// 1. already up to date.
+	const checkButton = updateButton(runtime, "check");
+	assert(checkButton !== undefined, "the check button is missing");
+	checkButton.props.onClick({});
+	runtime.flush();
+	assert(updateText(runtime).includes("Checking…"), "the checking state is not shown");
+	await settle(runtime);
+	assert(scenario.fetch.checkCalls.length === 1, `expected one check, saw ${scenario.fetch.checkCalls.length}`);
+	assert(scenario.fetch.checkCalls[0].method === "GET", "the check was not a GET");
+	assert(scenario.fetch.checkCalls[0].url === "api/session-log-upload.update-check", `check fetched ${JSON.stringify(scenario.fetch.checkCalls[0].url)}`);
+	assert(updateText(runtime).includes("Already up to date (1.2.0)."), `the up-to-date state is missing: ${updateText(runtime)}`);
+	assert(updateButton(runtime, "upgrade") === undefined, "the upgrade control exists when already current");
+	// 2. update available: version, notes and file count, plus the upgrade action.
+	updateButton(runtime, "check").props.onClick({});
+	await settle(runtime);
+	assert(updateText(runtime).includes("Version 1.2.0 is available."), `the available state is missing: ${updateText(runtime)}`);
+	assert(updateText(runtime).includes("Adds the in-app update block"), "the notes are missing");
+	assert(updateText(runtime).includes("Files: 2"), `the file count is missing: ${JSON.stringify(updateText(runtime))}`);
+	assert(updateButton(runtime, "upgrade") !== undefined, "no upgrade control for an available update");
+	// 3. check failed: the Host's error string is shown and the upgrade action is gone.
+	updateButton(runtime, "check").props.onClick({});
+	await settle(runtime);
+	assert(updateText(runtime).includes("Update check failed: manifest unreachable"), `the failed state is missing: ${updateText(runtime)}`);
+	assert(updateButton(runtime, "upgrade") === undefined, "the upgrade control survived a failed check");
+	// The reported values come from the payload, not from the page.
+	assert(updateValue(runtime, "current") === "1.0.0", `current version after checking: ${JSON.stringify(updateValue(runtime, "current"))}`);
+	assert(updateValue(runtime, "manifest") === "https://example.test/update-manifest.json", `manifest after checking: ${JSON.stringify(updateValue(runtime, "manifest"))}`);
+	assert(radios(runtime).length === 4, "the section stopped rendering its mode controls");
+	return "no fetch on mount, checking state, up to date, available with notes/files, failed with the Host error";
+});
+
+// 47 ─ the upgrade gate: consent first, then phases, then done ────────────────────────────────
+await checkAsync("update-gate", "the upgrade runs only after the consent dialog, shows phases, and reports the new version", async () => {
+	const scenario = await updateScenario({ checks: [ UPDATE_AVAILABLE ], apply: { defer: true }, fakeTimer: true });
+	const runtime = scenario.runtime;
+	updateButton(runtime, "check").props.onClick({});
+	await settle(runtime);
+	assert(updateButton(runtime, "upgrade") !== undefined, "no upgrade control for an available update");
+	assert(scenario.fetch.applyCalls.length === 0, "an apply request happened before any click");
+	updateButton(runtime, "upgrade").props.onClick({});
+	runtime.flush();
+	assert(scenario.fetch.applyCalls.length === 0, "an apply request happened before the dialog was confirmed");
+	const opened = dialog(runtime);
+	assert(opened !== undefined, "the upgrade did not open the consent dialog");
+	const body = textOf(opened);
+	assert(/downloaded and replaced/.test(body), `the body does not mention replacing files: ${body}`);
+	assert(/rolls back automatically/.test(body), `the body does not mention the automatic rollback: ${body}`);
+	assert(/restarted/.test(body), `the body does not mention the required restart: ${body}`);
+	assert(/not signed/.test(body), `the body does not say the manifest is unsigned: ${body}`);
+	assert(body.includes("https://example.test/update-manifest.json"), "the dialog does not name the manifest (the trust root)");
+	// Confirm: the POST starts, and the phases are observable while it is pending.
+	clickButton(runtime, "Upgrade");
+	runtime.flush();
+	assert(scenario.fetch.applyCalls.length === 1, `expected one apply POST, saw ${scenario.fetch.applyCalls.length}`);
+	assert(scenario.fetch.applyCalls[0].method === "POST", "the apply was not a POST");
+	assert(scenario.fetch.applyCalls[0].url === "api/session-log-upload.update-apply", `apply fetched ${JSON.stringify(scenario.fetch.applyCalls[0].url)}`);
+	assert(scenario.fetch.applyCalls[0].body === "{}", `the apply body is ${JSON.stringify(scenario.fetch.applyCalls[0].body)}, expected {}`);
+	assert(updateText(runtime).includes("Downloading the update…"), `the downloading phase is missing: ${updateText(runtime)}`);
+	scenario.timers[0]();
+	runtime.flush();
+	assert(updateText(runtime).includes("Writing the files…"), `the writing phase is missing: ${updateText(runtime)}`);
+	// Release the apply: done shows the new version, the backup directory and the restart hint.
+	scenario.fetch.controls[0].resolve(UPDATE_APPLY_OK);
+	await settle(runtime);
+	assert(updateText(runtime).includes("Updated to version 1.2.0."), `the done state is missing: ${updateText(runtime)}`);
+	assert(updateValue(runtime, "backup") === UPDATE_APPLY_OK.backupDir, `backup directory: ${JSON.stringify(updateValue(runtime, "backup"))}`);
+	assert(updateText(runtime).includes("Restart DSH for the new version to take effect."), "the restart hint is missing");
+	assert(updateText(runtime).includes("Plugin update"), "the block disappeared after the upgrade");
+	assert(radios(runtime).length === 4, "the section stopped rendering during the upgrade");
+	return "upgrade only after consent, body covers replace/rollback/restart/unsigned, phases downloading+writing+done, backup and restart shown";
+});
+
+// 48 ─ a failed apply keeps the block rendered and names the reason ───────────────────────────
+await checkAsync("update-failed", "a failed apply shows the failure and leaves the block usable", async () => {
+	const scenario = await updateScenario({
+		checks: [ UPDATE_AVAILABLE ],
+		apply: { status: 200, body: { ok: false, from: "1.0.0", to: null, files: [], backupDir: null, reload: null, error: "sha256 mismatch on client.js" } }
+	});
+	const runtime = scenario.runtime;
+	updateButton(runtime, "check").props.onClick({});
+	await settle(runtime);
+	updateButton(runtime, "upgrade").props.onClick({});
+	runtime.flush();
+	clickButton(runtime, "Upgrade");
+	await settle(runtime);
+	assert(updateText(runtime).includes("Update failed: sha256 mismatch on client.js"), `the failure is not shown: ${updateText(runtime)}`);
+	assert(updateText(runtime).includes("Plugin update"), "the block disappeared after a failed apply");
+	assert(updateButton(runtime, "check") !== undefined, "the check control disappeared after a failed apply");
+	assert(updateButton(runtime, "upgrade") !== undefined, "the update can no longer be retried after a failure");
+	assert(updateValue(runtime, "current") === "1.0.0", "the reported version disappeared after a failed apply");
+	assert(radios(runtime).length === 4, "the section stopped rendering after a failed apply");
+	return "failed apply names the Host error, block and retry stay rendered";
 });
 
 console.log("");

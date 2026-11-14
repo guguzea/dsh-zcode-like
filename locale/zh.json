@@ -135,5 +135,30 @@
     "warnTitle": "要把这些会话发送到下面的目标吗？",
     "warnBody": "这些不是 DSH 会话。发出去的内容会被包装成一段 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
     "warnConfirm": "发送"
+  },
+  "update": {
+    "title": "插件更新",
+    "currentVersion": "当前版本",
+    "manifestUrl": "清单地址",
+    "notReported": "宿主未报告",
+    "check": "检查更新",
+    "checking": "正在检查…",
+    "upToDate": "已是最新版本（{version}）。",
+    "available": "发现新版本 {version}。",
+    "notes": "更新说明",
+    "fileCount": "文件数：{count}",
+    "checkFailed": "检查更新失败：",
+    "checkUnreadable": "没有读到宿主的结果。",
+    "upgrade": "立即升级",
+    "warnTitle": "要立即升级插件吗？",
+    "warnBody": "会下载并替换插件自己的文件。升级失败会自动回滚。升级完成后需要重启 DSH，新版本才会生效。这个清单没有签名，信任根是本机到清单地址的 HTTPS。",
+    "warnConfirm": "立即升级",
+    "phaseDownloading": "正在下载更新…",
+    "phaseWriting": "正在写入文件…",
+    "done": "已升级到 {version}。",
+    "backupDir": "备份目录",
+    "restartHint": "重启 DSH 后新版本才会生效。",
+    "applyFailed": "升级失败：",
+    "applyErrorUnknown": "未知错误"
   }
 }

@@ -191,7 +191,7 @@ check('undefined / null / non-object inputs and every unknown-string spelling gi
   for (const raw of hostile) {
     const resolved = resolveConfig(raw)
     assert.equal(resolved.mode, 'official-only', `resolveConfig(${describe(raw)}) widened to ${resolved.mode}`)
-    assert.deepEqual(Object.keys(resolved).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
+    assert.deepEqual(Object.keys(resolved).sort(), [ 'credentialRef', 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadModel', 'uploadSessionIds' ])
   }
 })
 
@@ -1646,14 +1646,14 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   // integer step and its `min(1)` and stays volatile, and that `endpoint` stays a pattern-free volatile
   // string — not that the default was typed out twice.
   assert.match(source, /maxBytes: z\.number\(\)\.step\(1\)\.min\(1\)\.default\(DEFAULT_MAX_BYTES\)\.volatile\(\)/)
-  // RETARGETED: seven fields are volatile now — `mode` (the consent switch), the four editable lists
+  // RETARGETED: eight fields are volatile now — `mode` (the consent switch), the four editable lists
   // (`deepseekModelPatterns`, so a user can mark a proxy's renamed model as DeepSeek;
   // `uploadDirectories`, the directory allowlist; `uploadSessionIds`, the per-Session allowlist;
   // `foreignSessionIds`, the other-harness ticks), `endpoint` (so the dialog can name a real
   // destination) and `maxBytes` (so the page can report the cap). Those are exactly the `readLive`
   // unwraps; `uploadModel` and `credentialRef` must stay non-volatile.
   const volatileCount = [...source.matchAll(/\.volatile\(\)/g)].length
-  assert.equal(volatileCount, 7, `expected exactly seven .volatile() fields, found ${volatileCount}`)
+  assert.equal(volatileCount, 8, `expected exactly eight .volatile() fields, found ${volatileCount}`)
   assert.match(source, /endpoint: z\.string\(\)\.default\(DEFAULT_ENDPOINT\)\.volatile\(\)/)
   const declaration = source.slice(source.indexOf('Config = z.object({'), source.indexOf('})', source.indexOf('Config = z.object({')))
   const volatileFields = declaration
@@ -1664,7 +1664,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   if (declaration.includes('mode: modeField(z)')) volatileFields.push('mode')
   assert.deepEqual(
     volatileFields.sort(),
-    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'uploadDirectories', 'uploadSessionIds' ],
+    [ 'deepseekModelPatterns', 'endpoint', 'foreignSessionIds', 'maxBytes', 'mode', 'updateUrl', 'uploadDirectories', 'uploadSessionIds' ],
     `volatile fields: ${volatileFields.join(', ')}`,
   )
   for (const key of ['uploadModel', 'credentialRef']) {
@@ -1688,12 +1688,16 @@ check('FIXED: the schema now constrains `mode` to the four frozen ids', () => {
 // ══ 9. dependency-freedom ══════════════════════════════════════════════════════════════════════
 console.log('\n9. dependency-freedom')
 
-const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'host/foreign-forge.js', 'host/foreign/index.js', 'host/foreign/shared.js', 'host/foreign/zcode.js', 'host/foreign/qoder.js', 'host/foreign/cursor.js', 'host/foreign/workbuddy.js', 'host/foreign/cline.js', 'client.js']
+const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'host/foreign-forge.js', 'host/foreign/index.js', 'host/foreign/shared.js', 'host/foreign/zcode.js', 'host/foreign/qoder.js', 'host/foreign/cursor.js', 'host/foreign/workbuddy.js', 'host/foreign/cline.js', 'host/update.js', 'client.js']
 
 check('every static import/require in every shipped file is node: or relative (react/react-dom excepted)', () => {
   const offenders = []
   for (const file of SHIPPED_FILES) {
+    // A comment cannot import anything, and prose that happens to read `from "downloading"` is not a
+    // bare specifier. Strip comments first so this scan reports code only.
     const source = readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
     const specifiers = [
       ...[...source.matchAll(/\bfrom\s+["']([^"']+)["']/g)].map((m) => m[1]),
       ...[...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]),
@@ -1890,7 +1894,7 @@ await checkAsync('the ledger route is registered exactly as Connection expects, 
   handle.cleanup()
   // Both routes are registered through their own `ctx.effect`, so an unload disposes both. The
   // property is that every registration has a disposer — not that there is exactly one of them.
-  assert.equal(state.routeDisposed, 5, `expected all five route registrations to be disposed, saw ${state.routeDisposed}`)
+  assert.equal(state.routeDisposed, 7, `expected all seven route registrations to be disposed, saw ${state.routeDisposed}`)
 })
 
 await checkAsync('the ledger answers 200 JSON, no-store, and its handler is total', async () => {
@@ -2083,7 +2087,7 @@ await checkAsync('A6 NON-VACUITY: with the ledger wrapper removed, the very same
   // protects the ledger registration, and drive the identical harness against the clone.
   const source = readFileSync('index.js', 'utf8')
   const withUrl = source.replace(/from '\.\/([^']+)'/g, (_match, rest) => `from '${pathToFileURL(resolve(rest)).href}'`)
-  assert.equal((source.match(/from '\.\//g) ?? []).length, 9, 'the relative-import shape of index.js changed')
+  assert.equal((source.match(/from '\.\//g) ?? []).length, 10, 'the relative-import shape of index.js changed')
   assert.notEqual(withUrl, source)
   const structure = codeStructure(withUrl)
   // Excise the wrapper around exactly one registration: the `try {` … `} catch (…) { … }` that encloses

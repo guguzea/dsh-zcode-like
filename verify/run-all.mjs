@@ -16,6 +16,10 @@ const SUITE = [
   ['implementer client checks', 'client-check.mjs'],
   ['other-harness adapters', 'foreign-adapters.mjs'],
   ['other-harness envelope forging', 'foreign-forge.mjs'],
+  ['in-app update (download, verify, backup, rollback)', 'update.mjs'],
+  // A released manifest that disagrees with the tree on disk would ship a broken or refused update, so
+  // this is part of the suite rather than a release-only step.
+  ['update manifest matches the files on disk', 'build-update-manifest.mjs', ['--check']],
   ['payload fidelity (differential vs the shipped uploader)', 'fidelity.mjs'],
   ['host adversarial checks', 'adversarial-host.mjs'],
   ['client consent-gate checks', 'adversarial-client.mjs'],
@@ -24,10 +28,10 @@ const SUITE = [
 ]
 
 const results = []
-for (const [title, name] of SUITE) {
+for (const [title, name, args] of SUITE) {
   const path = fileURLToPath(new URL(name, import.meta.url))
-  console.log(`\n${'='.repeat(78)}\n=== ${title}  (${name})\n${'='.repeat(78)}`)
-  const run = spawnSync(process.execPath, [path], { stdio: 'inherit' })
+  console.log(`\n${'='.repeat(78)}\n=== ${title}  (${name}${args === undefined ? '' : ` ${args.join(' ')}`})\n${'='.repeat(78)}`)
+  const run = spawnSync(process.execPath, [path, ...(args ?? [])], { stdio: 'inherit' })
   if (run.error) console.log(`SUITE FAILED TO START: ${run.error.message}`)
   results.push([title, run.status === 0])
 }

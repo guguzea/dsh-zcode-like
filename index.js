@@ -28,7 +28,7 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   MODES,
@@ -39,6 +39,7 @@ import {
   DEFAULT_UPLOAD_SESSION_IDS,
   DEFAULT_FOREIGN_SESSION_IDS,
   DEFAULT_MAX_BYTES,
+  DEFAULT_UPDATE_URL,
   DEFAULT_UPLOAD_MODEL,
   isUploadAllowed,
   resolveConfig,
@@ -49,6 +50,7 @@ import { FailureStore } from './host/failure.js'
 import { scanAll, readForeignSession } from './host/foreign/index.js'
 import { forgeSession, buildForeignField } from './host/foreign-forge.js'
 import { NoticeStore } from './host/notice.js'
+import { applyUpdate, checkUpdate } from './host/update.js'
 import { WatermarkStore, defaultWatermarkDirectory } from './host/watermark.js'
 import { uploadLogField } from './host/upload.js'
 
@@ -167,6 +169,10 @@ try {
         uploadModel: z.string().default(DEFAULT_UPLOAD_MODEL),
         credentialRef: z.string().default(DEFAULT_CREDENTIAL_REF),
         maxBytes: z.number().step(1).min(1).default(DEFAULT_MAX_BYTES).volatile(),
+        // Where in-app updates come from. Volatile so the page can show it and a user can point it at a
+        // fork or mirror; an unusable value narrows back to the default, and the updater refuses a
+        // non-http(s) address again before any fetch.
+        updateUrl: z.string().default(DEFAULT_UPDATE_URL).volatile(),
       })
     }
   }
@@ -420,6 +426,21 @@ export const FOREIGN_SCAN_ROUTE_PATH = '/api/session-log-upload.foreign-scan'
 /** The other-harness send route: `POST {id}` sends exactly one conversation, so progress and errors map
  * to a row instead of to a batch that may have half-succeeded. */
 export const FOREIGN_UPLOAD_ROUTE_PATH = '/api/session-log-upload.foreign-upload'
+
+/**
+ * The in-app update: `GET` checks the manifest, `POST` performs the replacement.
+ *
+ * A GET must never write, so the two verbs are split rather than one route with a body flag. Both sit on
+ * the authenticated registry: an unauthenticated POST here would let any local process replace the
+ * plugin's own code.
+ */
+export const UPDATE_CHECK_ROUTE_PATH = '/api/session-log-upload.update-check'
+
+/** The update apply route: `POST {}` downloads, verifies, backs up and replaces this plugin's files. */
+export const UPDATE_APPLY_ROUTE_PATH = '/api/session-log-upload.update-apply'
+
+/** The directory this plugin runs from: the one holding index.js and package.json. */
+const PLUGIN_DIRECTORY = fileURLToPath(new URL('.', import.meta.url))
 
 /**
  * How much of one foreign conversation an import reads before giving up, in bytes.
@@ -1530,6 +1551,40 @@ export function apply(ctx, rawConfig) {
   }
 
   /**
+   * The update check. Total and read-only: `checkUpdate` fetches and validates the manifest, compares
+   * versions and reports what it found, and writes nothing.
+   *
+   * The destination is read live (`updateUrl` is volatile), so pointing the plugin at a fork takes effect
+   * on the next check without a row restart, exactly like `endpoint`.
+   */
+  async function updateCheckPayload() {
+    return await checkUpdate({
+      fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
+      manifestUrl: currentConfig().updateUrl,
+      directory: PLUGIN_DIRECTORY,
+    })
+  }
+
+  /**
+   * The update itself: download, verify every byte, back up, replace, verify the read-back.
+   *
+   * The request body is deliberately ignored. The action takes no parameters, so there is nothing a
+   * caller could pass to redirect the writer at a different directory or manifest — both come from this
+   * closure. `applyUpdate` is all-or-nothing and restores the backups on any failure.
+   */
+  async function updateApplyPayload() {
+    const result = await applyUpdate({
+      fetchImpl: typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined,
+      manifestUrl: currentConfig().updateUrl,
+      directory: PLUGIN_DIRECTORY,
+    })
+    if (result !== null && result !== undefined && result.ok === true) {
+      log('info', `session-log-upload: updated from ${String(result.from)} to ${String(result.to)}; restart DSH to load it`)
+    }
+    return result
+  }
+
+  /**
    * Register the read-only ledger and scan routes on the connection service.
    *
    * `connection` is deliberately **not** in this row's `inject`: the plugin must stay active where
@@ -1598,6 +1653,21 @@ export function apply(ctx, rawConfig) {
         // One conversation per request: the page drives it serially so a failure names a row.
         payload: (request) => foreignUploadPayload(request),
         what: 'the Settings page cannot send conversations from other harnesses',
+      },
+      {
+        path: UPDATE_CHECK_ROUTE_PATH,
+        effect: 'session-log-upload: update check route',
+        methods: ['GET'],
+        payload: () => updateCheckPayload(),
+        what: 'the Settings page cannot check whether a newer version exists',
+      },
+      {
+        path: UPDATE_APPLY_ROUTE_PATH,
+        effect: 'session-log-upload: update apply route',
+        // POST only: this replaces the plugin's own files, and a GET must never write.
+        methods: ['POST'],
+        payload: () => updateApplyPayload(),
+        what: 'the Settings page cannot apply an update in-app (update by hand instead)',
       },
     ]
     for (const route of routes) {

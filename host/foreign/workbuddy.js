@@ -17,6 +17,13 @@
  * becomes a `reasoning` block; each `function_call` becomes a one-line text placeholder; tool
  * results and snapshots are not conversation content.
  *
+ * WorkBuddy also records delegated conversations at
+ * `<project>/<sessionId>/subagents/agent-<agentId>.jsonl`, with the same record stream as a
+ * top-level session (the record's own `sessionId` there names the sub-agent, not the parent). Those
+ * are listed with `parentId = <sessionId>` and addressed by the raw id
+ * `<sessionId>/subagents/<fileStem>`; their title is the first user text. The `subagents` directory
+ * also holds `agent-<id>` working directories and non-JSONL files, which are never transcripts.
+ *
  * @module session-log-upload/foreign/workbuddy
  */
 
@@ -24,17 +31,23 @@ import { join } from 'node:path'
 
 import {
   HEAD_BYTES,
+  SUBAGENTS_DIRECTORY,
+  baseNameWithoutExtension,
   countJsonlMessages,
   emptyScan,
   emptySession,
   findChildFile,
   firstText,
+  formatSubagentId,
   homeOf,
   isAborted,
+  isFile,
+  isSafeIdSegment,
   isSafeSessionId,
   listDirSafe,
   maxBytesOf,
   messageOf,
+  parseSubagentId,
   readHead,
   readJsonl,
   readScanCache,
@@ -80,9 +93,11 @@ function isMessageLine(prefix) {
 /**
  * Recover the metadata a scan row needs from the transcript's leading records.
  * @param head the first {@link HEAD_BYTES} of the file.
+ * @param options `{ignoreGeneratedTitle?}`: a delegated transcript is titled by its first user text,
+ *   so the generated-title preference is not applied there.
  * @returns `{id, title, cwd, createdAt, model}`; every field is `''`/`0` when unobserved.
  */
-function describeHead(head) {
+function describeHead(head, { ignoreGeneratedTitle = false } = {}) {
   const described = { id: '', title: '', cwd: '', createdAt: 0, model: '' }
   // WorkBuddy's own title is a better name than the first user prompt, but it is written a few
   // records after the message it summarises, so it is remembered and wins at the end.
@@ -116,7 +131,7 @@ function describeHead(head) {
       if (described.cwd.length === 0) described.cwd = textOf(record.cwd)
     }
   }
-  if (generatedTitle.length > 0) described.title = generatedTitle
+  if (!ignoreGeneratedTitle && generatedTitle.length > 0) described.title = generatedTitle
   return described
 }
 
@@ -128,22 +143,28 @@ function assistantModel(record) {
 }
 
 /**
- * Build one scan row for a transcript.
+ * Build one scan row for a transcript, top-level or delegated.
  * @param filePath transcript path.
  * @param fileName transcript file name, used for the id fallback.
  * @param info the file's `Stats`.
- * @returns a contract session summary; never throws.
+ * @param lineage `null` for a top-level transcript, `{parentId}` for a delegated one.
+ * @returns a contract session summary, or `null` when the file name cannot produce a safe id.
  */
-async function describeFile(filePath, fileName, info) {
+async function describeFile(filePath, fileName, info, lineage) {
   const cached = readScanCache(filePath, info)
   if (cached !== null) {
     return { ...cached, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
   }
+  const delegated = lineage !== null
   const head = await readHead(filePath, HEAD_BYTES)
-  const described = describeHead(head ?? '')
+  const described = describeHead(head ?? '', { ignoreGeneratedTitle: delegated })
+  const stem = baseNameWithoutExtension(fileName)
+  // The file name is what `readSession` resolves, so it is the session id the page can round-trip;
+  // a delegated transcript is addressed by `<parent>/subagents/<fileStem>` instead.
+  const id = delegated ? formatSubagentId(lineage.parentId, stem) : stem || described.id
+  if (delegated ? !isSafeIdSegment(stem) : !isSafeSessionId(id)) return null
   const summary = {
-    // The file name is what `readSession` resolves, so it is the session id the page can round-trip.
-    id: fileName.slice(0, -'.jsonl'.length) || described.id,
+    id,
     title: described.title,
     cwd: described.cwd,
     createdAt: described.createdAt,
@@ -151,12 +172,13 @@ async function describeFile(filePath, fileName, info) {
     model: described.model,
     messageCount: await countJsonlMessages(filePath, isMessageLine),
   }
+  if (delegated) summary.parentId = lineage.parentId
   writeScanCache(filePath, info, summary)
   return { ...summary, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
 }
 
 /**
- * List every WorkBuddy conversation, metadata only.
+ * List every WorkBuddy conversation, top-level and delegated, metadata only.
  * @param options `{home, signal?}`.
  * @returns the contract's `scan` result; never throws.
  */
@@ -174,11 +196,32 @@ export async function scan(options) {
       if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
       const projectPath = join(projectsDirectory(home), project.name)
       for (const entry of await listDirSafe(projectPath)) {
-        if (entry.isFile() !== true || entry.name.endsWith('.jsonl') !== true) continue
-        const filePath = join(projectPath, entry.name)
-        const info = await statSafe(filePath)
-        if (info === null) continue
-        sessions.push(await describeFile(filePath, entry.name, info))
+        if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
+        if (entry.isFile() === true) {
+          if (entry.name.endsWith('.jsonl') !== true) continue
+          const filePath = join(projectPath, entry.name)
+          const info = await statSafe(filePath)
+          if (info === null || info.isFile() !== true) continue
+          const row = await describeFile(filePath, entry.name, info, null)
+          if (row !== null) sessions.push(row)
+          continue
+        }
+        if (entry.isDirectory() !== true) continue
+        // `<sessionId>/subagents/agent-<agentId>.jsonl`: the directory name is the parent session.
+        const parentId = entry.name
+        if (!isSafeIdSegment(parentId)) continue
+        const subagentsDirectory = join(projectPath, parentId, SUBAGENTS_DIRECTORY)
+        for (const subagentFile of await listDirSafe(subagentsDirectory)) {
+          if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
+          // This directory also holds `agent-<id>` working directories and tool output; only a
+          // regular `.jsonl` file is a transcript.
+          if (subagentFile.isFile() !== true || subagentFile.name.endsWith('.jsonl') !== true) continue
+          const subagentPath = join(subagentsDirectory, subagentFile.name)
+          const info = await statSafe(subagentPath)
+          if (info === null || info.isFile() !== true) continue
+          const row = await describeFile(subagentPath, subagentFile.name, info, { parentId })
+          if (row !== null) sessions.push(row)
+        }
       }
     }
     sessions.sort((left, right) => right.updatedAt - left.updatedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
@@ -227,17 +270,39 @@ function reasoningBlocks(value) {
 }
 
 /**
- * Read one WorkBuddy conversation.
- * @param id the raw WorkBuddy session id (without the `workbuddy/` prefix).
+ * Locate one delegated transcript: `<project>/<parentId>/subagents/<subagentId>.jsonl`, across the
+ * project directories (the project name is a lossy encoding of the cwd, so it is not known here).
+ * @param home the home directory.
+ * @param parentId the validated parent session id.
+ * @param subagentId the validated sub-agent id.
+ * @returns the file path, or `null`.
+ */
+async function findSubagentFile(home, parentId, subagentId) {
+  for (const project of await listDirSafe(projectsDirectory(home))) {
+    if (project.isDirectory() !== true) continue
+    const candidate = join(projectsDirectory(home), project.name, parentId, SUBAGENTS_DIRECTORY, `${subagentId}.jsonl`)
+    if (await isFile(candidate)) return candidate
+  }
+  return null
+}
+
+/**
+ * Read one WorkBuddy conversation, top-level or delegated.
+ * @param id the raw WorkBuddy id (without the `workbuddy/` prefix): a session id, or
+ *   `<sessionId>/subagents/<fileStem>`.
  * @param options `{home, signal?, maxBytes?}`.
  * @returns the contract's `readSession` result; never throws.
  */
 export async function readSession(id, options) {
   try {
-    if (!isSafeSessionId(id)) return emptySession('invalid-id')
+    const delegated = parseSubagentId(id)
+    if (delegated === null && !isSafeSessionId(id)) return emptySession('invalid-id')
     const home = homeOf(options)
     if (home.length === 0) return emptySession('not-found')
-    const filePath = await findChildFile(projectsDirectory(home), `${id}.jsonl`)
+    const filePath =
+      delegated === null
+        ? await findChildFile(projectsDirectory(home), `${id}.jsonl`)
+        : await findSubagentFile(home, delegated.parentId, delegated.subagentId)
     if (filePath === null) return emptySession('not-found')
     const info = await statSafe(filePath)
     const result = {
@@ -275,7 +340,9 @@ export async function readSession(id, options) {
       }
       if (type === 'ai-title') {
         const title = titleOf(record.aiTitle)
-        if (title.length > 0) result.title = title
+        // A delegated conversation is titled by its first user text, matching its scan row, so a
+        // generated title must not replace it; an ordinary session keeps the better generated title.
+        if (!delegated && title.length > 0) result.title = title
         if (result.cwd.length === 0) result.cwd = textOf(record.cwd)
         if (result.createdAt === 0) result.createdAt = toMillis(record.timestamp)
         return

@@ -105,6 +105,10 @@ export function toMillis(value) {
  * escape the harness directory, and the adapters that use SQL still reject a nonsense id up front
  * rather than querying for it. These stores only ever name sessions with `[A-Za-z0-9_.-]`.
  *
+ * This is the *top-level* form: one path component. A delegated conversation is addressed by the
+ * composite raw id `<parentId>/subagents/<subagentId>` instead, which {@link parseSubagentId}
+ * validates segment by segment.
+ *
  * @param value candidate id.
  * @returns `true` when the id can be used verbatim.
  */
@@ -115,6 +119,87 @@ export function isSafeSessionId(value) {
     value.length <= 300 &&
     /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)
   )
+}
+
+/** The directory every harness stores delegated transcripts under, inside the parent session's dir. */
+export const SUBAGENTS_DIRECTORY = 'subagents'
+
+/** Longest raw id worth inspecting. The registry caps a whole composite id at 400 characters. */
+export const MAX_RAW_ID_LENGTH = 400
+
+/** Most segments a raw id may have. A delegated id has exactly three; the cap also bounds hostile input. */
+export const MAX_RAW_ID_SEGMENTS = 4
+
+/** One whole path segment of a raw id. `..`/`.` are rejected separately by {@link isSafeIdSegment}. */
+const ID_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/
+
+/**
+ * One segment of a delegated-conversation raw id: `[A-Za-z0-9._-]+`, never `.` or `..`.
+ *
+ * The composite contract lets an id contain `/`, so every segment is validated on its own before it
+ * is used as a path component. A segment that is exactly `..` would escape the harness tree, and an
+ * empty segment (a leading, trailing or doubled slash) would silently address the current directory,
+ * so both are rejected here rather than left to the filesystem.
+ *
+ * @param value candidate segment.
+ * @returns `true` when the segment can be used as exactly one path component.
+ */
+export function isSafeIdSegment(value) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 300 &&
+    value !== '.' &&
+    value !== '..' &&
+    ID_SEGMENT_PATTERN.test(value)
+  )
+}
+
+/**
+ * Split a raw id on `/` and validate every segment, or return `null`.
+ *
+ * `null` covers every rejection: a non-string, an empty id, an over-long id, more than
+ * {@link MAX_RAW_ID_SEGMENTS} segments, an empty segment (leading/trailing/doubled slash, which also
+ * catches absolute POSIX paths), and a segment that is not `[A-Za-z0-9._-]+` (which catches a Windows
+ * drive letter or a backslash). Callers only pass the result to `path.join` after this returns.
+ *
+ * @param value candidate raw id.
+ * @returns the validated segments, or `null`.
+ */
+export function splitRawId(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_RAW_ID_LENGTH) return null
+  const segments = value.split('/')
+  if (segments.length > MAX_RAW_ID_SEGMENTS) return null
+  for (const segment of segments) if (!isSafeIdSegment(segment)) return null
+  return segments
+}
+
+/**
+ * Parse a delegated-conversation raw id: `<parentId>/subagents/<subagentId>`.
+ *
+ * Exactly three segments are accepted, and the middle one must literally be `subagents`. Anything
+ * else — a top-level id (one segment), a two-segment fragment, a four-segment path trying to walk
+ * deeper — is not a delegated id and returns `null`. The adapter then falls back to its top-level
+ * resolution (or reports `invalid-id`), so an over-deep id can never be joined onto a path.
+ *
+ * @param value candidate raw id, without the harness prefix.
+ * @returns `{parentId, subagentId}` or `null`.
+ */
+export function parseSubagentId(value) {
+  const segments = splitRawId(value)
+  if (segments === null || segments.length !== 3) return null
+  if (segments[1] !== SUBAGENTS_DIRECTORY) return null
+  return { parentId: segments[0], subagentId: segments[2] }
+}
+
+/**
+ * The raw id of one delegated conversation, in the contract's fixed form.
+ * @param parentId the parent conversation's raw id.
+ * @param subagentId the delegated transcript's own id (the file name without `.jsonl`).
+ * @returns `<parentId>/subagents/<subagentId>`.
+ */
+export function formatSubagentId(parentId, subagentId) {
+  return `${textOf(parentId)}/${SUBAGENTS_DIRECTORY}/${textOf(subagentId)}`
 }
 
 /**

@@ -11,6 +11,11 @@
  * path (separators, underscores and real dashes all become `-`), so decoding it would be a guess,
  * and the contract says a value that cannot be recovered is an empty string, not an invention.
  *
+ * Cursor also records delegated conversations one level down:
+ * `<project>/agent-transcripts/<sessionId>/subagents/<subagentId>.jsonl`, in exactly the same line
+ * shape as a top-level transcript. Those are listed with `parentId = <sessionId>` and addressed by
+ * the raw id `<sessionId>/subagents/<subagentId>`; the title is the first user text, as above.
+ *
  * @module session-log-upload/foreign/cursor
  */
 
@@ -18,16 +23,22 @@ import { join } from 'node:path'
 
 import {
   HEAD_BYTES,
+  SUBAGENTS_DIRECTORY,
+  baseNameWithoutExtension,
   countJsonlMessages,
   emptyScan,
   emptySession,
   firstText,
+  formatSubagentId,
   homeOf,
   isAborted,
+  isFile,
+  isSafeIdSegment,
   isSafeSessionId,
   listDirSafe,
   maxBytesOf,
   messageOf,
+  parseSubagentId,
   readHead,
   readJsonl,
   readScanCache,
@@ -107,13 +118,14 @@ async function transcriptFile(directory, id) {
 }
 
 /**
- * Build one scan row for a transcript.
+ * Build one scan row for a transcript, top-level or delegated.
  * @param filePath transcript path.
- * @param id the conversation directory name, which is the id `readSession` resolves again.
+ * @param id the raw id `readSession` resolves again (one segment, or `parent/subagents/child`).
  * @param info the file's `Stats`.
+ * @param parentId the parent conversation id for a delegated transcript, `''` for a top-level one.
  * @returns a contract session summary; never throws.
  */
-async function describeFile(filePath, id, info) {
+async function describeFile(filePath, id, info, parentId = '') {
   const cached = readScanCache(filePath, info)
   if (cached !== null) {
     return { ...cached, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
@@ -128,12 +140,13 @@ async function describeFile(filePath, id, info) {
     model: '',
     messageCount: await countJsonlMessages(filePath, isMessageLine),
   }
+  if (parentId.length > 0) summary.parentId = parentId
   writeScanCache(filePath, info, summary)
   return { ...summary, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
 }
 
 /**
- * List every Cursor conversation, metadata only.
+ * List every Cursor conversation, top-level and delegated, metadata only.
  * @param options `{home, signal?}`.
  * @returns the contract's `scan` result; never throws.
  */
@@ -152,12 +165,36 @@ export async function scan(options) {
       const transcripts = transcriptsDirectory(join(projectsDirectory(home), project.name))
       for (const conversation of await listDirSafe(transcripts)) {
         if (conversation.isDirectory() !== true) continue
+        if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
         const directory = join(transcripts, conversation.name)
         const filePath = await transcriptFile(directory, conversation.name)
-        if (filePath === null) continue
-        const info = await statSafe(filePath)
-        if (info === null || info.isFile() !== true) continue
-        sessions.push(await describeFile(filePath, conversation.name, info))
+        if (filePath !== null) {
+          const info = await statSafe(filePath)
+          if (info !== null && info.isFile() === true) {
+            sessions.push(await describeFile(filePath, conversation.name, info))
+          }
+        }
+        // Delegated transcripts live one level down and are listed even when the parent transcript
+        // itself has already been pruned; the parentId is the directory name either way.
+        if (!isSafeIdSegment(conversation.name)) continue
+        const subagentsDirectory = join(directory, SUBAGENTS_DIRECTORY)
+        for (const subagentFile of await listDirSafe(subagentsDirectory)) {
+          if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
+          if (subagentFile.isFile() !== true || subagentFile.name.endsWith('.jsonl') !== true) continue
+          const subagentId = baseNameWithoutExtension(subagentFile.name)
+          if (!isSafeIdSegment(subagentId)) continue
+          const subagentPath = join(subagentsDirectory, subagentFile.name)
+          const info = await statSafe(subagentPath)
+          if (info === null || info.isFile() !== true) continue
+          sessions.push(
+            await describeFile(
+              subagentPath,
+              formatSubagentId(conversation.name, subagentId),
+              info,
+              conversation.name,
+            ),
+          )
+        }
       }
     }
     sessions.sort((left, right) => right.updatedAt - left.updatedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
@@ -210,17 +247,37 @@ async function findTranscript(home, id) {
 }
 
 /**
- * Read one Cursor conversation.
- * @param id the raw Cursor conversation id (without the `cursor/` prefix).
+ * Locate one delegated transcript, `<conversation>/subagents/<subagentId>.jsonl`, across projects.
+ * @param home the home directory.
+ * @param parentId the validated parent conversation id.
+ * @param subagentId the validated sub-agent id.
+ * @returns the file path, or `null`.
+ */
+async function findSubagentTranscript(home, parentId, subagentId) {
+  for (const project of await listDirSafe(projectsDirectory(home))) {
+    if (project.isDirectory() !== true) continue
+    const directory = join(transcriptsDirectory(join(projectsDirectory(home), project.name)), parentId)
+    const candidate = join(directory, SUBAGENTS_DIRECTORY, `${subagentId}.jsonl`)
+    if (await isFile(candidate)) return candidate
+  }
+  return null
+}
+
+/**
+ * Read one Cursor conversation, top-level or delegated.
+ * @param id the raw Cursor id (without the `cursor/` prefix): a conversation id, or
+ *   `<sessionId>/subagents/<subagentId>`.
  * @param options `{home, signal?, maxBytes?}`.
  * @returns the contract's `readSession` result; never throws.
  */
 export async function readSession(id, options) {
   try {
-    if (!isSafeSessionId(id)) return emptySession('invalid-id')
+    const delegated = parseSubagentId(id)
+    if (delegated === null && !isSafeSessionId(id)) return emptySession('invalid-id')
     const home = homeOf(options)
     if (home.length === 0) return emptySession('not-found')
-    const filePath = await findTranscript(home, id)
+    const filePath =
+      delegated === null ? await findTranscript(home, id) : await findSubagentTranscript(home, delegated.parentId, delegated.subagentId)
     if (filePath === null) return emptySession('not-found')
     const info = await statSafe(filePath)
     const result = {

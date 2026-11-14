@@ -12,6 +12,13 @@
  * imported: a user record that is only a `tool_result` is a tool answer, not something the user
  * wrote, so it becomes no message at all. Tool calls keep their place as a one-line placeholder.
  *
+ * A conversation can also be delegated: Qoder records the sub-agent's turns as
+ * `<project>/<sessionId>/subagents/agent-<agentId>.jsonl`, next to a small
+ * `agent-<agentId>.meta.json` holding `{agentType, description, invocationName, color}`. Those are
+ * listed as their own rows with `parentId = <sessionId>` and addressed by the raw id
+ * `<sessionId>/subagents/<fileStem>`; the meta description is the best title Qoder stores, so it
+ * wins over `agentType`, which wins over the first user text.
+ *
  * The 264 MB transcript on this machine is why nothing here reads a file whole: metadata comes from
  * a capped head read, message counting is a bytes-only pass, and `readSession` streams to a byte
  * budget and reports `truncated`. The byte count of a whole-file pass is cached per file version.
@@ -19,22 +26,27 @@
  * @module session-log-upload/foreign/qoder
  */
 
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import {
   HEAD_BYTES,
+  SUBAGENTS_DIRECTORY,
   baseNameWithoutExtension,
   countJsonlMessages,
   emptyScan,
   emptySession,
   findChildFile,
   firstText,
+  formatSubagentId,
   homeOf,
   isAborted,
+  isFile,
+  isSafeIdSegment,
   isSafeSessionId,
   listDirSafe,
   maxBytesOf,
   messageOf,
+  parseSubagentId,
   readHead,
   readJsonl,
   readScanCache,
@@ -115,10 +127,13 @@ function contentBlocks(content, role) {
 
 /**
  * Recover the metadata a scan row needs from the transcript's leading records.
+ *
  * @param head the first {@link HEAD_BYTES} of the file.
+ * @param options `{preferRecordCwd?}`: a delegated transcript carries `cwd` on every turn instead of
+ *   a `workspace-directories` record, so its reader takes the first `cwd` it sees on any record.
  * @returns `{id, title, cwd, createdAt, model}`; every field is `''`/`0` when unobserved.
  */
-function describeHead(head) {
+function describeHead(head, { preferRecordCwd = false } = {}) {
   const described = { id: '', title: '', cwd: '', createdAt: 0, model: '' }
   for (const line of head.split('\n')) {
     if (line.length === 0) continue
@@ -130,6 +145,7 @@ function describeHead(head) {
     }
     if (record === null || typeof record !== 'object' || Array.isArray(record)) continue
     if (described.id.length === 0) described.id = textOf(record.sessionId)
+    if (preferRecordCwd && described.cwd.length === 0) described.cwd = textOf(record.cwd)
     if (record.type === 'workspace-directories') {
       if (described.cwd.length === 0 && Array.isArray(record.directories)) {
         for (const directory of record.directories) {
@@ -156,37 +172,73 @@ function describeHead(head) {
   return described
 }
 
+/** How much of an `agent-*.meta.json` is read; the real files are a few hundred bytes. */
+const META_BYTES = 64 * 1024
+
 /**
- * Build one scan row for a transcript.
+ * Read one delegated transcript's `.meta.json`, which Qoder writes beside the JSONL.
+ *
+ * The file is tiny and is never a transcript; it is read capped and parsed as one object. A missing,
+ * truncated or malformed meta file is simply no metadata, never an error for the whole scan.
+ *
+ * @param metaPath the sibling `.meta.json` path.
+ * @returns the parsed object, or `{}`.
+ */
+async function readAgentMeta(metaPath) {
+  const head = await readHead(metaPath, META_BYTES)
+  if (head === null) return {}
+  try {
+    const parsed = JSON.parse(head)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Build one scan row for a transcript, top-level or delegated.
+ *
  * @param filePath transcript path.
  * @param fileName transcript file name, used for the id fallback.
  * @param info the file's `Stats`.
- * @returns a contract session summary; never throws.
+ * @param lineage `null` for a top-level transcript, `{parentId}` for a delegated one.
+ * @returns a contract session summary, or `null` when the file name cannot produce a safe id.
  */
-async function describeFile(filePath, fileName, info) {
+async function describeTranscript(filePath, fileName, info, lineage) {
   const cached = readScanCache(filePath, info)
   if (cached !== null) {
     return { ...cached, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
   }
+  const delegated = lineage !== null
   const head = await readHead(filePath, HEAD_BYTES)
-  const described = describeHead(head ?? '')
+  const described = describeHead(head ?? '', { preferRecordCwd: delegated })
+  const stem = baseNameWithoutExtension(fileName)
+  let title = described.title
+  if (delegated) {
+    // Qoder's own agent label beats anything derived from the turns: description first, then type.
+    const meta = await readAgentMeta(join(dirname(filePath), `${stem}.meta.json`))
+    title = titleOf(meta.description) || titleOf(meta.agentType) || title
+  }
+  // `readSession` resolves a row back through its id, so an id that is not a safe raw id is not a row.
+  const id = delegated ? formatSubagentId(lineage.parentId, stem) : stem || described.id
+  if (delegated ? !isSafeIdSegment(stem) : !isSafeSessionId(id)) return null
   const summary = {
-    // The file name is what `readSession` can resolve back to this conversation, so it is the id;
-    // the record's own `sessionId` is only a fallback for a strangely named file.
-    id: baseNameWithoutExtension(fileName) || described.id,
-    title: described.title,
+    id,
+    title,
     cwd: described.cwd,
     createdAt: described.createdAt,
     provider: '',
     model: described.model,
     messageCount: await countJsonlMessages(filePath, isMessageLine),
   }
+  if (delegated) summary.parentId = lineage.parentId
   writeScanCache(filePath, info, summary)
   return { ...summary, updatedAt: Math.trunc(info.mtimeMs) || 0, bytes: Math.trunc(info.size) || 0 }
 }
 
 /**
- * List every Qoder conversation, metadata only.
+ * List every Qoder conversation, top-level and delegated, metadata only.
  * @param options `{home, signal?}`.
  * @returns the contract's `scan` result; never throws.
  */
@@ -202,12 +254,31 @@ export async function scan(options) {
     for (const project of await listProjects(home)) {
       if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
       const projectPath = join(projectsDirectory(home), project)
-      for (const entry of await listTranscripts(projectPath)) {
+      for (const entry of await listDirSafe(projectPath)) {
         if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
-        const filePath = join(projectPath, entry)
-        const info = await statSafe(filePath)
-        if (info === null || info.isFile() !== true) continue
-        sessions.push(await describeFile(filePath, entry, info))
+        if (entry.isFile() === true) {
+          if (entry.name.endsWith('.jsonl') !== true) continue
+          const filePath = join(projectPath, entry.name)
+          const info = await statSafe(filePath)
+          if (info === null || info.isFile() !== true) continue
+          const row = await describeTranscript(filePath, entry.name, info, null)
+          if (row !== null) sessions.push(row)
+          continue
+        }
+        if (entry.isDirectory() !== true) continue
+        // `<sessionId>/subagents/agent-<agentId>.jsonl`: the directory name is the parent session.
+        const parentId = entry.name
+        if (!isSafeIdSegment(parentId)) continue
+        const subagentsDirectory = join(projectPath, parentId, SUBAGENTS_DIRECTORY)
+        for (const subagentFile of await listDirSafe(subagentsDirectory)) {
+          if (isAborted(signal)) return { available: true, error: 'aborted', sessions }
+          if (subagentFile.isFile() !== true || subagentFile.name.endsWith('.jsonl') !== true) continue
+          const subagentPath = join(subagentsDirectory, subagentFile.name)
+          const info = await statSafe(subagentPath)
+          if (info === null || info.isFile() !== true) continue
+          const row = await describeTranscript(subagentPath, subagentFile.name, info, { parentId })
+          if (row !== null) sessions.push(row)
+        }
       }
     }
     sessions.sort((left, right) => right.updatedAt - left.updatedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
@@ -226,27 +297,51 @@ async function listProjects(home) {
   return names
 }
 
-/** The `*.jsonl` file names directly inside one project directory, or `[]`. */
-async function listTranscripts(projectPath) {
-  const names = []
-  for (const entry of await listDirSafe(projectPath)) {
-    if (entry.isFile() === true && entry.name.endsWith('.jsonl')) names.push(entry.name)
+/**
+ * Locate one delegated transcript: `<project>/<parentId>/subagents/<subagentId>.jsonl`, across the
+ * project directories (the project name is a lossy encoding of the cwd, so it is not known here).
+ * @param home the home directory.
+ * @param parentId the validated parent session id.
+ * @param subagentId the validated sub-agent id.
+ * @returns the file path, or `null`.
+ */
+async function findSubagentFile(home, parentId, subagentId) {
+  for (const project of await listProjects(home)) {
+    const candidate = join(projectsDirectory(home), project, parentId, SUBAGENTS_DIRECTORY, `${subagentId}.jsonl`)
+    if (await isFile(candidate)) return candidate
   }
-  return names
+  return null
 }
 
 /**
- * Read one Qoder conversation.
- * @param id the raw Qoder session id (without the `qoder/` prefix).
+ * The raw id's shape: one top-level session id, or a delegated `<parentId>/subagents/<delegate>`.
+ * @param id caller-supplied raw id.
+ * @returns `{kind:'top', id}` / `{kind:'delegated', parentId, subagentId}` / `null`.
+ */
+function resolveRawId(id) {
+  const delegated = parseSubagentId(id)
+  if (delegated !== null) return { kind: 'delegated', parentId: delegated.parentId, subagentId: delegated.subagentId }
+  if (isSafeSessionId(id)) return { kind: 'top', id }
+  return null
+}
+
+/**
+ * Read one Qoder conversation, top-level or delegated.
+ * @param id the raw Qoder id (without the `qoder/` prefix): a session id, or
+ *   `<sessionId>/subagents/<fileStem>`.
  * @param options `{home, signal?, maxBytes?}`.
  * @returns the contract's `readSession` result; never throws.
  */
 export async function readSession(id, options) {
   try {
-    if (!isSafeSessionId(id)) return emptySession('invalid-id')
+    const target = resolveRawId(id)
+    if (target === null) return emptySession('invalid-id')
     const home = homeOf(options)
     if (home.length === 0) return emptySession('not-found')
-    const filePath = await findChildFile(projectsDirectory(home), `${id}.jsonl`)
+    const filePath =
+      target.kind === 'delegated'
+        ? await findSubagentFile(home, target.parentId, target.subagentId)
+        : await findChildFile(projectsDirectory(home), `${target.id}.jsonl`)
     if (filePath === null) return emptySession('not-found')
     const info = await statSafe(filePath)
     const result = {
@@ -269,6 +364,7 @@ export async function readSession(id, options) {
       }
       if (record === null || typeof record !== 'object' || Array.isArray(record)) return
       const type = record.type
+      if (target.kind === 'delegated' && result.cwd.length === 0) result.cwd = textOf(record.cwd)
       if (type === 'workspace-directories') {
         if (result.cwd.length === 0 && Array.isArray(record.directories)) {
           for (const directory of record.directories) {
@@ -302,6 +398,12 @@ export async function readSession(id, options) {
     result.truncated = read.truncated
     if (read.error !== null) result.error = read.error
     if (read.aborted) result.error = 'aborted'
+    if (target.kind === 'delegated') {
+      // Match the scan row's title priority: meta description, then agent type, then the first turn.
+      const meta = await readAgentMeta(join(dirname(filePath), `${target.subagentId}.meta.json`))
+      const metaTitle = titleOf(meta.description) || titleOf(meta.agentType)
+      if (metaTitle.length > 0) result.title = metaTitle
+    }
     return result
   } catch (error) {
     return emptySession(messageOf(error))

@@ -40,6 +40,7 @@ import {
   DEFAULT_UPLOAD_DIRECTORIES,
   DEFAULT_MAX_BYTES,
   DEFAULT_MODE,
+  DEFAULT_UPDATE_URL,
   DEFAULT_UPLOAD_MODEL,
   MODES,
   isCredentialRef,
@@ -97,6 +98,7 @@ const DEFAULT_CONFIG = {
   uploadModel: DEFAULT_UPLOAD_MODEL,
   credentialRef: DEFAULT_CREDENTIAL_REF,
   maxBytes: DEFAULT_MAX_BYTES,
+  updateUrl: DEFAULT_UPDATE_URL,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -157,6 +159,7 @@ await check('a valid config round-trips unchanged', () => {
     uploadModel: 'deepseek-reasoner',
     credentialRef: 'OTHER_KEY',
     maxBytes: 1024,
+    updateUrl: 'https://example.test/update-manifest.json',
   }
   assert.deepEqual(resolveConfig(raw), raw)
 })
@@ -279,6 +282,7 @@ await check('every volatile live reference is unwrapped at call time; plain keys
     uploadModel: DEFAULT_UPLOAD_MODEL,
     credentialRef: DEFAULT_CREDENTIAL_REF,
     maxBytes: 4096,
+    updateUrl: DEFAULT_UPDATE_URL,
   })
 
   // A reference holding garbage can only ever narrow to that field's default.
@@ -499,6 +503,7 @@ await check('every shipped host file is present', () => {
     join('host', 'foreign', 'zcode.js'),
     join('host', 'logfield.js'),
     join('host', 'notice.js'),
+    join('host', 'update.js'),
     join('host', 'upload.js'),
     join('host', 'watermark.js'),
   ])
@@ -574,10 +579,10 @@ await check('the mode field is constrained, defensive, and volatile (H2, task-8)
     .map((line) => line.trim().slice(0, line.trim().indexOf(':')))
   assert.deepEqual(
     volatileKeys,
-    ['deepseekModelPatterns', 'uploadDirectories', 'uploadSessionIds', 'foreignSessionIds', 'endpoint', 'maxBytes'],
+    ['deepseekModelPatterns', 'uploadDirectories', 'uploadSessionIds', 'foreignSessionIds', 'endpoint', 'maxBytes', 'updateUrl'],
     'the declared volatile set changed',
   )
-  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 7, 'mode + the four lists + endpoint + maxBytes is exactly seven')
+  assert.equal([...source.matchAll(/\.volatile\(\)/g)].length, 8, 'mode + the four lists + endpoint + maxBytes + updateUrl is exactly eight')
   // The two the settings page must NOT be able to write: they decide which credential is used and
   // which model this plugin spends money on. (`deepseekModelPatterns` moved into the volatile set when
   // the user gained the ability to mark a proxy's model name as DeepSeek.)
@@ -2029,8 +2034,8 @@ await check('a throwing optional registration cannot take the "off" exclusion do
     ],
     // Two routes register now (the ledger and the scan), each in its own wrapped effect. A throw from
     // one must not prevent the other, so the assertion is "the OTHER route is present", not a count.
-    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 5, 'all five routes must still register')],
-    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 5, 'later registrations must still run')],
+    ['the command', { throwOnCommandsRegister: true }, (state) => assert.equal(state.routes.length, 7, 'all seven routes must still register')],
+    ['the llm hook', { throwOnInject: true }, (state) => assert.equal(state.routes.length, 7, 'later registrations must still run')],
   ]
   for (const [what, options, after] of cases) {
     // The throw must not escape `apply`.
@@ -3361,6 +3366,110 @@ await check('the send route is a POST on the authenticated registry, never a raw
 })
 
 rmSync(FOREIGN_HOME, { recursive: true, force: true })
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+section('20. the in-app update: check is a GET, apply is a POST, neither throws')
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// The destructive half of the updater (download, replace, rollback) is covered by verify/update.mjs
+// against temporary directories. This section pins the WIRING: the two verbs exist where the page expects
+// them, the check works against an injected transport, and — the property that matters most here — a POST
+// that has nothing to do refuses instead of touching this plugin's own files.
+
+const HOST_PACKAGE_VERSION = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+
+/** A manifest valid for checkUpdate: it only ever fetches the manifest itself. */
+function updateManifest(version, notes = 'test notes') {
+  return {
+    schema: 1,
+    version,
+    files: [{ path: 'index.js', bytes: 1, sha256: '0'.repeat(64) }],
+    notes,
+  }
+}
+
+/** Drive the update check route with an injected transport. */
+async function updateCheck(withStub) {
+  const host = fakeHost({ raw: { mode: 'official-only' }, credential: 'sk-test', sessions: {} })
+  try {
+    const route = foreignRoute(host, indexNamespace.UPDATE_CHECK_ROUTE_PATH)
+    return await withForeignFetch(withStub, async () => {
+      const response = await route.fetch(new Request(`http://127.0.0.1${route.path}`))
+      assert.equal(response.status, 200, 'the check route must answer 200 even when the update path fails')
+      return await response.json()
+    })
+  } finally {
+    host.cleanup()
+  }
+}
+
+await check('the update routes are registered: GET for the check, POST for the apply', () => {
+  const host = fakeHost({ raw: { mode: 'official-only' }, credential: 'sk-test', sessions: {} })
+  try {
+    assert.deepEqual(foreignRoute(host, indexNamespace.UPDATE_CHECK_ROUTE_PATH).methods, ['GET'])
+    assert.deepEqual(foreignRoute(host, indexNamespace.UPDATE_APPLY_ROUTE_PATH).methods, ['POST'])
+    // The page reads these two constants; a rename would silently break the bridge.
+    assert.equal(indexNamespace.UPDATE_CHECK_ROUTE_PATH, '/api/session-log-upload.update-check')
+    assert.equal(indexNamespace.UPDATE_APPLY_ROUTE_PATH, '/api/session-log-upload.update-apply')
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('the check reports the newer version, its notes and its files without writing anything', async () => {
+  const before = readFileSync(join(root, 'index.js'))
+  const payload = await updateCheck(async () => new Response(JSON.stringify(updateManifest('99.0.0')), { status: 200 }))
+  assert.equal(payload.ok, true, String(payload.error))
+  assert.equal(payload.current, HOST_PACKAGE_VERSION, `the check reported ${String(payload.current)} as the installed version`)
+  assert.equal(payload.latest, '99.0.0')
+  assert.equal(payload.available, true)
+  assert.equal(payload.notes, 'test notes')
+  assert.equal(payload.files.length, 1)
+  // A check is a GET: the plugin's own source must be untouched even when an update IS available.
+  assert.ok(readFileSync(join(root, 'index.js')).equals(before), 'a check rewrote index.js')
+})
+
+await check('a failed manifest fetch is reported in the payload instead of throwing', async () => {
+  const payload = await updateCheck(async () => {
+    throw new Error('offline')
+  })
+  assert.equal(payload.ok, false)
+  assert.equal(typeof payload.error, 'string')
+  assert.equal(payload.available, false)
+})
+
+await check('an apply with nothing newer refuses before touching this plugin\'s files', async () => {
+  const host = fakeHost({ raw: { mode: 'official-only' }, credential: 'sk-test', sessions: {} })
+  const source = readFileSync(join(root, 'index.js'))
+  try {
+    const route = foreignRoute(host, indexNamespace.UPDATE_APPLY_ROUTE_PATH)
+    const payload = await withForeignFetch(
+      async () => new Response(JSON.stringify(updateManifest(HOST_PACKAGE_VERSION)), { status: 200 }),
+      async () => {
+        const response = await route.fetch(new Request(`http://127.0.0.1${route.path}`, { method: 'POST', body: '{}' }))
+        assert.equal(response.status, 200)
+        return await response.json()
+      },
+    )
+    assert.equal(payload.ok, false, 'an apply with no newer version reported success')
+    assert.equal(typeof payload.error, 'string')
+    // The safety property, not the wording: a refused apply leaves the real plugin byte-identical.
+    assert.ok(readFileSync(join(root, 'index.js')).equals(source), 'a refused apply rewrote index.js')
+  } finally {
+    host.cleanup()
+  }
+})
+
+await check('the apply route ignores any request body and is never reachable as a GET', () => {
+  const source = readFileSync(join(root, 'index.js'), 'utf8')
+  assert.ok(source.includes("effect: 'session-log-upload: update check route'"), 'the check route lost its wrapped effect')
+  assert.ok(source.includes("effect: 'session-log-upload: update apply route'"), 'the apply route lost its wrapped effect')
+  // No body is read on the apply path: the manifest and the directory come from this closure, so a
+  // crafted body cannot redirect the writer.
+  const applyBlock = source.slice(source.indexOf('async function updateApplyPayload()'), source.indexOf('async function updateApplyPayload()') + 900)
+  assert.equal(/request\.json\(\)|request\.body/.test(applyBlock), false, 'the apply path reads the request body')
+  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+})
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks passed`)
 process.exit(failures === 0 ? 0 : 1)

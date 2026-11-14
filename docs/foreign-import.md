@@ -81,6 +81,40 @@ export async function readForeignSession(compositeId, options)      // 'zcode/se
 
 复合 id 的格式固定为 `${harness}/${原始 id}`，只有注册表负责拆和拼，其他文件不要自己拼。
 
+## 子代理会话（所有 harness 都要有）
+
+子代理记录也必须能被扫描、勾选、发送，并且带 `parentId`，这样页面能缩进、能折叠、能连带勾选。
+
+四家的存储位置（本机实测）：
+
+| harness | 子代理记录 |
+|---|---|
+| ZCode | SQLite `session.parent_id` 不为空的会话，已经在扫 |
+| Qoder | `<home>/.qoder-cn/projects/<project>/<sessionId>/subagents/agent-<agentId>.jsonl`，同目录有 `.meta.json`（`agentType`、`description`） |
+| Cursor | `<home>/.cursor/projects/<project>/agent-transcripts/<sessionId>/subagents/<subagentId>.jsonl` |
+| WorkBuddy | `<home>/.workbuddy/projects/<project>/<sessionId>/subagents/agent-<agentId>.jsonl` |
+
+复合 id 里允许出现 `/`（`readForeignSession` 只按第一个 `/` 切，剩下整段交给适配器）：
+
+```
+qoder/<sessionId>/subagents/<fileStem>
+cursor/<sessionId>/subagents/<subagentId>
+workbuddy/<sessionId>/subagents/<fileStem>
+```
+
+适配器必须：
+
+- 每段用 `[A-Za-z0-9._-]+` 校验，拒绝 `..`、空段、绝对路径和超过 4 段。
+- `scan` 里为子代理行输出 `parentId`（**裸 id**，不带 harness 前缀；前缀由注册表/路由补）。
+- `readSession` 同时能读顶层会话和子代理 id。
+- 子代理行的 `title` 依次取：`.meta.json` 的 `description` → `agentType` → 首条用户文本 → `''`；
+  `cwd` 取记录里的 `cwd`；拿不到就给空串。
+- Qoder 的 JSONL 行里自带 `sessionId`（= 父会话）、`agentId`、`isSidechain`，可以直接用作父级依据；
+  文件所在的 `<sessionId>` 目录名同样可用。
+- 字节预算与截断标记沿用顶层会话那套（`maxBytes`、`truncated`）。
+
+页面上子代理行已有缩进、折叠和「勾父连带勾子」的逻辑，只需要 `parentId`，不需要新界面字段。
+
 ## 信封契约（forge 实现）
 
 ```js
