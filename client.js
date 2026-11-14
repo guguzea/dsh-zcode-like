@@ -147,6 +147,8 @@ window.__ModuleLoader__.load({
 				"foreign.messages": "messages",
 				"foreign.save": "Save ticks",
 				"foreign.send": "Send {count} selected sessions",
+				"foreign.expandChildren": "Show delegated conversations ({count})",
+				"foreign.collapseChildren": "Hide delegated conversations",
 				"foreign.statusWaiting": "Waiting",
 				"foreign.statusSending": "Sending…",
 				"foreign.statusOk": "Sent ({requests} requests)",
@@ -264,6 +266,8 @@ window.__ModuleLoader__.load({
 				"foreign.messages": "条消息",
 				"foreign.save": "保存勾选",
 				"foreign.send": "发送选中的 {count} 个会话",
+				"foreign.expandChildren": "展开子代理（{count}）",
+				"foreign.collapseChildren": "折叠子代理",
 				"foreign.statusWaiting": "等待中",
 				"foreign.statusSending": "发送中…",
 				"foreign.statusOk": "发送成功（{requests} 次请求）",
@@ -2090,6 +2094,10 @@ window.__ModuleLoader__.load({
 				const [ foreignStatus, setForeignStatus ] = React.useState(function () { return Object.create(null); });
 				const [ foreignConfirm, setForeignConfirm ] = React.useState(null);
 				const [ foreignSending, setForeignSending ] = React.useState(false);
+				// Delegated conversations are collapsed by default: a list of 366 conversations where
+				// 316 are children is mostly noise. This only controls VISIBILITY; ticks, the cascade
+				// and the send count always run over the whole payload.
+				const [ foreignShowChildren, setForeignShowChildren ] = React.useState(false);
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
@@ -2180,6 +2188,17 @@ window.__ModuleLoader__.load({
 						seenForeign[session.id] = true;
 						foreignIds.push(session.id);
 						if (foreignPicked[session.id] === true) selectedForeign.push(session.id);
+					}
+				}
+				// How many rows are delegated children (parent present in the payload), for the
+				// show/hide control and the count it reports. Dangling parents are not children.
+				const foreignChildSeen = Object.create(null);
+				let foreignChildCount = 0;
+				for (const group of foreignGroups) {
+					for (const session of group.sessions) {
+						if (session.child !== true || foreignChildSeen[session.id] === true) continue;
+						foreignChildSeen[session.id] = true;
+						foreignChildCount++;
 					}
 				}
 
@@ -2563,6 +2582,8 @@ window.__ModuleLoader__.load({
 							return;
 						}
 						setForeignScan(normalized);
+						// A fresh scan starts collapsed again: the list the user opens is top-level rows.
+						setForeignShowChildren(false);
 						// Seed the draft from the saved allowlist, but only for sessions this scan
 						// actually lists: an id this scan cannot see must not be counted or sent from
 						// a row the user cannot inspect.
@@ -2920,6 +2941,22 @@ window.__ModuleLoader__.load({
 						onClick: function () { scanForeign(); }
 					}, t(foreignScanning === true ? "foreign.scanning" : "foreign.scan"))
 				];
+				// Only offered when the payload actually has delegated rows. The label carries the
+				// hidden count while collapsed, so the size of the hidden part is never a mystery.
+				if (foreignScan !== null && foreignChildCount > 0) {
+					foreignActions.push(React.createElement("button", {
+						key: "children",
+						type: "button",
+						className: "slu-btn slu-foreignChildren",
+						"data-foreign-action": "children",
+						disabled: foreignScanning === true ? true : undefined,
+						onClick: function () {
+							setForeignShowChildren(function (previous) { return previous !== true; });
+						}
+					}, foreignShowChildren === true
+						? t("foreign.collapseChildren")
+						: t("foreign.expandChildren").replace("{count}", String(foreignChildCount))));
+				}
 				if (foreignScan !== null) {
 					foreignActions.push(React.createElement("button", {
 						key: "save",
@@ -2950,8 +2987,13 @@ window.__ModuleLoader__.load({
 						foreignChildren.push(React.createElement("div", { key: "empty", className: "slu-note" }, t("foreign.empty")));
 					}
 					const foreignGroupNodes = foreignGroups.map(function (group, groupIndex) {
-						// Delegated children render immediately after the row they name, indented.
-						const orderedSessions = orderForeignSessions(group);
+						// Delegated children render immediately after the row they name, indented. While
+						// collapsed they are hidden; their ticks and statuses stay in the draft, and the
+						// parent cascade still reaches them because it walks the whole payload.
+						const allSessions = orderForeignSessions(group);
+						const orderedSessions = foreignShowChildren === true
+							? allSessions
+							: allSessions.filter(function (session) { return session.child !== true; });
 						const rowNodes = orderedSessions.map(function (session, sessionIndex) {
 							const status = foreignStatus[session.id] !== undefined ? asObject(foreignStatus[session.id]) : null;
 							const statusText = foreignStatusText(status, t);
@@ -2991,7 +3033,11 @@ window.__ModuleLoader__.load({
 							group.error === null ? null : React.createElement("div", { key: "error", className: "slu-error" }, t("foreign.harnessError") + " " + group.error),
 							group.available === true ? null : React.createElement("div", { key: "unavailable", className: "slu-note" }, t("foreign.unavailable")),
 							rowNodes.length === 0
-								? React.createElement("div", { key: "groupEmpty", className: "slu-note" }, t("foreign.groupEmpty"))
+								// A group whose only rows are hidden children is not "empty": saying so
+								// would contradict the heading's count and the show/hide control.
+								? (group.sessions.length === 0
+									? React.createElement("div", { key: "groupEmpty", className: "slu-note" }, t("foreign.groupEmpty"))
+									: null)
 								: React.createElement("div", { key: "rows", className: "slu-foreignRows" }, rowNodes)
 						];
 						return React.createElement("div", { key: "foreign-group-" + groupIndex, className: "slu-foreignGroup" }, groupNodes);

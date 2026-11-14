@@ -124,6 +124,8 @@
     "messages": "messages",
     "save": "Save ticks",
     "send": "Send {count} selected sessions",
+    "expandChildren": "Show delegated conversations ({count})",
+    "collapseChildren": "Hide delegated conversations",
     "statusWaiting": "Waiting",
     "statusSending": "Sending…",
     "statusOk": "Sent ({requests} requests)",

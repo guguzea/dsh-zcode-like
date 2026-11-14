@@ -2956,6 +2956,9 @@ await checkAsync("foreign-parent", "a delegated child renders after its parent, 
 	});
 	clickForeign(scenario.runtime, "scan");
 	await settle(scenario.runtime);
+	// Delegated rows are collapsed by default now; expand so the indented order is assertable.
+	clickForeign(scenario.runtime, "children");
+	await settle(scenario.runtime);
 	const order = foreignRowOrder(scenario.runtime);
 	assert(
 		JSON.stringify(order) === JSON.stringify([ "zcode/sess_root", "zcode/sess_child", "zcode/sess_orphan", "zcode/sess_plain" ]),
@@ -3001,6 +3004,10 @@ await checkAsync("foreign-parent-cascade", "ticking a parent ticks its whole lin
 	});
 	clickForeign(scenario.runtime, "scan");
 	await settle(scenario.runtime);
+	// The lineage is collapsed by default; the cascade itself runs over the whole payload either
+	// way, but the rows must be visible for this check's per-row tick assertions.
+	clickForeign(scenario.runtime, "children");
+	await settle(scenario.runtime);
 	const ticked = function (id) { return foreignRow(scenario.runtime, id).props.checked; };
 	const allIds = [ "zcode/sess_root", "zcode/sess_child1", "zcode/sess_grand", "zcode/sess_child2" ];
 	// Ticking the root ticks the children and the grandchild, transitively.
@@ -3035,6 +3042,64 @@ await checkAsync("foreign-parent-cascade", "ticking a parent ticks its whole lin
 	assert(posted.length === 4, `the send made ${posted.length} POSTs, expected 4`);
 	assert(JSON.stringify(posted) === JSON.stringify(expected), `the sent ids are ${JSON.stringify(posted)}`);
 	return "root tick/untick cascades through all 4 rows, a child tick stays local, save and send carry the expanded set";
+});
+
+// 45 ─ delegated conversations collapse by default without changing what gets sent ─────────────
+await checkAsync("foreign-collapse", "delegated conversations are hidden by default, and a collapsed parent still cascades into its hidden children", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_TREE_PAYLOAD },
+		uploads: [
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } },
+			{ body: { ok: true, requests: 1 } }
+		]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	// Default state is collapsed: only the top-level row is rendered, and the control says how
+	// many delegated rows it is hiding (two children + one grandchild).
+	assert(JSON.stringify(foreignRowOrder(scenario.runtime)) === JSON.stringify([ "zcode/sess_root" ]), `the initial render is ${JSON.stringify(foreignRowOrder(scenario.runtime))}`);
+	const collapsedToggle = foreignButton(scenario.runtime, "children");
+	assert(collapsedToggle !== undefined, "no control to show delegated conversations");
+	assert(textOf(collapsedToggle).includes("3"), `the control does not report the hidden count: ${textOf(collapsedToggle)}`);
+	// Tick the visible parent: the cascade runs over the whole payload, so the hidden rows tick
+	// with it, and both the save and the send count describe the real expanded set.
+	tickForeign(scenario.runtime, "zcode/sess_root", true);
+	const sendLabel = textOf(foreignButton(scenario.runtime, "send"));
+	assert(sendLabel.includes("4"), `the send count ignores the hidden descendants: ${sendLabel}`);
+	clickForeign(scenario.runtime, "save");
+	await settle(scenario.runtime);
+	const writes = scenario.form.sets.filter(function (set) { return set[0] === "foreignSessionIds"; });
+	assert(writes.length === 1, `the save wrote foreignSessionIds ${writes.length} times`);
+	const expected = [ "zcode/sess_child1", "zcode/sess_child2", "zcode/sess_grand", "zcode/sess_root" ];
+	assert(JSON.stringify(writes[0][1].slice().sort()) === JSON.stringify(expected), `the collapsed save wrote ${JSON.stringify(writes[0][1])}`);
+	// Expanding shows every row again, still ticked.
+	clickForeign(scenario.runtime, "children");
+	await settle(scenario.runtime);
+	assert(foreignRowOrder(scenario.runtime).length === 4, `the expanded render has ${foreignRowOrder(scenario.runtime).length} rows`);
+	for (const id of expected) assert(foreignRow(scenario.runtime, id).props.checked === true, `${id} lost its tick when expanded`);
+	// Give every row a status, so the collapse can prove statuses are kept too.
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	for (let pass = 0; pass < 10 && scenario.fetch.uploadCalls.length < 4; pass++) await settle(scenario.runtime, 2);
+	assert(scenario.fetch.uploadCalls.length === 4, `the send made ${scenario.fetch.uploadCalls.length} POSTs`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_child1").includes("Sent"), "the child row has no status before collapsing");
+	// Collapsing hides the rows again without clearing ticks or statuses.
+	clickForeign(scenario.runtime, "children");
+	await settle(scenario.runtime);
+	assert(JSON.stringify(foreignRowOrder(scenario.runtime)) === JSON.stringify([ "zcode/sess_root" ]), `the collapsed render is ${JSON.stringify(foreignRowOrder(scenario.runtime))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_root").includes("Sent"), "collapsing cleared the visible row's status");
+	assert(textOf(foreignButton(scenario.runtime, "children")).includes("3"), "the control does not report the hidden count after collapsing");
+	// Expanding again restores every row with its tick and status intact.
+	clickForeign(scenario.runtime, "children");
+	await settle(scenario.runtime);
+	assert(foreignRowOrder(scenario.runtime).length === 4, "the second expand did not restore every row");
+	for (const id of expected) assert(foreignRow(scenario.runtime, id).props.checked === true, `${id} lost its tick after collapse and expand`);
+	for (const id of [ "zcode/sess_child1", "zcode/sess_child2", "zcode/sess_grand" ]) {
+		assert(foreignStatusTextOf(scenario.runtime, id).includes("Sent"), `${id} lost its status after collapse and expand`);
+	}
+	return "collapsed by default with the hidden count, hidden rows still cascade into save and send, expand restores rows with ticks and statuses intact";
 });
 
 console.log("");

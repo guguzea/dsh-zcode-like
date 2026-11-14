@@ -124,6 +124,8 @@
     "messages": "条消息",
     "save": "保存勾选",
     "send": "发送选中的 {count} 个会话",
+    "expandChildren": "展开子代理（{count}）",
+    "collapseChildren": "折叠子代理",
     "statusWaiting": "等待中",
     "statusSending": "发送中…",
     "statusOk": "发送成功（{requests} 次请求）",
