@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 10388,
-      "sha256": "a278ca520f162246d2611f084be30cce7fc7ae4609e2399147cf49ed71ce6a6a"
+      "bytes": 9873,
+      "sha256": "54f42d4d83e34bc0b74831cf4bd32aa606280e0c4d6d5580c13a53e4c8a4e954"
     },
     {
       "path": "client.js",
