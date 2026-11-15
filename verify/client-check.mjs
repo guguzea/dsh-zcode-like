@@ -68,6 +68,8 @@ const REQUIRED_KEYS = [
 	"upload.saveFailed",
 	"upload.noticeFailed",
 	"upload.noticeReadFailed",
+	"upload.noticeRetry",
+	"upload.noticeDismiss",
 	"foreign.title",
 	"foreign.description",
 	"foreign.scan",
@@ -1105,6 +1107,73 @@ function clickButton(runtime, label) {
 // checks are about the consent gate, so matching on the role alone would count the notice as one.
 function dialog(runtime) {
 	return runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "consent"; })[0];
+}
+
+/** The notice modal: the shape used only when the Host read succeeded and said "not acknowledged". */
+function noticeModal(runtime) {
+	return runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+}
+
+/** The notice banner: the in-flow shape used when the read failed. */
+function noticeBanner(runtime) {
+	return runtime.findAll(function (node) { return node.props["data-notice"] === "banner"; })[0];
+}
+
+/** The escape control ("close and show this again next time"), in either shape. */
+function noticeDismissButton(runtime) {
+	return runtime.findAll(function (node) { return node.type === "button" && node.props["data-notice-dismiss"] === "true"; })[0];
+}
+
+/** The Try again control beside a failed-read line. */
+function noticeRetryButton(runtime) {
+	return runtime.findAll(function (node) { return node.type === "button" && node.props["data-notice-retry"] === "true"; })[0];
+}
+
+function noticeAcceptButton(runtime) {
+	return runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+}
+
+/**
+ * Render the section with queued GET replies for the notice route and one POST reply.
+ * Escape/Continue never go through the network on their own, so the stub is restored before the
+ * check drives the UI; `posts` counts acknowledgement POSTs.
+ * @param replies - GET replies, `{status, body}` or `{reject}`; the last one repeats.
+ * @param writeReply - POST reply, `{status, body}` or `{reject}`; defaults to acknowledged 200.
+ */
+async function noticeScenario(replies, writeReply) {
+	const queue = replies.slice();
+	const posts = [];
+	const realFetch = globalThis.fetch;
+	const replyOf = function (reply) {
+		if (reply !== undefined && reply.reject !== undefined) throw new Error(String(reply.reject));
+		const status = reply !== undefined && typeof reply.status === "number" ? reply.status : 200;
+		return {
+			ok: status >= 200 && status < 300,
+			status: status,
+			async json() { return reply === undefined ? {} : reply.body; }
+		};
+	};
+	globalThis.fetch = async function (input, init) {
+		const url = typeof input === "string" ? input : String(input);
+		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
+		if (url.indexOf("session-log-upload.notice") >= 0) {
+			if (method === "POST") {
+				posts.push(true);
+				return replyOf(writeReply === undefined ? { status: 200, body: { acknowledged: true } } : writeReply);
+			}
+			const reply = queue.length > 1 ? queue.shift() : queue[0];
+			return replyOf(reply);
+		}
+		return { ok: false, status: 404, async json() { return {}; } };
+	};
+	try {
+		const runtime = createHookRuntime();
+		applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }), fetch: globalThis.fetch }, runtime);
+		await settle(runtime);
+		return { runtime: runtime, posts: posts };
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 }
 
 /**
@@ -2798,11 +2867,11 @@ await checkAsync("notice-gate", "the notice blocks until acknowledged, then neve
 		assert(notice === undefined, "the notice reappeared on an install that already acknowledged it");
 	}
 
-	// ── a failed read shows the notice (the safe direction) ─────────────────────────────────
+	// ── a failed read shows the notice, in flow, never as a modal ───────────────────────────
 	{
 		const { runtime } = await renderNotice({ ok: false, status: 500, body: {} });
-		const notice = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
-		assert(notice !== undefined, "a failed acknowledgement read did not show the notice");
+		assert(noticeModal(runtime) === undefined, "a failed acknowledgement read rendered a blocking modal");
+		assert(noticeBanner(runtime) !== undefined, "a failed acknowledgement read did not show the notice banner");
 	}
 
 	// ── accepting POSTs, and a confirmed write dismisses ────────────────────────────────────
@@ -3441,39 +3510,85 @@ await checkAsync("notice-write-failure", "a failed notice write says so, keeps t
 	return "a failed write shows the honest line, keeps the dialog, the tick and a live retry";
 });
 
-// 50 ─ a failed notice read says the Host could not be reached, and never hides the notice ─────
-await checkAsync("notice-read-failure", "a failed notice read keeps the notice and says the Host could not be reached", async () => {
-	const NOTICE = "session-log-upload.notice";
-	const realFetch = globalThis.fetch;
-	const renderWithNotice = async function (readReply) {
-		globalThis.fetch = async function (input) {
-			const url = typeof input === "string" ? input : String(input);
-			if (url.indexOf(NOTICE) >= 0) return readReply;
-			return { ok: false, status: 404, async json() { return {}; } };
-		};
-		const runtime = createHookRuntime();
-		applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }), fetch: globalThis.fetch }, runtime);
-		await settle(runtime);
-		return runtime;
-	};
-	const findNotice = function (runtime) {
-		return runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
-	};
-	try {
-		const runtime = await renderWithNotice({ ok: false, status: 500, async json() { return {}; } });
-		const notice = findNotice(runtime);
-		assert(notice !== undefined, "a failed read hid the notice instead of showing it");
-		assert(textOf(notice).includes("The Host could not be reached to read the acknowledgement"), `the read-failure line is missing: ${textOf(notice)}`);
-		// A healthy acknowledged read still hides the notice and its failure line.
-		const healthy = await renderWithNotice({ ok: true, status: 200, async json() { return { acknowledged: true }; } });
-		assert(findNotice(healthy) === undefined, "an acknowledged install still shows the notice");
-	} finally {
-		globalThis.fetch = realFetch;
-	}
-	return "a failed read shows the notice with the unreachable line; an acknowledged read still hides it";
+// 50 ─ a failed notice read renders an in-flow banner, not a blocking modal ───────────────────
+await checkAsync("notice-banner", "a failed notice read renders a usable banner, not a blocking modal, and the rest of the section survives", async () => {
+	const failed = await noticeScenario([ { status: 500, body: {} } ]);
+	assert(noticeModal(failed.runtime) === undefined, "a failed read rendered a blocking modal");
+	const banner = noticeBanner(failed.runtime);
+	assert(banner !== undefined, "a failed read did not show the notice banner");
+	assert(textOf(banner).includes("The Host could not be reached to read the acknowledgement"), `the read-failure line is missing: ${textOf(banner)}`);
+	// The page behind the banner is usable: the mode controls and the other blocks render.
+	assert(radios(failed.runtime).length === 4, "the settings controls did not render behind the banner");
+	const text = textOf(failed.runtime.tree());
+	assert(text.includes("Plugin update"), "the update block did not render behind the banner");
+	assert(text.includes("Session log upload"), "the section title did not render behind the banner");
+	// A healthy acknowledged read still shows nothing at all.
+	const healthy = await noticeScenario([ { status: 200, body: { acknowledged: true } } ]);
+	assert(noticeBanner(healthy.runtime) === undefined, "an acknowledged install still shows the banner");
+	assert(noticeModal(healthy.runtime) === undefined, "an acknowledged install shows the modal");
+	return "failed read: banner, no modal, rest of the section rendered; acknowledged: nothing";
 });
 
-// 51 ─ stopping an in-flight batch ──────────────────────────────────────────────────────────
+// 51 ─ the banner escape never records consent, and the notice returns on the next mount ──────
+await checkAsync("notice-banner-escape", "the banner escape records nothing and the notice returns on the next mount", async () => {
+	const first = await noticeScenario([ { status: 500, body: {} } ]);
+	assert(noticeBanner(first.runtime) !== undefined, "no banner to escape from");
+	const dismiss = noticeDismissButton(first.runtime);
+	assert(dismiss !== undefined, "the banner has no escape control");
+	assert(textOf(dismiss).includes("Close and show this again next time"), `the escape label is ${JSON.stringify(textOf(dismiss))}`);
+	dismiss.props.onClick({});
+	first.runtime.flush();
+	assert(noticeBanner(first.runtime) === undefined, "the escape did not dismiss the banner for this mount");
+	assert(noticeModal(first.runtime) === undefined, "the escape opened a modal");
+	assert(first.posts.length === 0, `the escape POSTed ${first.posts.length} times`);
+	assert(radios(first.runtime).length === 4, "the escape broke the section");
+	// A fresh mount shows the notice again: the escape was not a recorded acknowledgement.
+	const second = await noticeScenario([ { status: 500, body: {} } ]);
+	assert(noticeBanner(second.runtime) !== undefined, "the notice did not return on the next mount");
+	return "escape dismisses this mount only, writes nothing, and the notice returns on remount";
+});
+
+// 52 ─ Try again re-runs a failed read and clears the failure line ─────────────────────────────
+await checkAsync("notice-retry", "Try again re-reads the acknowledgement and clears the failure line", async () => {
+	const scenario = await noticeScenario([ { status: 500, body: {} }, { status: 200, body: { acknowledged: false } } ]);
+	assert(noticeBanner(scenario.runtime) !== undefined, "the first read failure did not show the banner");
+	const retry = noticeRetryButton(scenario.runtime);
+	assert(retry !== undefined, "the failed read has no retry control");
+	retry.props.onClick({});
+	await settle(scenario.runtime);
+	assert(noticeBanner(scenario.runtime) === undefined, "the banner survived a successful retry");
+	const modal = noticeModal(scenario.runtime);
+	assert(modal !== undefined, "a successful not-acknowledged retry did not open the modal");
+	assert(!textOf(modal).includes("The Host could not be reached to read the acknowledgement"), "the failure line survived the retry");
+	assert(scenario.posts.length === 0, "retrying the read POSTed");
+	return "retry re-reads, clears the failure line, and a read success becomes the modal";
+});
+
+// 53 ─ the modal escape writes nothing; only a confirmed write closes the modal for good ───────
+await checkAsync("notice-escape", "the modal escape writes nothing, and only a confirmed write closes the modal", async () => {
+	const notAcked = await noticeScenario([ { status: 200, body: { acknowledged: false } } ]);
+	assert(noticeModal(notAcked.runtime) !== undefined, "a not-acknowledged read did not render the modal");
+	assert(noticeBanner(notAcked.runtime) === undefined, "a not-acknowledged read rendered the banner instead of the modal");
+	const dismiss = noticeDismissButton(notAcked.runtime);
+	assert(dismiss !== undefined, "the modal has no escape control");
+	dismiss.props.onClick({});
+	notAcked.runtime.flush();
+	assert(noticeModal(notAcked.runtime) === undefined, "the modal escape did not dismiss the modal for this mount");
+	assert(notAcked.posts.length === 0, `the modal escape POSTed ${notAcked.posts.length} times`);
+	// The notice returns on the next mount, and only a confirmed write closes it.
+	const again = await noticeScenario([ { status: 200, body: { acknowledged: false } } ]);
+	assert(noticeModal(again.runtime) !== undefined, "the notice did not return on the next mount");
+	const box = again.runtime.findAll(function (node) { return node.props["data-notice-ack"] === "true"; })[0];
+	box.props.onChange({ target: { checked: true } });
+	again.runtime.flush();
+	noticeAcceptButton(again.runtime).props.onClick({});
+	await settle(again.runtime);
+	assert(again.posts.length === 1, `the confirmed write POSTed ${again.posts.length} times`);
+	assert(noticeModal(again.runtime) === undefined, "a confirmed write did not dismiss the modal");
+	return "modal escape writes nothing and dismisses this mount only; a confirmed write closes it for good";
+});
+
+// 54 ─ stopping an in-flight batch ──────────────────────────────────────────────────────────
 await checkAsync("foreign-stop", "stopping a batch ends the loop before the next POST and reports what was sent", async () => {
 	const scenario = await foreignScenario({
 		scan: { body: FOREIGN_SCAN_PAYLOAD },

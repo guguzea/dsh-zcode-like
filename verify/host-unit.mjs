@@ -561,7 +561,10 @@ await check('index.js contains no bare specifier at all, only the absolute candi
 })
 await check('MODE_PATTERN accepts exactly the four ids (H2)', () => {
   const source = readFileSync(join(root, 'index.js'), 'utf8')
-  const line = /const MODE_PATTERN = new RegExp\(([^\n]+)\)\n/u.exec(source)
+  // CRLF-tolerant: this checkout has `core.autocrlf=true`, so the line ends with `)\r\n` after a
+  // Windows checkout. The earlier `\)\n` pattern matched only an LF checkout and therefore failed on a
+  // pristine working tree while the source was perfectly fine.
+  const line = /const MODE_PATTERN = new RegExp\(([^\n]+)\)\r?\n/u.exec(source)
   assert.ok(line !== null, 'MODE_PATTERN is no longer built from MODES')
   const pattern = new RegExp(new Function('MODES', `return ${line[1]}`)(MODES))
   for (const mode of MODES) assert.equal(pattern.test(mode), true, `${mode} must be accepted`)
@@ -572,7 +575,8 @@ await check('MODE_PATTERN accepts exactly the four ids (H2)', () => {
 await check('the mode field is constrained, defensive, and volatile (H2, task-8)', () => {
   const source = readFileSync(join(root, 'index.js'), 'utf8')
   assert.match(source, /field = z\.string\(\)\.pattern\(MODE_PATTERN\)/, 'the constraint is gone')
-  assert.match(source, /\} catch \{\n    field = z\.string\(\)\n  \}/, 'the defensive fallback is gone')
+  // CRLF-tolerant for the same reason as the MODE_PATTERN regex above: this checkout is CRLF.
+  assert.match(source, /\} catch \{\r?\n {4}field = z\.string\(\)\r?\n {2}\}/, 'the defensive fallback is gone')
   assert.match(source, /return field\.default\('official-only'\)\.volatile\(\)/, 'the volatile marker moved')
   assert.match(source, /mode: modeField\(z\)/)
   // Exactly the five user-visible fields are volatile — the page can see nothing else — and

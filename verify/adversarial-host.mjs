@@ -1358,7 +1358,8 @@ check('RETARGETED: index.js carries a confirmation mechanism, and it precedes th
   assert.match(source, /export const CONFIRM_WORD = 'confirm'/)
   // H3: a frozen list read through `isWideMode`, so no importer can disarm the gate.
   assert.match(source, /export const WIDE_MODES = Object\.freeze\(\['deepseek-any-provider', 'any-model'\]\)/)
-  assert.match(source, /export function isWideMode\(mode\) \{\n  return WIDE_MODES\.includes\(mode\)\n\}/)
+  // CRLF-tolerant: this checkout writes CRLF (core.autocrlf=true), so a `\n`-only anchor matches nothing.
+  assert.match(source, /export function isWideMode\(mode\) \{\r?\n {2}return WIDE_MODES\.includes\(mode\)\r?\n\}/)
   assert.match(source, /if \(isWideMode\(next\) && \(tokens\.length < 2 \|\| tokens\[1\]\.toLowerCase\(\) !== CONFIRM_WORD\)\)/)
   // The gate must go through the helper, never through the array's own methods.
   const gateLine = source.split('\n').find((line) => /if \(isWideMode\(next\)/.test(line))
@@ -1633,7 +1634,7 @@ check('the schema declaration matches the shipped volatile idiom', () => {
   assert.ok(source.includes('mode: modeField(z)'), 'the declaration no longer goes through modeField')
   const helper = source.slice(source.indexOf('function modeField(z) {'), source.indexOf('function modeField(z) {') + 400)
   assert.ok(helper.includes('field = z.string().pattern(MODE_PATTERN)'), 'the pattern is not applied')
-  assert.ok(helper.includes('} catch {\n    field = z.string()\n  }'), 'the unconstrained fallback is gone')
+  assert.ok(/\} catch \{\r?\n {4}field = z\.string\(\)\r?\n {2}\}/.test(helper), 'the unconstrained fallback is gone')
   assert.ok(helper.includes("return field.default('official-only').volatile()"), 'default/volatile must survive both paths')
   const patternLine = source.split('\n').find((line) => line.includes('const MODE_PATTERN'))
   assert.ok(patternLine !== undefined, 'MODE_PATTERN is gone')
@@ -2029,10 +2030,10 @@ check('STANDING INVARIANT (structural): every optional registration is throw-pro
   assert.match(context(unprotected[1].line), /session-log-upload unloaded|abort in-flight uploads/, 'the second unprotected site is not the unload disposer')
   // Sensitivity: the invariant must fire on a registration that is NOT wrapped. Two synthesized
   // mutations of the real source, in memory only — the file is never touched.
-  const appended = source.replace(/\n\s*return \(\) => \{/, '\n  ctx.effect(() => someOptionalService.register(), \'unguarded\')\n\n  return () => {')
+  const appended = source.replace(/\r?\n\s*return \(\) => \{/, '\n  ctx.effect(() => someOptionalService.register(), \'unguarded\')\n\n  return () => {')
   const injected = registrationSites(appended).filter((site) => !site.insideTry)
   assert.equal(injected.length, 3, 'the invariant did not notice an unguarded registration added to apply')
-  const unguarded = source.replace(/ {2}try \{\n {6}disposers\.push\(\n {8}ctx\.effect\(/, '  {\n      disposers.push(\n        ctx.effect(')
+  const unguarded = source.replace(/ {2}try \{\r?\n {6}disposers\.push\(\r?\n {8}ctx\.effect\(/, '  {\n      disposers.push(\n        ctx.effect(')
   assert.notEqual(unguarded, source, 'the sensitivity mutation did not apply — the anchor moved')
   assert.equal(registrationSites(unguarded).filter((site) => !site.insideTry).length, 3, 'the invariant did not notice a removed try/catch')
   console.log(`        ${sites.length} registration sites; exactly ${unprotected.length} deliberately unprotected; 2 mutations detected`)
@@ -2733,7 +2734,26 @@ check('E6: the two gates are independent — ours over the endpoint, the platfor
   // Comments legitimately name `resolveToken` with other text (the shipped route's own call, the
   // origin explanation), so assert on code with comments stripped.
   assert.doesNotMatch(codeOnly(source), /resolveToken\((?!OFFICIAL_DEEPSEEK_BASE)/, 'resolveToken is called with something other than the constant')
-  const platform = readAsarText('dsh/node_modules/@deepseek-ai/dsh-deepseek-account-platform/lib/index.js')
+  // The package was renamed between DSH releases: 0.2.2-rc.1 shipped
+  // `@deepseek-ai/dsh-deepseek-account-platform`, and the installed 0.2.2-rc.3 ships
+  // `@deepseek-ai/dsh-deepseek-account`. Try the current name first, then the old one, so this check
+  // keeps testing the real platform gate instead of failing on a package rename.
+  const platformCandidates = [
+    'dsh/node_modules/@deepseek-ai/dsh-deepseek-account/lib/index.js',
+    'dsh/node_modules/@deepseek-ai/dsh-deepseek-account-platform/lib/index.js',
+  ]
+  let platform = null
+  let platformPath = null
+  for (const candidate of platformCandidates) {
+    try {
+      platform = readAsarText(candidate)
+      platformPath = candidate
+      break
+    } catch {
+      /* try the next name */
+    }
+  }
+  assert.ok(platform !== null, `the DeepSeek account package is not in this build under any known name: ${platformCandidates.join(', ')}`)
   // The platform's own gate, verbatim: it parses the argument, then refuses unless the ORIGIN matches
   // the configured inference origin (`inferenceOrigin` defaults to `https://api.deepseek.com`, `:508`).
   assert.match(platform, /async resolveToken\(url\) \{/)

@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 193533,
-      "sha256": "efea3b786456459c29bf3e86f41bbd1cc330f85106b0378266924c59f224ec0f"
+      "bytes": 197327,
+      "sha256": "2e3d723b016e761215e9daa6c39bebe1da7602865909657f730e17097037cd0b"
     },
     {
       "path": "cordis.patch.yml",
@@ -79,8 +79,8 @@
     },
     {
       "path": "host/logfield.js",
-      "bytes": 10063,
-      "sha256": "b59f99d1444028676b8ec6aa59525492f7c4892f6d517d13a4f0446daafd95ab"
+      "bytes": 10175,
+      "sha256": "36b0528cdc87750e5a17deb187fcf45c243c10c8442fadad32cd522a1350033b"
     },
     {
       "path": "host/notice.js",
@@ -109,18 +109,18 @@
     },
     {
       "path": "index.js",
-      "bytes": 98303,
-      "sha256": "d2380354435d4c2139bbbc6697ae350644b7647aaac9e3b3cf6c1e94704de587"
+      "bytes": 100245,
+      "sha256": "6a50e14c6a82c6ee240f237d31c4b9526ef502c033a03b4479f456a199ed069c"
     },
     {
       "path": "locale/en.json",
-      "bytes": 10738,
-      "sha256": "2f396d3fa5bf5a3c564f56b5d99655047231638ac48eb24aa136edc5397b3036"
+      "bytes": 10830,
+      "sha256": "a46ac4c253d941c2d9d8643ee863525a336327fdc32cb5795c8a4b6ed23d0258"
     },
     {
       "path": "locale/zh.json",
-      "bytes": 10320,
-      "sha256": "49cd3644c6a814b023aa2a80bbf33d928ccfe58461fb6ab7f3d9a58047526027"
+      "bytes": 10398,
+      "sha256": "5aabef7e896147e88520808a6425a5a95a02a6af2f4a49f554963172b7dcef13"
     },
     {
       "path": "package.json",
@@ -128,5 +128,5 @@
       "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
     }
   ],
-  "notes": "通知弹窗失败提示、导入可中止"
+  "notes": "通知不再锁死界面；适配 DSH 0.2.2-rc.3"
 }

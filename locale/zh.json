@@ -108,7 +108,9 @@
     "noticeAccept": "继续",
     "noticeBusy": "正在记录…",
     "noticeFailed": "确认没能记录下来。在记录成功之前，这一页会一直显示这段提示。可以再点一次「继续」重试。",
-    "noticeReadFailed": "没能从宿主读到确认状态，所以这里仍然显示提示。点「继续」会再次尝试记录。"
+    "noticeReadFailed": "没能从宿主读到确认状态，所以这里仍然显示提示。点「继续」会再次尝试记录。",
+    "noticeRetry": "重试",
+    "noticeDismiss": "关闭，下次再提示"
   },
   "foreign": {
     "title": "从其他 HARNESS 导入",

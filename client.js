@@ -69,6 +69,8 @@ window.__ModuleLoader__.load({
 				"upload.noticeBusy": "Recording…",
 				"upload.noticeFailed": "The acknowledgement could not be recorded. This page will keep showing this notice until it is. Try Continue again.",
 				"upload.noticeReadFailed": "The Host could not be reached to read the acknowledgement, so this notice is shown. Continue will try to record it again.",
+				"upload.noticeRetry": "Try again",
+				"upload.noticeDismiss": "Close and show this again next time",
 				"upload.byteCapLabel": "Byte cap per request",
 				"upload.patternsLabel": "Models to treat as DeepSeek",
 				"upload.patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
@@ -217,6 +219,8 @@ window.__ModuleLoader__.load({
 				"upload.noticeBusy": "正在记录…",
 				"upload.noticeFailed": "确认没能记录下来。在记录成功之前，这一页会一直显示这段提示。可以再点一次「继续」重试。",
 				"upload.noticeReadFailed": "没能从宿主读到确认状态，所以这里仍然显示提示。点「继续」会再次尝试记录。",
+				"upload.noticeRetry": "重试",
+				"upload.noticeDismiss": "关闭，下次再提示",
 				"upload.byteCapLabel": "每次请求的字节上限",
 				"upload.patternsLabel": "把这些模型当作 DeepSeek",
 				"upload.patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
@@ -510,6 +514,13 @@ window.__ModuleLoader__.load({
 .slu-noticeBody{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto}
 .slu-noticeCheck{display:flex;align-items:flex-start;gap:8px;padding:10px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);font-size:14px;line-height:20px;cursor:pointer}
 .slu-noticeCheck input{flex:none;margin:2px 0 0;cursor:pointer}
+/* The in-flow banner used when the notice READ failed: the same notice and controls, but the
+   settings page behind it stays usable. An unknown acknowledgement state must not block the page. */
+.slu-noticeBanner{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}
+.slu-noticeBannerTitle{margin:0;font-size:16px;line-height:24px;font-weight:600}
+.slu-noticeBanner .slu-noticeBody{max-height:none}
+.slu-noticeFailure{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.slu-noticeRetry{height:24px;padding:0 8px;font-size:12px}
 .slu-fieldState{font-size:12px;line-height:18px}
 .slu-saved{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .slu-pre{margin:0;padding:12px;box-sizing:border-box;border-radius:var(--dsw-radius-sm);background-color:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:220px}
@@ -2108,13 +2119,19 @@ window.__ModuleLoader__.load({
 		/**
 		 * The liability notice, shown on every visit until the user acknowledges it.
 		 *
-		 * Deliberately NOT a variant of {@link ConfirmDialog}: that one is cancellable, and this one must
-		 * not be. There is no backdrop dismiss and no Escape handler — the only controls are the
-		 * checkbox and the acknowledge button, which stays disabled until the box is ticked. A dialog
-		 * you can click away is a dialog you can dismiss without reading, which is exactly the
-		 * acknowledgement this is asking for.
+		 * Two shapes, chosen by the section:
+		 * - `variant: "dialog"` when the Host READ SUCCEEDED and said "not acknowledged". That is a
+		 *   genuine "not agreed yet", so it is modal, has no backdrop dismiss and no Escape handler.
+		 * - `variant: "inline"` when the READ FAILED. An unknown state must never block the settings
+		 *   page, so the same notice renders as an in-flow banner at the top of the section, with the
+		 *   rest of the page usable behind it.
+		 *
+		 * Both shapes carry the tick-gate, the honest failure lines, a retry for a failed read, and a
+		 * clearly labelled escape. The escape is NOT consent: it writes nothing, only hides the notice
+		 * for this mount, and the notice returns on the next mount.
 		 */
 		function NoticeDialog(props) {
+			const inline = props.variant === "inline";
 			const panelRef = React.useRef(null);
 			const checkRef = React.useRef(null);
 			const buttonRef = React.useRef(null);
@@ -2122,7 +2139,7 @@ window.__ModuleLoader__.load({
 			const bodyId = useStableId();
 			const [ checked, setChecked ] = React.useState(false);
 			const [ busy, setBusy ] = React.useState(false);
-			// A failed write is NOT silent: the dialog stays up, the box stays ticked, the button
+			// A failed write is NOT silent: the notice stays up, the box stays ticked, the button
 			// stays usable for one-click retry, and this flag adds the honest line explaining why
 			// nothing appeared to happen. The cause is never invented: a throw, a refused response
 			// and an unconfirmed body all get the same statement because the page cannot tell them
@@ -2130,17 +2147,19 @@ window.__ModuleLoader__.load({
 			const [ writeFailed, setWriteFailed ] = React.useState(false);
 
 			React.useEffect(function () {
+				// Only the modal may take focus: the banner is part of the page the user is using.
+				if (inline) return;
 				const target = checkRef.current;
 				if (target !== null && target !== undefined && typeof target.focus === "function") {
 					try {
 						target.focus();
 					} catch (_error) {}
 				}
-			}, []);
+			}, [ inline ]);
 
-			// Contain focus inside the dialog: there is nothing behind it the user may operate.
+			// Contain focus inside the MODAL. The banner deliberately keeps the page reachable.
 			const onPanelKeyDown = function (event) {
-				if (event.key !== "Tab") return;
+				if (inline || event.key !== "Tab") return;
 				const focusables = [ checkRef.current, buttonRef.current ].filter(function (node) {
 					return node !== null && node !== undefined;
 				});
@@ -2170,7 +2189,7 @@ window.__ModuleLoader__.load({
 					attempt = Promise.resolve(false);
 				}
 				void attempt.then(function (ok) {
-					// On failure the dialog stays up and the button returns, so the user is never left
+					// On failure the notice stays up and the button returns, so the user is never left
 					// believing they acknowledged something the Host did not record. The failure line
 					// is what turns that silence into feedback; the tick stays so a retry is one click.
 					setBusy(false);
@@ -2181,22 +2200,28 @@ window.__ModuleLoader__.load({
 				});
 			};
 
-			const panel = React.createElement("div", {
-				ref: panelRef,
-				className: "slu-panel slu-noticePanel",
-				role: "dialog",
-				"data-dialog": "notice",
-				"aria-modal": "true",
-				"aria-labelledby": titleId,
-				"aria-describedby": bodyId,
-				tabIndex: -1,
-				onKeyDown: onPanelKeyDown
-			},
-				React.createElement("h2", { id: titleId, className: "slu-panelTitle" }, props.title),
-				React.createElement("div", { id: bodyId, className: "slu-noticeBody" }, props.paragraphs.map(function (text, index) {
+			const content = [
+				React.createElement("h2", { key: "title", id: titleId, className: inline ? "slu-noticeBannerTitle" : "slu-panelTitle" }, props.title),
+				React.createElement("div", { key: "body", id: bodyId, className: "slu-noticeBody" }, props.paragraphs.map(function (text, index) {
 					return React.createElement("p", { key: "p" + index, className: "slu-panelBody" }, text);
 				})),
-				React.createElement("label", { className: "slu-noticeCheck" },
+				// A failed mount read is said out loud, and the retry is right beside it: clicking it
+				// re-reads the Host and the line disappears when the read succeeds.
+				props.readFailed === true
+					? React.createElement("div", { key: "readFailed", className: "slu-error slu-noticeFailure", role: "alert", "data-notice-read-failed": "true" },
+						React.createElement("span", { className: "slu-noticeFailureText" }, props.readFailedText),
+						React.createElement("button", {
+							type: "button",
+							className: "slu-btn slu-noticeRetry",
+							"data-notice-retry": "true",
+							onClick: function () { if (typeof props.onRetry === "function") props.onRetry(); }
+						}, props.retryLabel)
+					)
+					: null,
+				writeFailed === true
+					? React.createElement("div", { key: "writeFailed", className: "slu-error slu-noticeFailure", role: "alert", "data-notice-write-failed": "true" }, props.writeFailedText)
+					: null,
+				React.createElement("label", { key: "check", className: "slu-noticeCheck" },
 					React.createElement("input", {
 						ref: checkRef,
 						type: "checkbox",
@@ -2209,15 +2234,15 @@ window.__ModuleLoader__.load({
 					}),
 					React.createElement("span", null, props.checkboxLabel)
 				),
-				// The mount-time read failed: say so instead of showing a silent notice. This is a
-				// different fact from "not acknowledged yet", so it gets its own line.
-				props.readFailed === true
-					? React.createElement("div", { className: "slu-error slu-noticeFailure", role: "alert", "data-notice-read-failed": "true" }, props.readFailedText)
-					: null,
-				writeFailed === true
-					? React.createElement("div", { className: "slu-error slu-noticeFailure", role: "alert", "data-notice-write-failed": "true" }, props.writeFailedText)
-					: null,
-				React.createElement("div", { className: "slu-panelActions" },
+				React.createElement("div", { key: "actions", className: "slu-panelActions" },
+					// The escape: dismisses the notice for THIS MOUNT ONLY and never writes. The user is
+					// never trapped out of the settings page by a notice they cannot record.
+					React.createElement("button", {
+						type: "button",
+						className: "slu-btn slu-noticeDismiss",
+						"data-notice-dismiss": "true",
+						onClick: function () { if (typeof props.onDismiss === "function") props.onDismiss(); }
+					}, props.dismissLabel),
 					React.createElement("button", {
 						ref: buttonRef,
 						type: "button",
@@ -2226,7 +2251,30 @@ window.__ModuleLoader__.load({
 						onClick: accept
 					}, busy ? props.busyLabel : props.acceptLabel)
 				)
-			);
+			];
+
+			if (inline) {
+				return React.createElement("div", {
+					ref: panelRef,
+					className: "slu-noticeBanner",
+					role: "region",
+					"data-notice": "banner",
+					"aria-labelledby": titleId,
+					"aria-describedby": bodyId
+				}, content);
+			}
+
+			const panel = React.createElement("div", {
+				ref: panelRef,
+				className: "slu-panel slu-noticePanel",
+				role: "dialog",
+				"data-dialog": "notice",
+				"aria-modal": "true",
+				"aria-labelledby": titleId,
+				"aria-describedby": bodyId,
+				tabIndex: -1,
+				onKeyDown: onPanelKeyDown
+			}, content);
 
 			const overlay = React.createElement("div", { className: "slu-overlay", role: "presentation" },
 				// No onClick: the mask is decorative and dismisses nothing.
@@ -2378,11 +2426,14 @@ window.__ModuleLoader__.load({
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
-				// The liability notice. `null` means "not read yet"; the dialog appears once the Host
-				// has answered, and it stays up unless that answer positively says acknowledged. The
-				// record keeps `failed` separate from `acknowledged`, so a read the page could not make
-				// is said out loud instead of looking like an ordinary unacknowledged visit.
+				// The liability notice. `null` means "not read yet"; the record keeps `failed` separate
+				// from `acknowledged`, so a read the page could not make is said out loud instead of
+				// looking like an ordinary unacknowledged visit. `noticeDismissed` is the escape: it
+				// hides the notice for THIS MOUNT only, never writes, and is reset by the next mount.
+				// `noticeAttempt` re-runs the read for the banner's Try again control.
 				const [ noticeState, setNoticeState ] = React.useState(null);
+				const [ noticeDismissed, setNoticeDismissed ] = React.useState(false);
+				const [ noticeAttempt, setNoticeAttempt ] = React.useState(0);
 
 				React.useEffect(function () {
 					let alive = true;
@@ -2406,7 +2457,32 @@ window.__ModuleLoader__.load({
 					return function () {
 						alive = false;
 					};
-				}, [ bridge ]);
+				}, [ bridge, noticeAttempt ]);
+
+				/** Continue: the ONLY path that dismisses the notice for good, and only after a confirmed write. */
+				const acceptNotice = async function () {
+					let ok = false;
+					try {
+						ok = (await bridge.writeNotice()) === true;
+					} catch (_error) {
+						ok = false;
+					}
+					// Only a confirmed write counts. A failure keeps the notice up; the component shows
+					// the failure line and lets the user retry.
+					if (ok) setNoticeState({ acknowledged: true, failed: false });
+					return ok;
+				};
+
+				/** Escape for this mount only. Never writes, never records consent. */
+				const dismissNotice = function () {
+					setNoticeDismissed(true);
+				};
+
+				/** Re-run a failed read. The failure line disappears if this read succeeds. */
+				const retryNoticeRead = function () {
+					setNoticeState(null);
+					setNoticeAttempt(function (previous) { return previous + 1; });
+				};
 
 				React.useEffect(function () {
 					let alive = true;
@@ -3711,34 +3787,31 @@ window.__ModuleLoader__.load({
 					["onCancel"]: cancelUpdate
 				}) : null;
 
-				// The liability notice. Shown whenever the Host has NOT positively acknowledged it —
-				// while the read is still in flight (`null`) nothing renders, so the dialog never
-				// flashes for a user who already accepted on a previous visit. A failed read shows it
-				// AND its own line saying the Host could not be reached: hiding it is never the default.
-				const noticeVisible = noticeState !== null && noticeState.acknowledged !== true;
-				const noticeDialog = noticeVisible ? React.createElement(NoticeDialog, {
+				// The liability notice. `null` while reading renders nothing, so an acknowledged install
+				// never flashes it. A FAILED read renders the notice as an in-flow banner at the top of
+				// the section: an unknown acknowledgement state must not block the settings page. A
+				// SUCCESSFUL read that says "not acknowledged" keeps the modal gate, because that is a
+				// genuine "not agreed yet". The escape in both shapes only hides it for this mount.
+				const noticeVisible = noticeDismissed !== true && noticeState !== null && noticeState.acknowledged !== true;
+				const noticeReadFailed = noticeVisible && noticeState.failed === true;
+				const noticeProps = {
 					title: t("upload.noticeTitle"),
 					paragraphs: [ t("upload.noticeP1"), t("upload.noticeP2"), t("upload.noticeP3"), t("upload.noticeP4") ],
 					checkboxLabel: t("upload.noticeCheck"),
 					acceptLabel: t("upload.noticeAccept"),
 					busyLabel: t("upload.noticeBusy"),
-					readFailed: noticeState.failed === true,
+					readFailed: noticeReadFailed,
 					readFailedText: t("upload.noticeReadFailed"),
 					writeFailedText: t("upload.noticeFailed"),
-					onAccept: async function () {
-						let ok = false;
-						try {
-							ok = (await bridge.writeNotice()) === true;
-						} catch (_error) {
-							ok = false;
-						}
-						// Only dismiss on a confirmed write. Otherwise the dialog stays up, because a
-						// dismissed dialog over an unrecorded acknowledgement would show the notice again
-						// on the next visit with no explanation.
-						if (ok) setNoticeState({ acknowledged: true, failed: false });
-						return ok;
-					}
-				}) : null;
+					retryLabel: t("upload.noticeRetry"),
+					dismissLabel: t("upload.noticeDismiss"),
+					onAccept: acceptNotice,
+					onRetry: retryNoticeRead,
+					onDismiss: dismissNotice
+				};
+				const noticeBanner = noticeReadFailed ? React.createElement(NoticeDialog, Object.assign({}, noticeProps, { variant: "inline" })) : null;
+				const noticeDialog = noticeVisible && noticeReadFailed !== true ? React.createElement(NoticeDialog, noticeProps) : null;
+				if (noticeBanner !== null) children.unshift(noticeBanner);
 
 				return React.createElement(React.Fragment, null,
 					React.createElement("div", { className: "slu-section" }, children),

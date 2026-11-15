@@ -18,15 +18,26 @@ export const ASAR_PATH = 'D:\\DeepSeek Harness\\resources\\app.asar'
 /**
  * Parse the asar header.
  *
- * Measured layout of this container (213,202,918 bytes):
+ * Measured layout of this container (209,021,953 bytes):
  *   u32 @0  = 4                      (size-pickle payload length)
- *   u32 @4  = headerSize             (total size-pickle payload, 5,748,132)
- *   u32 @8  = header length, aligned (5,748,128)
- *   u32 @12 = header length, exact   (5,748,124)
+ *   u32 @4  = headerSize             (total size-pickle payload, 5,669,972)
+ *   u32 @8  = header length, aligned (5,669,968)
+ *   u32 @12 = header length, exact   (5,669,961)
  *   JSON    @16 .. @16+exact
  *   data    @8 + headerSize
- * The two size fields are asserted, so a wrong guess fails loudly instead of
+ * The size fields are asserted, so a wrong guess fails loudly instead of
  * silently returning bytes from the middle of the archive.
+ *
+ * The alignment of `aligned` relative to `exact` is NOT constant across Node
+ * versions: the older container this reader was written against aligned to 4
+ * bytes, the current one to 8 (Electron 44 / DSH 0.2.2-rc.3: exact 5669961 ->
+ * aligned 5669968 = pad to 8). So the reader asserts the properties that must
+ * hold for any asar - `aligned` sits between `exact` and the next 8-byte
+ * boundary, and `headerSize` accounts for the size-pickle prefix plus that
+ * rounded length - and then verifies the layout for real by reading a known
+ * file back. An alignment guess that is wrong therefore fails on content, not
+ * on an over-specific arithmetic check.
+ *
  * @param {string} path container path.
  * @returns {{header: object, base: number, buffer: Buffer}} the file tree and the data offset.
  */
@@ -40,10 +51,20 @@ export function readAsarHeader(path = ASAR_PATH) {
   const jsonStart = 16
   const jsonEnd = jsonStart + exact
   if (jsonEnd > buffer.length) throw new Error('asar header runs past end of file')
-  if (aligned !== ((exact + 1 + 3) & ~3)) throw new Error(`asar header length fields disagree: ${aligned} vs ${(exact + 1 + 3) & ~3}`)
-  if (headerSize !== 4 + aligned) throw new Error(`asar header size disagrees: ${headerSize} vs ${4 + aligned}`)
+  if (exact <= 0 || aligned < exact) throw new Error(`asar header length fields disagree: aligned ${aligned} < exact ${exact}`)
+  // The padding is whatever brings `exact` up to the next 4- or 8-byte boundary; anything more
+  // means these four fields are not the four this reader thinks they are.
+  const pad4 = (exact + 1 + 3) & ~3
+  const pad8 = (exact + 1 + 7) & ~7
+  if (aligned !== pad4 && aligned !== pad8) {
+    throw new Error(`asar header alignment is neither 4- nor 8-byte: aligned ${aligned}, exact ${exact} (pad4 ${pad4}, pad8 ${pad8})`)
+  }
+  if (headerSize !== 8 + aligned && headerSize !== 4 + aligned) {
+    throw new Error(`asar header size disagrees: headerSize ${headerSize}, aligned ${aligned}`)
+  }
   const header = JSON.parse(buffer.subarray(jsonStart, jsonEnd).toString('utf8'))
-  return { header, base: 8 + headerSize, buffer }
+  const base = 8 + headerSize
+  return { header, base, buffer }
 }
 
 /** Split a virtual path into segments, tolerating both separators. */

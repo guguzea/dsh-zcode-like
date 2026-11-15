@@ -77,6 +77,8 @@ const KNOWN_SESSION_EVENT_TYPES = new Set([
   'team/member',
   'team/message/delivered',
   'team/message/queued',
+  // Added by DSH 0.2.2-rc.3; verify/fidelity.mjs compares this set to the shipped one in order.
+  'team/mode',
   'team/task',
   'todo/write',
   'tool-workflow/agent-end',

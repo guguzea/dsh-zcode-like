@@ -108,7 +108,9 @@
     "noticeAccept": "Continue",
     "noticeBusy": "Recording…",
     "noticeFailed": "The acknowledgement could not be recorded. This page will keep showing this notice until it is. Try Continue again.",
-    "noticeReadFailed": "The Host could not be reached to read the acknowledgement, so this notice is shown. Continue will try to record it again."
+    "noticeReadFailed": "The Host could not be reached to read the acknowledgement, so this notice is shown. Continue will try to record it again.",
+    "noticeRetry": "Try again",
+    "noticeDismiss": "Close and show this again next time"
   },
   "foreign": {
     "title": "Import from other HARNESSES",
