@@ -566,7 +566,7 @@ await check('a garbage afterSeq is treated as -1 (resend rather than skip)', () 
 })
 
 await check('a garbage maxBytes falls back to the 20 MiB default instead of blocking', () => {
-  assert.equal(DEFAULT_MAX_BYTES, 20 * 1024 * 1024)
+  assert.equal(DEFAULT_MAX_BYTES, 128 * 1024 * 1024)
   for (const maxBytes of [undefined, 0, -1, 1.5, 'big', null, {}, []]) {
     const built = buildForeignField({ forged: FORGED, afterSeq: -1, maxBytes })
     assert.notEqual(built.field, null, `maxBytes ${String(maxBytes)}`)

@@ -46,7 +46,7 @@ export const DEFAULT_UPLOAD_MODEL = 'deepseek-flash'
 export const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
 /** Default largest serialized `dsh_session_log` field, matching the shipped uploader. */
-export const DEFAULT_MAX_BYTES = 20 * 1024 * 1024
+export const DEFAULT_MAX_BYTES = 128 * 1024 * 1024
 
 /**
  * Default address of the update manifest.

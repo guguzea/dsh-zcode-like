@@ -17,4 +17,4 @@
         uploadModel: deepseek-flash
         # 通过 ctx.credentials.resolve(ref) 取到的凭据引用
         credentialRef: DEEPSEEK_API_KEY
-        maxBytes: 20971520
+        maxBytes: 134217728

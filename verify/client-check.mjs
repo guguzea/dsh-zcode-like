@@ -835,7 +835,7 @@ const LEDGER_ROUTE = "api/session-log-upload.ledger";
 /** The Host default destination, used for a served form in the ledger scenarios. */
 const SERVED_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
 /** The Host default byte cap (`host/config.js` DEFAULT_MAX_BYTES): the page's fallback too. */
-const DEFAULT_CAP = 20971520;
+const DEFAULT_CAP = 134217728;
 
 /**
  * A `fetch` stub for the ledger route, standing in for the page's own fetch.

@@ -244,7 +244,7 @@ check('RETARGETED: prototype pollution cannot widen the mode or redirect any fie
     assert.deepEqual(resolved.deepseekModelPatterns, ['deepseek'])
     assert.equal(resolved.credentialRef, 'DEEPSEEK_API_KEY')
     assert.equal(resolved.uploadModel, DEFAULT_UPLOAD_MODEL)
-    assert.equal(resolved.maxBytes, 20971520)
+    assert.equal(resolved.maxBytes, 134217728)
     // An inherited mode must not survive even next to an own, invalid one.
     assert.equal(resolveConfig({ mode: 'nonsense' }).mode, 'official-only')
     // An object that inherits `mode` from a custom prototype is equally refused.
@@ -373,7 +373,7 @@ check('RETARGETED: the anti-hijack guard is the scheme check — a non-http(s) e
 check('maxBytes is unwrapped live and still clamped to a positive integer', () => {
   assert.equal(resolveConfig({ maxBytes: { get: () => 512 } }).maxBytes, 512)
   for (const bad of [0, -1, 1.5, NaN, Infinity, '1024', null, {}, [], true, { get: () => -5 }]) {
-    assert.equal(resolveConfig({ maxBytes: bad }).maxBytes, 20971520, `maxBytes ${describe(bad)} was accepted`)
+    assert.equal(resolveConfig({ maxBytes: bad }).maxBytes, 134217728, `maxBytes ${describe(bad)} was accepted`)
   }
 })
 
@@ -564,7 +564,7 @@ await checkAsync('NEW: a live maxBytes change takes effect on the next build', a
     assert.equal(second.afterSeq, first.afterSeq, 'the range start must not move')
 
     // Through the real volatile protocol too, which is the shape production uses.
-    handle.state.rawConfig.maxBytes = makeVolatile(20971520)
+    handle.state.rawConfig.maxBytes = makeVolatile(134217728)
     await runStream(handle, { provider: 'pi-ai', model: 'gpt-4', sessionId: 'sess-mb' })
     await waitFor(() => handle.state.fetchCalls.length === 3, 'the third attempt')
     const third = JSON.parse(handle.state.fetchCalls[2][1].body).dsh_session_log

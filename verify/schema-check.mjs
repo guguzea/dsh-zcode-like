@@ -271,7 +271,7 @@ check('exactly eight fields carry the volatile marker: `mode`, the four lists, `
   assert.equal(modeNode.meta.pattern.source, '^(?:off|official-only|deepseek-any-provider|any-model)$')
   assert.equal(json.refs[root.dict.endpoint].meta.default, 'https://api.deepseek.com/anthropic/v1/messages')
   assert.equal(json.refs[root.dict.endpoint].type, 'string')
-  assert.equal(json.refs[root.dict.maxBytes].meta.default, 20971520)
+  assert.equal(json.refs[root.dict.maxBytes].meta.default, 134217728)
   assert.equal(json.refs[root.dict.maxBytes].type, 'number')
   // The two stay non-volatile and carry no constraint beyond their type: they decide which credential
   // is used and which model this plugin spends money on, so the settings wire must not write them.
@@ -444,12 +444,12 @@ check('DESIGN: the schema stores a non-http(s) `endpoint` by design; `resolveCon
 
 check('maxBytes stays clamped by the schema: a live reference round-trips, 0 and 1.5 are refused', () => {
   assert.equal(validate({ maxBytes: 1024 }).maxBytes.get(), 1024)
-  assert.equal(validate({}).maxBytes.get(), 20971520)
+  assert.equal(validate({}).maxBytes.get(), 134217728)
   for (const bad of [0, -1, 1.5, NaN, Infinity, '1024', null, true]) {
     const result = standard.validate({ maxBytes: bad })
     if (bad === null) {
       assert.equal(result.issues, undefined, 'null should take the default')
-      assert.equal(result.value.maxBytes.get(), 20971520)
+      assert.equal(result.value.maxBytes.get(), 134217728)
       continue
     }
     assert.ok(result.issues !== undefined, `maxBytes ${String(bad)} was accepted`)

@@ -56,7 +56,7 @@ cmd /c mklink /J "C:\Users\<you>\.dsh\profiles\desktop\node_modules\@local\dsh-s
 | `endpoint` | string | DeepSeek 官方端点 | 只带日志那条请求的目的地。必须是绝对 http(s) URL，否则回落默认值 |
 | `uploadModel` | string | `deepseek-flash` | 那条请求的 `model` 字段，需为官方 API 认识的名字（`deepseek-flash` 或 `deepseek-v4-pro`） |
 | `credentialRef` | string | `DEEPSEEK_API_KEY` | 通过 `ctx.credentials.resolve(ref)` 解析 |
-| `maxBytes` | int ≥ 1 | `20971520` | 单次请求里 `dsh_session_log` 字段的字节上限 |
+| `maxBytes` | int ≥ 1 | `134217728`（128 MiB） | 单次请求里 `dsh_session_log` 字段的字节上限。本机最大的会话整段约 51 MiB，128 MiB 基本一次就能发完 |
 | `updateUrl` | string | 本仓库的 GitHub raw 清单地址 | 更新清单地址，必须是绝对 http(s) URL，否则回落默认值 |
 
 `mode`、`deepseekModelPatterns`、`uploadDirectories`、`uploadSessionIds`、`foreignSessionIds`、`endpoint`、`maxBytes`、`updateUrl` 能在设置页直接读写；`uploadModel` 和 `credentialRef` 只能改 `cordis.patch.yml`。

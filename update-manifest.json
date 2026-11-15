@@ -4,23 +4,23 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 9873,
-      "sha256": "54f42d4d83e34bc0b74831cf4bd32aa606280e0c4d6d5580c13a53e4c8a4e954"
+      "bytes": 9962,
+      "sha256": "3308974448608f6d5b05848d344df6982cb528a1369235642df7ebc284be6991"
     },
     {
       "path": "client.js",
-      "bytes": 197327,
-      "sha256": "2e3d723b016e761215e9daa6c39bebe1da7602865909657f730e17097037cd0b"
+      "bytes": 197328,
+      "sha256": "e040a149e95e637675aa886325900da634542c38cf309cd142148d3b7786ed20"
     },
     {
       "path": "cordis.patch.yml",
-      "bytes": 1158,
-      "sha256": "31d6172e3ed2d7f09e61fd1569553abd91c05814cb3f0e8ba96d4ab542bc9e12"
+      "bytes": 1159,
+      "sha256": "e26afdef6f40ac829a1882eacf261b8d737e0c1c59b42ecba9957aeb228e8da4"
     },
     {
       "path": "host/config.js",
-      "bytes": 20309,
-      "sha256": "b65f6ee0efe67cc4afd8f4b142e117325f896fd0b8187e194d4825e186943dd2"
+      "bytes": 20310,
+      "sha256": "ce3d87ffc7a685465a9e844dd1d775d06e9c5e08305ed34e0318ccc4230242dd"
     },
     {
       "path": "host/eligibility.js",
@@ -128,5 +128,5 @@
       "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
     }
   ],
-  "notes": "通知不再锁死界面；适配 DSH 0.2.2-rc.3"
+  "notes": "单次请求上限改为 128 MiB"
 }

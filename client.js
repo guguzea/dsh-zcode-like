@@ -377,7 +377,7 @@ window.__ModuleLoader__.load({
 			// Kept in step with host/config.js DEFAULT_UPLOAD_MODEL by verify/host-unit.mjs §15.
 			uploadModel: "deepseek-flash",
 			credentialRef: "DEEPSEEK_API_KEY",
-			maxBytes: 20971520
+			maxBytes: 134217728
 		});
 		/** Host route serving the upload ledger (docs/state-channel.md §4). */
 		const LEDGER_PATH = "/api/session-log-upload.ledger";
