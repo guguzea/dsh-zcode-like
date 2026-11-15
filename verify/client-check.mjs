@@ -66,6 +66,8 @@ const REQUIRED_KEYS = [
 	"upload.ledger.titlesDetail",
 	"upload.ledger.columnsHint",
 	"upload.saveFailed",
+	"upload.noticeFailed",
+	"upload.noticeReadFailed",
 	"foreign.title",
 	"foreign.description",
 	"foreign.scan",
@@ -83,6 +85,10 @@ const REQUIRED_KEYS = [
 	"foreign.send",
 	"foreign.statusWaiting",
 	"foreign.statusSending",
+	"foreign.statusStopped",
+	"foreign.stop",
+	"foreign.stopping",
+	"foreign.summary",
 	"foreign.statusOk",
 	"foreign.statusOkTruncated",
 	"foreign.statusFailed",
@@ -1248,6 +1254,12 @@ function foreignGroupTitles(runtime) {
 /** The per-row status line, or "" when the row has none. */
 function foreignStatusTextOf(runtime, id) {
 	const node = runtime.findAll(function (node) { return node.props["data-foreign-status"] === id; })[0];
+	return node === undefined ? "" : textOf(node);
+}
+
+/** The end-of-batch summary line, or "" when no batch has finished. */
+function foreignSummaryTextOf(runtime) {
+	const node = runtime.findAll(function (node) { return node.props["data-foreign-summary"] === "true"; })[0];
 	return node === undefined ? "" : textOf(node);
 }
 
@@ -3382,6 +3394,122 @@ await checkAsync("update-failed", "a failed apply shows the failure and leaves t
 	assert(updateValue(runtime, "current") === "1.0.0", "the reported version disappeared after a failed apply");
 	assert(radios(runtime).length === 4, "the section stopped rendering after a failed apply");
 	return "failed apply names the Host error, block and retry stay rendered";
+});
+
+// 49 ─ a failed notice write is said out loud, not swallowed ──────────────────────────────────
+await checkAsync("notice-write-failure", "a failed notice write says so, keeps the dialog and the tick, and allows a retry", async () => {
+	const NOTICE = "session-log-upload.notice";
+	const realFetch = globalThis.fetch;
+	let posts = 0;
+	globalThis.fetch = async function (input, init) {
+		const url = typeof input === "string" ? input : String(input);
+		const method = init !== undefined && init !== null && init.method !== undefined ? init.method : "GET";
+		if (url.indexOf(NOTICE) >= 0) {
+			if (method === "POST") {
+				posts++;
+				return { ok: false, status: 500, async json() { return {}; } };
+			}
+			return { ok: true, status: 200, async json() { return { acknowledged: false }; } };
+		}
+		return { ok: false, status: 404, async json() { return {}; } };
+	};
+	try {
+		const runtime = createHookRuntime();
+		applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }), fetch: globalThis.fetch }, runtime);
+		await settle(runtime);
+		const box = function () { return runtime.findAll(function (node) { return node.props["data-notice-ack"] === "true"; })[0]; };
+		const acceptButton = function () {
+			return runtime.findAll(function (node) { return node.type === "button" && typeof node.props.className === "string" && node.props.className.indexOf("slu-noticeAccept") >= 0; })[0];
+		};
+		box().props.onChange({ target: { checked: true } });
+		runtime.flush();
+		acceptButton().props.onClick({});
+		await settle(runtime);
+		assert(posts === 1, `expected one acknowledgement POST, saw ${posts}`);
+		const notice = runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+		assert(notice !== undefined, "the notice dialog closed although the write failed");
+		assert(textOf(notice).includes("The acknowledgement could not be recorded"), `the failure line is missing: ${textOf(notice)}`);
+		assert(box().props.checked === true, "the tick was cleared by the failed write");
+		assert(acceptButton().props.disabled !== true, "the Continue button stayed dead after the failure");
+		// The retry is one click and actually posts again.
+		acceptButton().props.onClick({});
+		await settle(runtime);
+		assert(posts === 2, `the retry did not POST: ${posts}`);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+	return "a failed write shows the honest line, keeps the dialog, the tick and a live retry";
+});
+
+// 50 ─ a failed notice read says the Host could not be reached, and never hides the notice ─────
+await checkAsync("notice-read-failure", "a failed notice read keeps the notice and says the Host could not be reached", async () => {
+	const NOTICE = "session-log-upload.notice";
+	const realFetch = globalThis.fetch;
+	const renderWithNotice = async function (readReply) {
+		globalThis.fetch = async function (input) {
+			const url = typeof input === "string" ? input : String(input);
+			if (url.indexOf(NOTICE) >= 0) return readReply;
+			return { ok: false, status: 404, async json() { return {}; } };
+		};
+		const runtime = createHookRuntime();
+		applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }), fetch: globalThis.fetch }, runtime);
+		await settle(runtime);
+		return runtime;
+	};
+	const findNotice = function (runtime) {
+		return runtime.findAll(function (node) { return node.props.role === "dialog" && node.props["data-dialog"] === "notice"; })[0];
+	};
+	try {
+		const runtime = await renderWithNotice({ ok: false, status: 500, async json() { return {}; } });
+		const notice = findNotice(runtime);
+		assert(notice !== undefined, "a failed read hid the notice instead of showing it");
+		assert(textOf(notice).includes("The Host could not be reached to read the acknowledgement"), `the read-failure line is missing: ${textOf(notice)}`);
+		// A healthy acknowledged read still hides the notice and its failure line.
+		const healthy = await renderWithNotice({ ok: true, status: 200, async json() { return { acknowledged: true }; } });
+		assert(findNotice(healthy) === undefined, "an acknowledged install still shows the notice");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+	return "a failed read shows the notice with the unreachable line; an acknowledged read still hides it";
+});
+
+// 51 ─ stopping an in-flight batch ──────────────────────────────────────────────────────────
+await checkAsync("foreign-stop", "stopping a batch ends the loop before the next POST and reports what was sent", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { defer: true }, { defer: true }, { defer: true } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	for (const id of [ "zcode/sess_a", "zcode/sess_b", "cursor/sess_c" ]) tickForeign(scenario.runtime, id, true);
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await null;
+	scenario.runtime.flush();
+	assert(scenario.fetch.uploadCalls.length === 1, `the batch started ${scenario.fetch.uploadCalls.length} POSTs, expected 1`);
+	const stop = foreignButton(scenario.runtime, "stop");
+	assert(stop !== undefined, "no stop control while a batch is sending");
+	stop.props.onClick({});
+	scenario.runtime.flush();
+	assert(foreignButton(scenario.runtime, "stop").props.disabled === true, "the stop control stayed live after being pressed");
+	// The in-flight POST finishes; the loop must not start another one.
+	scenario.fetch.controls[0].resolve({ ok: true, requests: 2 });
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 1, `a POST started after stopping: ${scenario.fetch.uploadCalls.length}`);
+	assert(scenario.fetch.controls.length === 1, "a new request was issued after stopping");
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_a").includes("Sent (2 requests)"), `the sent row lost its result: ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_a"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "zcode/sess_b").includes("Stopped"), `row b says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "zcode/sess_b"))}`);
+	assert(foreignStatusTextOf(scenario.runtime, "cursor/sess_c").includes("Stopped"), `row c says ${JSON.stringify(foreignStatusTextOf(scenario.runtime, "cursor/sess_c"))}`);
+	assert(!foreignStatusTextOf(scenario.runtime, "zcode/sess_b").includes("Waiting"), "a stopped row still reads as waiting");
+	const summary = foreignSummaryTextOf(scenario.runtime);
+	assert(summary.includes("Sent 1, not sent 2."), `the summary says ${JSON.stringify(summary)}`);
+	const summaryNode = scenario.runtime.findAll(function (node) { return node.props["data-foreign-summary"] === "true"; })[0];
+	assert(summaryNode !== undefined && summaryNode.props.role === "status" && summaryNode.props["aria-live"] === "polite", "the summary is not an aria-live status region");
+	// The stop control goes away with the batch and the send control recovers.
+	assert(foreignButton(scenario.runtime, "stop") === undefined, "the stop control survived the finished batch");
+	assert(foreignButton(scenario.runtime, "send") !== undefined, "the send control did not recover after stopping");
+	assert(radios(scenario.runtime).length === 4, "the section stopped rendering after a stop");
+	return "stop is cooperative, remaining rows read Stopped, sent row keeps its result, summary counts 1/2 and is aria-live";
 });
 
 console.log("");

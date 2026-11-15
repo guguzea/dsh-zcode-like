@@ -106,7 +106,9 @@
     "noticeP4": "If you do not agree, close this page and do not use the plugin.",
     "noticeCheck": "I have read and understood the above",
     "noticeAccept": "Continue",
-    "noticeBusy": "Recording…"
+    "noticeBusy": "Recording…",
+    "noticeFailed": "The acknowledgement could not be recorded. This page will keep showing this notice until it is. Try Continue again.",
+    "noticeReadFailed": "The Host could not be reached to read the acknowledgement, so this notice is shown. Continue will try to record it again."
   },
   "foreign": {
     "title": "Import from other HARNESSES",
@@ -128,6 +130,10 @@
     "collapseChildren": "Hide delegated conversations",
     "statusWaiting": "Waiting",
     "statusSending": "Sending…",
+    "statusStopped": "Stopped",
+    "stop": "Stop sending",
+    "stopping": "Stopping…",
+    "summary": "Sent {sent}, not sent {notSent}.",
     "statusOk": "Sent ({requests} requests)",
     "statusOkTruncated": "Sent ({requests} requests; only the first part of this conversation was sent)",
     "statusFailed": "Failed: {error}",

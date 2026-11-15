@@ -67,6 +67,8 @@ window.__ModuleLoader__.load({
 				"upload.noticeCheck": "I have read and understood the above",
 				"upload.noticeAccept": "Continue",
 				"upload.noticeBusy": "Recording…",
+				"upload.noticeFailed": "The acknowledgement could not be recorded. This page will keep showing this notice until it is. Try Continue again.",
+				"upload.noticeReadFailed": "The Host could not be reached to read the acknowledgement, so this notice is shown. Continue will try to record it again.",
 				"upload.byteCapLabel": "Byte cap per request",
 				"upload.patternsLabel": "Models to treat as DeepSeek",
 				"upload.patternsHelp": "Matched against the model id, ignoring case. Add a name here if a provider serves DeepSeek under a different one, such as dfmodel.",
@@ -151,6 +153,10 @@ window.__ModuleLoader__.load({
 				"foreign.collapseChildren": "Hide delegated conversations",
 				"foreign.statusWaiting": "Waiting",
 				"foreign.statusSending": "Sending…",
+				"foreign.statusStopped": "Stopped",
+				"foreign.stop": "Stop sending",
+				"foreign.stopping": "Stopping…",
+				"foreign.summary": "Sent {sent}, not sent {notSent}.",
 				"foreign.statusOk": "Sent ({requests} requests)",
 		"foreign.statusOkTruncated": "Sent ({requests} requests; only the first part of this conversation was sent)",
 				"foreign.statusFailed": "Failed: {error}",
@@ -209,6 +215,8 @@ window.__ModuleLoader__.load({
 				"upload.noticeCheck": "我已阅读并理解以上内容",
 				"upload.noticeAccept": "继续",
 				"upload.noticeBusy": "正在记录…",
+				"upload.noticeFailed": "确认没能记录下来。在记录成功之前，这一页会一直显示这段提示。可以再点一次「继续」重试。",
+				"upload.noticeReadFailed": "没能从宿主读到确认状态，所以这里仍然显示提示。点「继续」会再次尝试记录。",
 				"upload.byteCapLabel": "每次请求的字节上限",
 				"upload.patternsLabel": "把这些模型当作 DeepSeek",
 				"upload.patternsHelp": "按模型 id 匹配，不区分大小写。供应商用别的名字（比如 dfmodel）提供 DeepSeek 时，把那个名字加进来。",
@@ -293,6 +301,10 @@ window.__ModuleLoader__.load({
 				"foreign.collapseChildren": "折叠子代理",
 				"foreign.statusWaiting": "等待中",
 				"foreign.statusSending": "发送中…",
+				"foreign.statusStopped": "已停止",
+				"foreign.stop": "停止发送",
+				"foreign.stopping": "正在停止…",
+				"foreign.summary": "已发送 {sent} 个，未发送 {notSent} 个。",
 				"foreign.statusOk": "发送成功（{requests} 次请求）",
 		"foreign.statusOkTruncated": "发送成功（{requests} 次请求，只发送了这段对话的前一部分）",
 				"foreign.statusFailed": "失败：{error}",
@@ -986,6 +998,9 @@ window.__ModuleLoader__.load({
 			if (state === null) return null;
 			if (state.kind === "waiting") return t("foreign.statusWaiting");
 			if (state.kind === "sending") return t("foreign.statusSending");
+			// A stopped row was never attempted: it must not read as waiting (still queued) or as
+			// failed (the Host said nothing about it). "Stopped" is its own honest outcome.
+			if (state.kind === "stopped") return t("foreign.statusStopped");
 			if (state.kind === "ok") {
 				const requests = numberOrNull(state.requests);
 				// A truncated import is still a success, but saying only "sent" would hide that the tail of
@@ -997,6 +1012,22 @@ window.__ModuleLoader__.load({
 			if (detail !== null) return t("foreign.statusFailed").replace("{error}", detail);
 			if (numberOrNull(state.status) !== null) return t("foreign.statusFailed").replace("{error}", "HTTP " + String(state.status));
 			return t("foreign.statusFailed").replace("{error}", t("foreign.statusUnknown"));
+		}
+		/**
+		 * The end-of-batch line: how many rows were actually sent and how many were not (failed or
+		 * stopped). Rendered in an aria-live region so a screen reader hears the stop, not just the
+		 * sighted user who watched the row statuses change.
+		 * @param summary - `{sent, notSent}`.
+		 * @param t - bound dictionary lookup.
+		 */
+		function foreignSummaryText(summary, t) {
+			const state = asObject(summary);
+			if (state === null) return null;
+			const sent = numberOrNull(state.sent);
+			const notSent = numberOrNull(state.notSent);
+			return t("foreign.summary")
+				.replace("{sent}", sent === null ? t("upload.valueUnknown") : String(sent))
+				.replace("{notSent}", notSent === null ? t("upload.valueUnknown") : String(notSent));
 		}
 		/**
 		 * The send label with the number of ticked sessions substituted. The locale files carry
@@ -1774,30 +1805,37 @@ window.__ModuleLoader__.load({
 			/**
 			 * Read whether the liability notice has been acknowledged.
 			 *
-			 * Total: an absent route, a refused credential, an unreadable body and a transport failure
-			 * all resolve to `false`, because the safe direction is to SHOW the notice again. The cost
-			 * of showing it twice is one click; the cost of not showing it is a user who never saw it.
+			 * Total: a missing route, a refused credential, an unreadable body and a transport failure
+			 * all resolve to "not acknowledged, and the read itself failed", because the safe direction
+			 * is to SHOW the notice again. The safe direction is the only direction: this never reports
+			 * an acknowledgement the Host did not state.
 			 *
-			 * @returns `true` only when the Host positively says it was acknowledged.
+			 * The two facts are kept apart on purpose. `acknowledged: false` from a healthy read means
+			 * "the user has not accepted yet"; `failed: true` means "the page could not ask". The dialog
+			 * says the second one out loud instead of showing the same silent notice.
+			 *
+			 * @returns `{acknowledged, failed}`; a bare `false` would not be able to tell those apart.
 			 */
 			async function readNotice() {
+				const failedRead = { acknowledged: false, failed: true };
 				const fetcher = pageFetcher();
-				if (fetcher === null) return false;
+				if (fetcher === null) return failedRead;
 				let response;
 				try {
 					response = await fetcher(NOTICE_ROUTE, { headers: { accept: "application/json" } });
 				} catch (_error) {
-					return false;
+					return failedRead;
 				}
-				if (response === null || response === undefined || response.ok !== true) return false;
+				if (response === null || response === undefined || response.ok !== true) return failedRead;
 				let body;
 				try {
 					body = await response.json();
 				} catch (_error) {
-					return false;
+					return failedRead;
 				}
 				const root = asObject(body);
-				return root !== null && root.acknowledged === true;
+				if (root === null || typeof root.acknowledged !== "boolean") return failedRead;
+				return { acknowledged: root.acknowledged === true, failed: false };
 			}
 
 			/**
@@ -2084,6 +2122,12 @@ window.__ModuleLoader__.load({
 			const bodyId = useStableId();
 			const [ checked, setChecked ] = React.useState(false);
 			const [ busy, setBusy ] = React.useState(false);
+			// A failed write is NOT silent: the dialog stays up, the box stays ticked, the button
+			// stays usable for one-click retry, and this flag adds the honest line explaining why
+			// nothing appeared to happen. The cause is never invented: a throw, a refused response
+			// and an unconfirmed body all get the same statement because the page cannot tell them
+			// apart and the Host reports no reason here.
+			const [ writeFailed, setWriteFailed ] = React.useState(false);
 
 			React.useEffect(function () {
 				const target = checkRef.current;
@@ -2118,6 +2162,7 @@ window.__ModuleLoader__.load({
 			const accept = function () {
 				if (checked !== true || busy) return;
 				setBusy(true);
+				setWriteFailed(false);
 				let attempt;
 				try {
 					attempt = Promise.resolve(props.onAccept());
@@ -2126,10 +2171,13 @@ window.__ModuleLoader__.load({
 				}
 				void attempt.then(function (ok) {
 					// On failure the dialog stays up and the button returns, so the user is never left
-					// believing they acknowledged something the Host did not record.
-					if (ok !== true) setBusy(false);
+					// believing they acknowledged something the Host did not record. The failure line
+					// is what turns that silence into feedback; the tick stays so a retry is one click.
+					setBusy(false);
+					if (ok !== true) setWriteFailed(true);
 				}, function () {
 					setBusy(false);
+					setWriteFailed(true);
 				});
 			};
 
@@ -2161,6 +2209,14 @@ window.__ModuleLoader__.load({
 					}),
 					React.createElement("span", null, props.checkboxLabel)
 				),
+				// The mount-time read failed: say so instead of showing a silent notice. This is a
+				// different fact from "not acknowledged yet", so it gets its own line.
+				props.readFailed === true
+					? React.createElement("div", { className: "slu-error slu-noticeFailure", role: "alert", "data-notice-read-failed": "true" }, props.readFailedText)
+					: null,
+				writeFailed === true
+					? React.createElement("div", { className: "slu-error slu-noticeFailure", role: "alert", "data-notice-write-failed": "true" }, props.writeFailedText)
+					: null,
 				React.createElement("div", { className: "slu-panelActions" },
 					React.createElement("button", {
 						ref: buttonRef,
@@ -2286,6 +2342,12 @@ window.__ModuleLoader__.load({
 				const [ foreignStatus, setForeignStatus ] = React.useState(function () { return Object.create(null); });
 				const [ foreignConfirm, setForeignConfirm ] = React.useState(null);
 				const [ foreignSending, setForeignSending ] = React.useState(false);
+				// Stopping a batch is cooperative: a ref is checked at the top of each loop iteration,
+				// so the POST already in flight finishes (the Host committed its watermark) and no new
+				// one starts. The state copies drive the control and the end-of-batch summary.
+				const [ foreignStopRequested, setForeignStopRequested ] = React.useState(false);
+				const [ foreignSummary, setForeignSummary ] = React.useState(null);
+				const foreignStopRef = React.useRef(false);
 				// Delegated conversations are collapsed by default: a list of 366 conversations where
 				// 316 are children is mostly noise. This only controls VISIBILITY; ticks, the cascade
 				// and the send count always run over the whole payload.
@@ -2316,9 +2378,11 @@ window.__ModuleLoader__.load({
 				const [ fieldBusy, setFieldBusy ] = React.useState(null);
 				const [ fieldState, setFieldState ] = React.useState(null);
 				const optionRefs = React.useRef([]);
-				// The liability notice. `null` means "not read yet"; the dialog only appears once the
-				// Host has answered `false`, so it never flashes up before the acknowledgement is known.
-				const [ noticeAcknowledged, setNoticeAcknowledged ] = React.useState(null);
+				// The liability notice. `null` means "not read yet"; the dialog appears once the Host
+				// has answered, and it stays up unless that answer positively says acknowledged. The
+				// record keeps `failed` separate from `acknowledged`, so a read the page could not make
+				// is said out loud instead of looking like an ordinary unacknowledged visit.
+				const [ noticeState, setNoticeState ] = React.useState(null);
 
 				React.useEffect(function () {
 					let alive = true;
@@ -2326,13 +2390,18 @@ window.__ModuleLoader__.load({
 					try {
 						attempt = Promise.resolve(bridge.readNotice());
 					} catch (_error) {
-						attempt = Promise.resolve(false);
+						attempt = Promise.resolve(null);
 					}
-					void attempt.then(function (acknowledged) {
-						if (alive) setNoticeAcknowledged(acknowledged === true);
+					void attempt.then(function (result) {
+						const outcome = asObject(result);
+						if (!alive) return;
+						// Never default to hiding the notice: only a positive acknowledgement hides it.
+						setNoticeState(outcome === null
+							? { acknowledged: false, failed: true }
+							: { acknowledged: outcome.acknowledged === true, failed: outcome.failed === true });
 					}, function () {
-						// A failed read shows the notice: the safe direction.
-						if (alive) setNoticeAcknowledged(false);
+						// A failed read shows the notice, and says the read failed: the safe direction.
+						if (alive) setNoticeState({ acknowledged: false, failed: true });
 					});
 					return function () {
 						alive = false;
@@ -2857,21 +2926,50 @@ window.__ModuleLoader__.load({
 				};
 
 				/**
+				 * Ask the running batch to stop. It is cooperative: the flag is checked at the top of
+				 * the loop, so the POST already in flight finishes (the Host has committed it) and no
+				 * new POST starts. Nothing is aborted and no settled result is rewritten.
+				 */
+				const stopForeignSend = function () {
+					if (foreignSending !== true) return;
+					foreignStopRef.current = true;
+					setForeignStopRequested(true);
+				};
+
+				/**
 				 * Send the confirmed tick set serially, one POST per id, writing each row's state as
 				 * it goes. A failed row does not stop the loop, so one bad conversation cannot hide
-				 * the rest. The section is never unmounted, so the page keeps rendering during the
-				 * send instead of going blank.
+				 * the rest. A stop request ends the loop BEFORE the next POST: every remaining row is
+				 * marked stopped (never waiting, never failed) and the summary counts what was sent.
+				 * The section is never unmounted, so the page keeps rendering throughout.
 				 */
 				const confirmForeignSend = function () {
 					const ids = foreignConfirm === null ? [] : foreignConfirm;
 					setForeignConfirm(null);
 					if (ids.length === 0 || foreignSending === true) return;
+					foreignStopRef.current = false;
+					setForeignStopRequested(false);
+					setForeignSummary(null);
 					setForeignSending(true);
 					const waiting = Object.create(null);
 					for (const id of ids) waiting[id] = { kind: "waiting" };
 					setForeignStatus(waiting);
 					void (async function () {
-						for (const id of ids) {
+						let sent = 0;
+						let failed = 0;
+						let stopped = 0;
+						for (let index = 0; index < ids.length; index++) {
+							const id = ids[index];
+							if (foreignStopRef.current === true) {
+								const remaining = ids.slice(index);
+								stopped = remaining.length;
+								setForeignStatus(function (previous) {
+									const next = Object.assign(Object.create(null), previous);
+									for (const pendingId of remaining) next[pendingId] = { kind: "stopped" };
+									return next;
+								});
+								break;
+							}
 							setForeignStatus(function (previous) {
 								const next = Object.assign(Object.create(null), previous);
 								next[id] = { kind: "sending" };
@@ -2884,9 +2982,12 @@ window.__ModuleLoader__.load({
 								result = null;
 							}
 							const outcome = asObject(result);
+							const ok = outcome !== null && outcome.ok === true;
+							if (ok) sent++;
+							else failed++;
 							setForeignStatus(function (previous) {
 								const next = Object.assign(Object.create(null), previous);
-								if (outcome !== null && outcome.ok === true) {
+								if (ok) {
 									next[id] = { kind: "ok", requests: numberOrNull(outcome.requests), truncated: outcome.truncated === true };
 								} else {
 									next[id] = {
@@ -2899,6 +3000,9 @@ window.__ModuleLoader__.load({
 							});
 						}
 						setForeignSending(false);
+						foreignStopRef.current = false;
+						setForeignStopRequested(false);
+						setForeignSummary({ sent: sent, notSent: failed + stopped });
 					})();
 				};
 
@@ -3295,6 +3399,18 @@ window.__ModuleLoader__.load({
 						disabled: foreignSending === true || selectedForeign.length === 0 ? true : undefined,
 						onClick: function () { startForeignSend(); }
 					}, foreignSendLabel(t, selectedForeign.length)));
+					// Only while a batch is in flight. Clicking it does not abort the current POST; it
+					// stops the loop before the next one, which the label says.
+					if (foreignSending === true) {
+						foreignActions.push(React.createElement("button", {
+							key: "stop",
+							type: "button",
+							className: "slu-btn slu-foreignStop",
+							"data-foreign-action": "stop",
+							disabled: foreignStopRequested === true ? true : undefined,
+							onClick: function () { stopForeignSend(); }
+						}, t(foreignStopRequested === true ? "foreign.stopping" : "foreign.stop")));
+					}
 				}
 				foreignChildren.push(React.createElement("div", { key: "actions", className: "slu-fieldRow" }, foreignActions));
 				if (foreignScanFailed === true) {
@@ -3364,6 +3480,16 @@ window.__ModuleLoader__.load({
 						return React.createElement("div", { key: "foreign-group-" + groupIndex, className: "slu-foreignGroup" }, groupNodes);
 					});
 					foreignChildren.push(React.createElement("div", { key: "groups", className: "slu-foreignGroups" }, foreignGroupNodes));
+					// The end-of-batch count lives in a region that EXISTS before the batch ends, so a
+					// screen reader announces the text when it appears: inserting a fresh live region
+					// with its content at the same moment is unreliable. Empty until a batch finishes.
+					foreignChildren.push(React.createElement("div", {
+						key: "summary",
+						className: "slu-status slu-foreignSummary",
+						role: "status",
+						"aria-live": "polite",
+						"data-foreign-summary": foreignSummary === null ? undefined : "true"
+					}, foreignSummary === null ? null : foreignSummaryText(foreignSummary, t)));
 				}
 				const foreignState = fieldState !== null && fieldState.field === "foreignSessionIds" ? fieldState : null;
 				if (foreignState !== null) {
@@ -3585,16 +3711,20 @@ window.__ModuleLoader__.load({
 					["onCancel"]: cancelUpdate
 				}) : null;
 
-				// The liability notice. Shown whenever the Host has NOT recorded an acknowledgement —
-				// including while the read is still in flight as `null`? No: `null` renders nothing, so
-				// the dialog never flashes for a user who already accepted on a previous visit. A failed
-				// read resolves to `false` and therefore does show it.
-				const noticeDialog = noticeAcknowledged === false ? React.createElement(NoticeDialog, {
+				// The liability notice. Shown whenever the Host has NOT positively acknowledged it —
+				// while the read is still in flight (`null`) nothing renders, so the dialog never
+				// flashes for a user who already accepted on a previous visit. A failed read shows it
+				// AND its own line saying the Host could not be reached: hiding it is never the default.
+				const noticeVisible = noticeState !== null && noticeState.acknowledged !== true;
+				const noticeDialog = noticeVisible ? React.createElement(NoticeDialog, {
 					title: t("upload.noticeTitle"),
 					paragraphs: [ t("upload.noticeP1"), t("upload.noticeP2"), t("upload.noticeP3"), t("upload.noticeP4") ],
 					checkboxLabel: t("upload.noticeCheck"),
 					acceptLabel: t("upload.noticeAccept"),
 					busyLabel: t("upload.noticeBusy"),
+					readFailed: noticeState.failed === true,
+					readFailedText: t("upload.noticeReadFailed"),
+					writeFailedText: t("upload.noticeFailed"),
 					onAccept: async function () {
 						let ok = false;
 						try {
@@ -3605,7 +3735,7 @@ window.__ModuleLoader__.load({
 						// Only dismiss on a confirmed write. Otherwise the dialog stays up, because a
 						// dismissed dialog over an unrecorded acknowledgement would show the notice again
 						// on the next visit with no explanation.
-						if (ok) setNoticeAcknowledged(true);
+						if (ok) setNoticeState({ acknowledged: true, failed: false });
 						return ok;
 					}
 				}) : null;

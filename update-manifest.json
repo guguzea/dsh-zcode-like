@@ -4,13 +4,13 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 15370,
-      "sha256": "8c7eee2a5f7e7556be443fdb1ab9b382efbc94487573cf0d3d93f1eb51081003"
+      "bytes": 10388,
+      "sha256": "a278ca520f162246d2611f084be30cce7fc7ae4609e2399147cf49ed71ce6a6a"
     },
     {
       "path": "client.js",
-      "bytes": 186038,
-      "sha256": "6e6993c41882bba52f9b428585192f6c024acf420afc439303cc9e939cd9568e"
+      "bytes": 193533,
+      "sha256": "efea3b786456459c29bf3e86f41bbd1cc330f85106b0378266924c59f224ec0f"
     },
     {
       "path": "cordis.patch.yml",
@@ -114,13 +114,13 @@
     },
     {
       "path": "locale/en.json",
-      "bytes": 10308,
-      "sha256": "46c7c02b756bd3846efa78f9b97ce4d6a5031fb4b187f3cbdba8fab9800723d9"
+      "bytes": 10738,
+      "sha256": "2f396d3fa5bf5a3c564f56b5d99655047231638ac48eb24aa136edc5397b3036"
     },
     {
       "path": "locale/zh.json",
-      "bytes": 9866,
-      "sha256": "752930ab88de6cfec41523054f21a69ef55f0ffee0fafcb76decd5c9c2613e6f"
+      "bytes": 10320,
+      "sha256": "49cd3644c6a814b023aa2a80bbf33d928ccfe58461fb6ab7f3d9a58047526027"
     },
     {
       "path": "package.json",
@@ -128,5 +128,5 @@
       "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
     }
   ],
-  "notes": "公开更新源说明，检查错误的含义"
+  "notes": "通知弹窗失败提示、导入可中止"
 }

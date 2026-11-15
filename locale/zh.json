@@ -106,7 +106,9 @@
     "noticeP4": "如果你不同意，请关闭此页面并不要使用本插件。",
     "noticeCheck": "我已阅读并理解以上内容",
     "noticeAccept": "继续",
-    "noticeBusy": "正在记录…"
+    "noticeBusy": "正在记录…",
+    "noticeFailed": "确认没能记录下来。在记录成功之前，这一页会一直显示这段提示。可以再点一次「继续」重试。",
+    "noticeReadFailed": "没能从宿主读到确认状态，所以这里仍然显示提示。点「继续」会再次尝试记录。"
   },
   "foreign": {
     "title": "从其他 HARNESS 导入",
@@ -128,6 +130,10 @@
     "collapseChildren": "折叠子代理",
     "statusWaiting": "等待中",
     "statusSending": "发送中…",
+    "statusStopped": "已停止",
+    "stop": "停止发送",
+    "stopping": "正在停止…",
+    "summary": "已发送 {sent} 个，未发送 {notSent} 个。",
     "statusOk": "发送成功（{requests} 次请求）",
     "statusOkTruncated": "发送成功（{requests} 次请求，只发送了这段对话的前一部分）",
     "statusFailed": "失败：{error}",
