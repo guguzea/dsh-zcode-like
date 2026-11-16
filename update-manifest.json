@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 206493,
-      "sha256": "a69efc6eee22e57e14b17dc34d9d6d0e403f6496542fbd52b9543ee39fcc1d99"
+      "bytes": 207863,
+      "sha256": "9bd6418f9f4b9f0d130d6f21c6d8ecc2f412dfecda91048f892c9fb556743534"
     },
     {
       "path": "cordis.patch.yml",
@@ -128,5 +128,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "子代理会话、Cursor 目录与模型、应用内更新、扫描缓存、128 MiB 上限、启动竞态修复"
+  "notes": "修复自定义协议下的路由地址"
 }

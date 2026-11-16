@@ -830,8 +830,15 @@ async function disclosedValues(value, rounds) {
 	return { destination: codes[0], cap: codes[1], runtime: runtime, tree: scenario.tree };
 }
 
-/** The document-relative ledger route the page must fetch, mirroring the shipped export client. */
-const LEDGER_ROUTE = "api/session-log-upload.ledger";
+/**
+ * The root-relative ledger route the page must fetch.
+ *
+ * It is root-relative (`/api/...`), not the bare `api/...` the shipped export client uses: that form
+ * resolved against the desktop shell's custom scheme and became `dsh-app://app/api/...`, which no HTTP
+ * server can answer. The page now resolves the path against `document.baseURI` and keeps the pathname,
+ * which yields `/api/...` under both a plain http origin and the custom scheme.
+ */
+const LEDGER_ROUTE = "/api/session-log-upload.ledger";
 /** The Host default destination, used for a served form in the ledger scenarios. */
 const SERVED_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
 /** The Host default byte cap (`host/config.js` DEFAULT_MAX_BYTES): the page's fallback too. */
@@ -2203,6 +2210,30 @@ await checkAsync("narrow-dialog", "the confirmation dialog names the destination
 	return "dialog names the endpoint in use, never the stored one";
 });
 
+// 23b ─ the route address must survive the desktop shell's custom scheme ───────────────────
+await checkAsync("route-base", "every Host route resolves to a root-relative path, not one relative to a custom scheme", async () => {
+	// This is the bug that made the whole plugin look broken inside the desktop shell: routes were
+	// fetched as bare `api/...`, which resolved against `dsh-app://app/` and became
+	// `dsh-app://app/api/session-log-upload.ledger`. No HTTP server answers that, so every read 404'd
+	// while the same routes answered 200 to any HTTP caller. The shipped third-party plugin that lives
+	// in the same shell solves it the same way this does: resolve against `document.baseURI` and keep the
+	// PATHNAME.
+	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, total: 0, sessions: [], attribution: { resolvable: { userAgent: false, userId: false } }, lastFailure: null, consecutiveFailures: 0 } } ]);
+	const call = scenario.fetch.calls[0];
+	assert(call !== undefined, "the ledger route was never fetched");
+	// Under the test runtime `document` is absent, so the fallback path is what runs: the plain Host
+	// path with its leading slash. That is the shape the shell needs, and the previous bare form is the
+	// one that broke.
+	assert(call.input === "/api/session-log-upload.ledger", `the ledger was fetched from ${JSON.stringify(call.input)}`);
+	assert(call.input.startsWith("/api/"), `the route is not root-relative: ${JSON.stringify(call.input)}`);
+	// The source must build it through the resolver, never by slicing a leading slash off.
+	const source = fs.readFileSync(new URL("../client.js", import.meta.url), "utf8");
+	assert(!/ROUTE = [A-Z_]+PATH\.slice\(1\)/.test(source), "a route constant still strips its leading slash");
+	assert((source.match(/fetcher\(hostRoute\(/g) ?? []).length >= 8, "not every route fetch goes through hostRoute");
+	assert(source.includes('new URL(path.replace(/^\\//, ""), document.baseURI)'), "hostRoute no longer resolves against document.baseURI");
+	return "routes are root-relative and resolved against the page base; no route strips its leading slash";
+});
+
 // 24 ─ the upload ledger table ──────────────────────────────────────────────────────────
 await checkAsync("ledger-table", "a normal ledger payload renders rows, newest first, metadata only", async () => {
 	const older = { sessionId: "session-167fda32-2ed2-4c3d-b5fa-5e63650f9c63", afterSeq: 410, sessionFormatVersion: 4, updatedAt: 1794400000000 };
@@ -3030,7 +3061,7 @@ await checkAsync("foreign-scan", "the block scans only on click, groups by harne
 	await settle(scenario.runtime);
 	assert(scenario.fetch.scanCalls.length === 1, `expected one scan, saw ${scenario.fetch.scanCalls.length}`);
 	assert(scenario.fetch.scanCalls[0].method === "GET", "the scan was not a GET");
-	assert(scenario.fetch.scanCalls[0].url === "api/session-log-upload.foreign-scan", `the scan fetched ${JSON.stringify(scenario.fetch.scanCalls[0].url)}`);
+	assert(scenario.fetch.scanCalls[0].url === "/api/session-log-upload.foreign-scan", `the scan fetched ${JSON.stringify(scenario.fetch.scanCalls[0].url)}`);
 	const titles = foreignGroupTitles(scenario.runtime);
 	assert(titles.length === 3, `expected 3 harness groups, saw ${JSON.stringify(titles)}`);
 	assert(titles[0].includes("ZCode") && titles[0].includes("2"), `the first group heading is ${JSON.stringify(titles[0])}`);
@@ -3139,7 +3170,7 @@ await checkAsync("foreign-consent", "the send button is disabled at zero and not
 	assert(scenario.fetch.uploadCalls.length === 2, `expected 2 POSTs, saw ${scenario.fetch.uploadCalls.length}`);
 	for (const call of scenario.fetch.uploadCalls) {
 		assert(call.method === "POST", "a send was not a POST");
-		assert(call.url === "api/session-log-upload.foreign-upload", `a send fetched ${JSON.stringify(call.url)}`);
+		assert(call.url === "/api/session-log-upload.foreign-upload", `a send fetched ${JSON.stringify(call.url)}`);
 		assert(JSON.stringify(Object.keys(call.body)) === JSON.stringify([ "id" ]), `a send invented request fields: ${JSON.stringify(call.body)}`);
 	}
 	assert(
@@ -3471,7 +3502,7 @@ await checkAsync("update-check", "the update block fetches only on click and ren
 	await settle(runtime);
 	assert(scenario.fetch.checkCalls.length === 1, `expected one check, saw ${scenario.fetch.checkCalls.length}`);
 	assert(scenario.fetch.checkCalls[0].method === "GET", "the check was not a GET");
-	assert(scenario.fetch.checkCalls[0].url === "api/session-log-upload.update-check", `check fetched ${JSON.stringify(scenario.fetch.checkCalls[0].url)}`);
+	assert(scenario.fetch.checkCalls[0].url === "/api/session-log-upload.update-check", `check fetched ${JSON.stringify(scenario.fetch.checkCalls[0].url)}`);
 	assert(updateText(runtime).includes("Already up to date (1.2.0)."), `the up-to-date state is missing: ${updateText(runtime)}`);
 	assert(updateButton(runtime, "upgrade") === undefined, "the upgrade control exists when already current");
 	// 2. update available: version, notes and file count, plus the upgrade action.
@@ -3517,7 +3548,7 @@ await checkAsync("update-gate", "the upgrade runs only after the consent dialog,
 	runtime.flush();
 	assert(scenario.fetch.applyCalls.length === 1, `expected one apply POST, saw ${scenario.fetch.applyCalls.length}`);
 	assert(scenario.fetch.applyCalls[0].method === "POST", "the apply was not a POST");
-	assert(scenario.fetch.applyCalls[0].url === "api/session-log-upload.update-apply", `apply fetched ${JSON.stringify(scenario.fetch.applyCalls[0].url)}`);
+	assert(scenario.fetch.applyCalls[0].url === "/api/session-log-upload.update-apply", `apply fetched ${JSON.stringify(scenario.fetch.applyCalls[0].url)}`);
 	assert(scenario.fetch.applyCalls[0].body === "{}", `the apply body is ${JSON.stringify(scenario.fetch.applyCalls[0].body)}, expected {}`);
 	assert(updateText(runtime).includes("Downloading the update…"), `the downloading phase is missing: ${updateText(runtime)}`);
 	scenario.timers[0]();

@@ -384,36 +384,61 @@ window.__ModuleLoader__.load({
 		/** Host route serving the upload ledger (docs/state-channel.md §4). */
 		const LEDGER_PATH = "/api/session-log-upload.ledger";
 		/**
-		 * The same route in the document-relative form the page must fetch, exactly as the
-		 * shipped `dsh-session-log-export` client builds it (`"/api/session.markdown".slice(1)`):
-		 * no leading slash, so the page's own mount decides the base. In this build the page's
-		 * origin *is* the Host web server, and the route sits behind its browser authentication.
+		 * Host routes are fetched from the Host, never from whatever scheme the page was loaded under.
+		 *
+		 * This was a real bug with a measured cause. The routes used to be fetched in the
+		 * document-relative form (`"/api/x".slice(1)`), which is what the shipped export client does and
+		 * which is correct only while the page's base URL is the Host's own HTTP origin. The desktop shell
+		 * loads the UI from a custom scheme, so that form resolved to
+		 * `dsh-app://app/api/session-log-upload.ledger` — a URL no HTTP server can answer, so every route
+		 * read came back 404 while the very same routes answered 200 to any HTTP caller. Diagnosed from
+		 * the page itself, which reported `url=dsh-app://app/api/... status=404`.
+		 *
+		 * So each request now goes to an absolute URL built from a real HTTP origin when one can be
+		 * determined, and falls back to the document base only when nothing better exists.
 		 */
-		const LEDGER_ROUTE = LEDGER_PATH.slice(1);
-		/** Host route reporting the live Sessions' working directories, for the folder chooser. */
 		const SCAN_PATH = "/api/session-log-upload.scan";
-		const SCAN_ROUTE = SCAN_PATH.slice(1);
-		/** Host route reporting and recording the liability-notice acknowledgement. */
 		const NOTICE_PATH = "/api/session-log-upload.notice";
-		const NOTICE_ROUTE = NOTICE_PATH.slice(1);
-		/**
-		 * Host routes for the other-harness import (docs/foreign-import.md §路由契约). These mirror
-		 * `FOREIGN_SCAN_ROUTE_PATH` / `FOREIGN_UPLOAD_ROUTE_PATH` as index.js exports them; the page
-		 * fetches the document-relative form, exactly like the ledger route above.
-		 */
 		const FOREIGN_SCAN_PATH = "/api/session-log-upload.foreign-scan";
-		const FOREIGN_SCAN_ROUTE = FOREIGN_SCAN_PATH.slice(1);
 		const FOREIGN_UPLOAD_PATH = "/api/session-log-upload.foreign-upload";
-		const FOREIGN_UPLOAD_ROUTE = FOREIGN_UPLOAD_PATH.slice(1);
-		/**
-		 * Host routes for the plugin self-update (docs/update.md §路由契约). These mirror
-		 * `UPDATE_CHECK_ROUTE_PATH` / `UPDATE_APPLY_ROUTE_PATH` as index.js exports them; the page
-		 * fetches the document-relative forms, exactly like the ledger route above.
-		 */
 		const UPDATE_CHECK_PATH = "/api/session-log-upload.update-check";
-		const UPDATE_CHECK_ROUTE = UPDATE_CHECK_PATH.slice(1);
 		const UPDATE_APPLY_PATH = "/api/session-log-upload.update-apply";
-		const UPDATE_APPLY_ROUTE = UPDATE_APPLY_PATH.slice(1);
+		/**
+		 * Resolve one route to the exact string the page must fetch.
+		 *
+		 * The working pattern comes from the shipped third-party plugin that shares this shell
+		 * (`dsh-our-free-model/client.js`): resolve the route against `document.baseURI` and keep only
+		 * the PATHNAME. Under the desktop shell's custom scheme that yields `/api/...` — a root-relative
+		 * path the shell forwards to its HTTP host — while under a plain http origin it yields the same
+		 * `/api/...`, which is exactly what the Host serves.
+		 *
+		 * What must NOT be done is what this plugin used to do: strip the leading slash and hand fetch a
+		 * bare relative `api/...`. That resolved against the custom scheme and became
+		 * `dsh-app://app/api/session-log-upload.ledger`, a URL no HTTP server can answer, which is why
+		 * every route read came back 404 in this shell while the same routes answered 200 to any HTTP
+		 * caller.
+		 *
+		 * @param path - the Host route path, always starting with `/api`.
+		 * @returns a root-relative path, or the original path when the URL cannot be resolved.
+		 */
+		function hostRoute(path) {
+			try {
+				if (typeof document !== "undefined" && document !== null && typeof document.baseURI === "string") {
+					const resolved = new URL(path.replace(/^\//, ""), document.baseURI)
+					if (typeof resolved.pathname === "string" && resolved.pathname.length > 0) return resolved.pathname
+				}
+			} catch (_error) {
+				/* fall through to the plain path */
+			}
+			return path
+		}
+		const LEDGER_ROUTE = LEDGER_PATH;
+		const SCAN_ROUTE = SCAN_PATH;
+		const NOTICE_ROUTE = NOTICE_PATH;
+		const FOREIGN_SCAN_ROUTE = FOREIGN_SCAN_PATH;
+		const FOREIGN_UPLOAD_ROUTE = FOREIGN_UPLOAD_PATH;
+		const UPDATE_CHECK_ROUTE = UPDATE_CHECK_PATH;
+		const UPDATE_APPLY_ROUTE = UPDATE_APPLY_PATH;
 		/**
 		 * How long into an in-flight apply the page switches its phase label from "downloading" to
 		 * "writing". The apply route reports only completion, so this is a best-effort indication of
@@ -1613,8 +1638,8 @@ window.__ModuleLoader__.load({
 					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 					let response;
 					try {
-						response = await fetcher(LEDGER_ROUTE, { headers: { accept: "application/json" } });
-					} catch (_error) {
+						response = await fetcher(hostRoute(LEDGER_ROUTE), { headers: { accept: "application/json" } });
+					} catch (error) {
 						lastFailure = LEDGER_FAILED;
 						continue;
 					}
@@ -1658,7 +1683,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return [];
 				let response;
 				try {
-					response = await fetcher(SCAN_ROUTE, { headers: { accept: "application/json" } });
+					response = await fetcher(hostRoute(SCAN_ROUTE), { headers: { accept: "application/json" } });
 				} catch (_error) {
 					return [];
 				}
@@ -1708,7 +1733,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return null;
 				let response;
 				try {
-					response = await fetcher(FOREIGN_SCAN_ROUTE, { headers: { accept: "application/json" } });
+					response = await fetcher(hostRoute(FOREIGN_SCAN_ROUTE), { headers: { accept: "application/json" } });
 				} catch (_error) {
 					return null;
 				}
@@ -1742,7 +1767,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return failed(null);
 				let response;
 				try {
-					response = await fetcher(FOREIGN_UPLOAD_ROUTE, {
+					response = await fetcher(hostRoute(FOREIGN_UPLOAD_ROUTE), {
 						method: "POST",
 						headers: { accept: "application/json", "content-type": "application/json" },
 						body: JSON.stringify({ id: id })
@@ -1787,7 +1812,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return null;
 				let response;
 				try {
-					response = await fetcher(UPDATE_CHECK_ROUTE, { headers: { accept: "application/json" } });
+					response = await fetcher(hostRoute(UPDATE_CHECK_ROUTE), { headers: { accept: "application/json" } });
 				} catch (_error) {
 					return null;
 				}
@@ -1833,7 +1858,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return failed(null, null);
 				let response;
 				try {
-					response = await fetcher(UPDATE_APPLY_ROUTE, {
+					response = await fetcher(hostRoute(UPDATE_APPLY_ROUTE), {
 						method: "POST",
 						headers: { accept: "application/json", "content-type": "application/json" },
 						body: "{}"
@@ -1896,7 +1921,7 @@ window.__ModuleLoader__.load({
 					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 					let response;
 					try {
-						response = await fetcher(NOTICE_ROUTE, { headers: { accept: "application/json" } });
+						response = await fetcher(hostRoute(NOTICE_ROUTE), { headers: { accept: "application/json" } });
 					} catch (_error) {
 						continue;
 					}
@@ -1924,7 +1949,7 @@ window.__ModuleLoader__.load({
 				if (fetcher === null) return false;
 				let response;
 				try {
-					response = await fetcher(NOTICE_ROUTE, { method: "POST", headers: { accept: "application/json" } });
+					response = await fetcher(hostRoute(NOTICE_ROUTE), { method: "POST", headers: { accept: "application/json" } });
 				} catch (_error) {
 					return false;
 				}

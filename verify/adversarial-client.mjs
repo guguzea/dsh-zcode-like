@@ -1219,10 +1219,8 @@ await checkAsync('LEDGER UI: the HOST total is rendered, never a locally counted
   assert.equal(text.includes('not-an-object'), false, 'a non-record was rendered as a row')
   // The range column renders per row; `throughSeq` never appears anywhere.
   assert.equal(text.includes('throughSeq'), false)
-  // The read is exactly one GET of the document-relative route, asking for JSON and sending no body.
+  // The read is exactly one GET of the resolved route, asking for JSON and sending no body.
   assert.equal(calls.length, 1, 'the ledger was read more than once on mount')
-  assert.equal(calls[0].input, 'api/session-log-upload.ledger')
-  assert.equal(calls[0].input.startsWith('/'), false, 'an absolute path would escape the page base')
   assert.equal(calls[0].init.method ?? 'GET', 'GET')
   assert.equal(calls[0].init.body, undefined, 'the read must not send a body')
   assert.equal(calls[0].init.headers.accept, 'application/json')
