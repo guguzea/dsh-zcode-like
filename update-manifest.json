@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "files": [
     {
       "path": "README.md",
@@ -125,8 +125,8 @@
     {
       "path": "package.json",
       "bytes": 860,
-      "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
+      "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "台账读取也加重试"
+  "notes": "子代理会话、Cursor 目录与模型、应用内更新、扫描缓存、128 MiB 上限、启动竞态修复"
 }
