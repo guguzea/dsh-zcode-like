@@ -1139,8 +1139,12 @@ async function renderWithLedger(handler, body, extraProps = {}) {
     let tree = render()
     // The read publishes asynchronously, so poll until the section leaves its loading state rather
     // than assuming a fixed number of ticks — a stale read would silently test the previous case.
-    for (let attempt = 0; attempt < 25 && allText(tree).includes('upload.ledger.loading'); attempt++) {
+    // The ledger read retries a failure (0/120/400 ms), and this suite loads the real module, so those
+    // are real timers: the poll has to hand the event loop real time, not just microtask ticks, or a
+    // failing case would sit in "loading" forever.
+    for (let attempt = 0; attempt < 40 && allText(tree).includes('upload.ledger.loading'); attempt++) {
       await settle()
+      await new Promise((resolve) => setTimeout(resolve, 25))
       tree = render()
     }
     assert.equal(allText(tree).includes('upload.ledger.loading'), false, 'the ledger never left its loading state')
@@ -1289,8 +1293,16 @@ await checkAsync('LEDGER UI: refresh re-reads, and a re-read failure does not cr
       click(button)
       await settle()
       await settle()
-      const after = render()
-      assert.equal(calls.length, 2, 'refresh did not re-read the ledger')
+      let after = render()
+      // The re-read retries a failure, so the failure state appears only after the bounded attempts run
+      // out. Poll with real time (the retries are real timers) instead of assuming one tick.
+      for (let attempt = 0; attempt < 40 && !allText(after).includes('upload.ledger.stateFailed'); attempt++) {
+        await settle()
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        after = render()
+      }
+      // A refresh re-reads the ledger; the retries mean it asks more than once when the Host fails.
+      assert.ok(calls.length >= 2, `refresh did not re-read the ledger (${calls.length} calls)`)
       // The refresh re-read failed; the section must say so and keep rendering, not throw or vanish.
       assert.ok(allText(after).includes('upload.ledger.stateFailed'), 'the failed refresh was not surfaced')
       assert.ok(allText(after).includes('upload.ledger.title'), 'the ledger section disappeared after the failure')

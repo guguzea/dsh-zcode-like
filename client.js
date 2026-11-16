@@ -1565,25 +1565,40 @@ window.__ModuleLoader__.load({
 			async function readLedger() {
 				const fetcher = pageFetcher();
 				if (fetcher === null) return LEDGER_FAILED;
-				let response;
-				try {
-					response = await fetcher(LEDGER_ROUTE, { headers: { accept: "application/json" } });
-				} catch (_error) {
-					return LEDGER_FAILED;
+				// Same credential race as the notice read: the first mount after a DSH restart can fire
+				// before the browser has stored the cookie for the (possibly new) port, and the request
+				// fails. Retrying a couple of times before reporting keeps a startup race from reading as
+				// "the Host does not serve this route". A 401/403/404 is only reported once it is stable.
+				const delays = [0, 120, 400];
+				let lastFailure = LEDGER_FAILED;
+				for (const delay of delays) {
+					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+					let response;
+					try {
+						response = await fetcher(LEDGER_ROUTE, { headers: { accept: "application/json" } });
+					} catch (_error) {
+						lastFailure = LEDGER_FAILED;
+						continue;
+					}
+					if (response === null || response === undefined || response.ok !== true) {
+						const status = response !== null && response !== undefined && typeof response.status === "number" ? response.status : 0;
+						lastFailure = status === 401 || status === 403
+							? ledgerState("unauthorized")
+							: status === 404
+								? ledgerState("missing")
+								: LEDGER_FAILED;
+						continue;
+					}
+					let body;
+					try {
+						body = await response.json();
+					} catch (_error) {
+						lastFailure = ledgerState("malformed");
+						continue;
+					}
+					return normalizeLedger(body);
 				}
-				if (response === null || response === undefined || response.ok !== true) {
-					const status = response !== null && response !== undefined && typeof response.status === "number" ? response.status : 0;
-					if (status === 401 || status === 403) return ledgerState("unauthorized");
-					if (status === 404) return ledgerState("missing");
-					return LEDGER_FAILED;
-				}
-				let body;
-				try {
-					body = await response.json();
-				} catch (_error) {
-					return ledgerState("malformed");
-				}
-				return normalizeLedger(body);
+				return lastFailure;
 			}
 
 			/**

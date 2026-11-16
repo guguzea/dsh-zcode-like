@@ -936,15 +936,36 @@ async function ledgerScenario(replies, options) {
 		endpoint: settings.endpoint === undefined ? SERVED_ENDPOINT : settings.endpoint,
 		maxBytes: settings.maxBytes === undefined ? DEFAULT_CAP : settings.maxBytes
 	});
+	// The ledger read retries a failure with `setTimeout`s (0/120/400 ms), so the scenario needs a
+	// collected clock: without one the retries never fire and the read stays pending forever.
+	const timers = [];
 	const runtime = createHookRuntime();
 	applyWith({
 		configForms: createConfigForms({ served: [ "session-log-upload" ], form: form }),
 		fetch: ledger.fetch,
-		useSessions: settings.useSessions
+		useSessions: settings.useSessions,
+		setTimeout: function (fn) {
+			timers.push(fn);
+			return timers.length;
+		},
+		clearTimeout: function (id) {
+			if (typeof id === "number") timers[id - 1] = null;
+		}
 	}, runtime);
 	await settle(runtime);
+	/** Run every pending retry timer, then settle, until the clock is empty. */
+	const advance = async function () {
+		for (let round = 0; round < 10; round += 1) {
+			const pending = timers.filter((fn) => typeof fn === "function");
+			if (pending.length === 0) return;
+			for (let index = 0; index < timers.length; index += 1) timers[index] = null;
+			for (const fn of pending) fn();
+			await settle(runtime);
+		}
+	};
+	await advance();
 	// The ledger resolves after the first render, so the tree to assert on is the current one.
-	return { runtime: runtime, tree: runtime.tree(), fetch: ledger, form: form };
+	return { runtime: runtime, tree: runtime.tree(), fetch: ledger, form: form, advance: advance };
 }
 
 /**
@@ -2273,7 +2294,10 @@ await checkAsync("ledger-failures", "a missing route, a refused credential and a
 	for (const scenario of [ missing, unauthorized, forbidden, serverError, offline ]) {
 		assert(ledgerRows(scenario.runtime).length === 0, "a failed read produced rows");
 		assert(radios(scenario.runtime).length === 4, "the section did not survive a failed read");
-		assert(scenario.fetch.calls.length === 1, `a failed read was retried without a gesture (${scenario.fetch.calls.length} calls)`);
+		// The read retries a failure a bounded number of times (the first mount after a DSH restart can
+		// lose a credential race), and then stops. The property worth keeping is that it is BOUNDED and
+		// does not keep asking: exactly 3 attempts, never a loop.
+		assert(scenario.fetch.calls.length === 3, `a failed read made ${scenario.fetch.calls.length} requests, expected 3 attempts and no more`);
 	}
 
 	// A page with no fetch at all is still an honest state, never a crash.

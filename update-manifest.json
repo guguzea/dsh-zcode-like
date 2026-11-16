@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 203243,
-      "sha256": "10a9d59e6607fbb2f0ef45771fbc6fb3fd54c31167f5edcf67bb1f58dc7d0974"
+      "bytes": 203937,
+      "sha256": "7193ee06228a41f0e77be9b78454af6e58e7b34c2622ec1e86da97e3af10cee8"
     },
     {
       "path": "cordis.patch.yml",
@@ -128,5 +128,5 @@
       "sha256": "46ccd3ab42fe91324d371d0b1699d30449432408d84ab2b2f04d87c03d3a00f4"
     }
   ],
-  "notes": "固定端口前的首次读取重试"
+  "notes": "台账读取也加重试"
 }
