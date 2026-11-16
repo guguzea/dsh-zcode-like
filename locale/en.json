@@ -152,6 +152,7 @@
     "check": "Check for updates",
     "checking": "Checking…",
     "upToDate": "Already up to date ({version}).",
+    "manifestOlder": "The manifest lists {version}, which is older than the installed {current}. The published copy is probably still cached; try again in a few minutes.",
     "available": "Version {version} is available.",
     "notes": "Notes",
     "fileCount": "Files: {count}",

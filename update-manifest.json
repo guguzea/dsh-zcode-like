@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 203937,
-      "sha256": "7193ee06228a41f0e77be9b78454af6e58e7b34c2622ec1e86da97e3af10cee8"
+      "bytes": 206493,
+      "sha256": "a69efc6eee22e57e14b17dc34d9d6d0e403f6496542fbd52b9543ee39fcc1d99"
     },
     {
       "path": "cordis.patch.yml",
@@ -114,13 +114,13 @@
     },
     {
       "path": "locale/en.json",
-      "bytes": 11002,
-      "sha256": "d1551e6528e573a166cb7f18ccfa2c046e373cc4410424a38156f9bab4c42bbf"
+      "bytes": 11175,
+      "sha256": "53ba68eba78c4ce0bc08a651ab9f9ce068f8e5180d7c17d2adc18f6cde1b922e"
     },
     {
       "path": "locale/zh.json",
-      "bytes": 10570,
-      "sha256": "bd97189d5a532ea65ce9f3fb4d510efecbe139f3ac6eeb88006407030d207595"
+      "bytes": 10725,
+      "sha256": "63ec41a0cfa8fb758aaeda74837e57e79a3969e4deda2a39dbb9fe4ab529c02c"
     },
     {
       "path": "package.json",

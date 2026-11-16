@@ -173,6 +173,7 @@ window.__ModuleLoader__.load({
 				"update.check": "Check for updates",
 				"update.checking": "Checking…",
 				"update.upToDate": "Already up to date ({version}).",
+		"update.manifestOlder": "The manifest lists {version}, which is older than the installed {current}. The published copy is probably still cached; try again in a few minutes.",
 				"update.available": "Version {version} is available.",
 				"update.notes": "Notes",
 				"update.fileCount": "Files: {count}",
@@ -323,6 +324,7 @@ window.__ModuleLoader__.load({
 				"update.check": "检查更新",
 				"update.checking": "正在检查…",
 				"update.upToDate": "已是最新版本（{version}）。",
+		"update.manifestOlder": "清单里是 {version}，比已安装的 {current} 还旧。多半是发布副本还在缓存里，过几分钟再检查一次。",
 				"update.available": "发现新版本 {version}。",
 				"update.notes": "更新说明",
 				"update.fileCount": "文件数：{count}",
@@ -1048,6 +1050,42 @@ window.__ModuleLoader__.load({
 		 */
 		function foreignSendLabel(t, count) {
 			return t("foreign.send").replace("{count}", String(count));
+		}
+		/**
+		 * Compare two dotted numeric versions, the way the Host's own `compareVersions` does.
+		 *
+		 * Only used to say whether the published manifest is older than what is installed, so it does
+		 * not need the Host's full SemVer handling: missing segments count as 0, a non-numeric segment
+		 * ends the comparison, and an unparseable pair returns 0 (meaning "cannot tell", which renders
+		 * as the ordinary up-to-date line rather than inventing a problem).
+		 *
+		 * @param left - one version string.
+		 * @param right - the version to compare against.
+		 * @returns -1 when left is older, 1 when newer, 0 when equal or not comparable.
+		 */
+		function compareVersionStrings(left, right) {
+			if (typeof left !== "string" || typeof right !== "string") return 0;
+			const parse = function (text) {
+				const head = text.trim().replace(/^v/i, "").split(/[-+]/)[0];
+				const parts = head.split(".");
+				const numbers = [];
+				for (const part of parts) {
+					if (!/^\d+$/.test(part)) break;
+					numbers.push(Number(part));
+				}
+				return numbers;
+			};
+			const a = parse(left);
+			const b = parse(right);
+			if (a.length === 0 || b.length === 0) return 0;
+			const length = Math.max(a.length, b.length);
+			for (let index = 0; index < length; index += 1) {
+				const one = index < a.length ? a[index] : 0;
+				const other = index < b.length ? b[index] : 0;
+				if (one < other) return -1;
+				if (one > other) return 1;
+			}
+			return 0;
 		}
 		/**
 		 * Turn one Host update-check payload into the fields the block renders.
@@ -3774,8 +3812,19 @@ window.__ModuleLoader__.load({
 						updateChildren.push(React.createElement("div", { key: "files", className: "slu-note", "data-update-files": "true" },
 							t("update.fileCount").replace("{count}", String(updateCheckPayload.fileCount))));
 					} else {
-						updateChildren.push(React.createElement("div", { key: "latest", className: "slu-status", role: "status" },
-							t("update.upToDate").replace("{version}", updateCurrent === null ? t("update.notReported") : updateCurrent)));
+						// `available === false` covers two different facts, and conflating them is the bug the
+						// user caught: the manifest can be the SAME version, or OLDER than what is installed
+						// (GitHub's raw endpoint caches for a few minutes, so a release is briefly invisible).
+						// Only the first is "up to date".
+						const manifestOlder = updateCheckPayload.latest !== null
+							&& updateCurrent !== null
+							&& compareVersionStrings(updateCheckPayload.latest, updateCurrent) < 0;
+						updateChildren.push(React.createElement("div", { key: "latest", className: "slu-status", role: "status", "data-update-state": manifestOlder ? "older" : "current" },
+							manifestOlder
+								? t("update.manifestOlder")
+									.replace("{version}", updateCheckPayload.latest)
+									.replace("{current}", updateCurrent)
+								: t("update.upToDate").replace("{version}", updateCurrent === null ? t("update.notReported") : updateCurrent)));
 					}
 				}
 				children.push(React.createElement("div", { key: "update", className: "slu-update" }, updateChildren));

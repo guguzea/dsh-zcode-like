@@ -152,6 +152,7 @@
     "check": "检查更新",
     "checking": "正在检查…",
     "upToDate": "已是最新版本（{version}）。",
+    "manifestOlder": "清单里是 {version}，比已安装的 {current} 还旧。多半是发布副本还在缓存里，过几分钟再检查一次。",
     "available": "发现新版本 {version}。",
     "notes": "更新说明",
     "fileCount": "文件数：{count}",

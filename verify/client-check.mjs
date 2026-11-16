@@ -1573,6 +1573,18 @@ const UPDATE_LATEST = {
 	}
 };
 
+// The published manifest can be OLDER than the installed version: GitHub's raw endpoint caches for a
+// few minutes, so a check right after a release sees the previous manifest with `available: false`.
+// Reporting that as "up to date" is the defect the user caught.
+const UPDATE_OLDER = {
+	status: 200,
+	body: {
+		ok: true, current: "1.2.0", latest: "1.1.1", available: false,
+		notes: "", manifestUrl: "https://example.test/update-manifest.json",
+		source: "primary", files: [], error: null
+	}
+};
+
 /** A check payload in which the Host could not read the manifest. */
 const UPDATE_CHECK_ERROR = {
 	status: 200,
@@ -3520,6 +3532,22 @@ await checkAsync("update-gate", "the upgrade runs only after the consent dialog,
 	assert(updateText(runtime).includes("Plugin update"), "the block disappeared after the upgrade");
 	assert(radios(runtime).length === 4, "the section stopped rendering during the upgrade");
 	return "upgrade only after consent, body covers replace/rollback/restart/unsigned, phases downloading+writing+done, backup and restart shown";
+});
+
+// 47b ─ a manifest OLDER than the installed version is not "up to date" ──────────────────────
+await checkAsync("update-older", "a cached manifest that lists an older version says so instead of claiming up to date", async () => {
+	const scenario = await updateScenario({ checks: [ UPDATE_OLDER ] });
+	const runtime = scenario.runtime;
+	updateButton(runtime, "check").props.onClick({});
+	await settle(runtime);
+	const text = updateText(runtime);
+	// The two facts must read differently; "Already up to date" here would be a lie the user can catch.
+	assert(!text.includes("Already up to date"), `an older manifest was reported as up to date: ${text}`);
+	assert(text.includes("1.1.1"), `the stale manifest version is not named: ${text}`);
+	assert(text.includes("1.2.0"), `the installed version is not named: ${text}`);
+	assert(/cached/i.test(text), `the line does not suggest the cache: ${text}`);
+	assert(updateButton(runtime, "upgrade") === undefined, "an older manifest offered an upgrade");
+	return "an older manifest is named as older, with the installed version and a cache hint, and no upgrade control";
 });
 
 // 48 ─ a failed apply keeps the block rendered and names the reason ───────────────────────────
