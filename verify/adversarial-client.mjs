@@ -759,7 +759,8 @@ check('RETARGETED: the UI may write exactly the four whitelisted fields — neve
     assert.equal(whitelist.includes(forbidden), false, `${forbidden} is in EDITABLE_FIELDS`)
   }
   // `mode` has its own writer, reached only from the consent-gated path.
-  assert.match(CLIENT_SOURCE, /async function writeMode\(nextMode\) \{\n\t+return persistField\("mode", nextMode\);/)
+  // CRLF-tolerant: this checkout writes CRLF (core.autocrlf=true), so `\n`-only anchors never match.
+  assert.match(CLIENT_SOURCE, /async function writeMode\(nextMode\) \{\r?\n\t+return persistField\("mode", nextMode\);/)
   // No literal write of the two protected fields through any path, and no literal `mode` write from
   // the field editor either (it writes `field`, a variable, which the whitelist bounds).
   for (const protectedField of ['uploadModel', 'credentialRef']) {

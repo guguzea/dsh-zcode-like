@@ -1144,6 +1144,11 @@ async function noticeScenario(replies, writeReply) {
 	const queue = replies.slice();
 	const posts = [];
 	const realFetch = globalThis.fetch;
+	// The notice read retries a failed attempt a couple of times before it shows anything: the first
+	// mount after a DSH restart can lose a credential race, so a single 401 is not "the Host cannot
+	// answer". Those retries are `setTimeout`s, so the test drives them with a collected clock instead
+	// of waiting in real time.
+	const timers = [];
 	const replyOf = function (reply) {
 		if (reply !== undefined && reply.reject !== undefined) throw new Error(String(reply.reject));
 		const status = reply !== undefined && typeof reply.status === "number" ? reply.status : 200;
@@ -1168,9 +1173,35 @@ async function noticeScenario(replies, writeReply) {
 	};
 	try {
 		const runtime = createHookRuntime();
-		applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }), fetch: globalThis.fetch }, runtime);
+		applyWith({
+			configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: DEFAULT_CAP }) }),
+			fetch: globalThis.fetch,
+			setTimeout: function (fn) {
+				timers.push(fn);
+				return timers.length;
+			},
+			clearTimeout: function (id) {
+				if (typeof id === "number") timers[id - 1] = null;
+			}
+		}, runtime);
 		await settle(runtime);
-		return { runtime: runtime, posts: posts };
+		return {
+			runtime: runtime,
+			posts: posts,
+			/**
+			 * Fire every pending retry timer, then let the resulting promises settle. Repeats until the
+			 * clock is empty so chained retries run too.
+			 */
+			advance: async function () {
+				for (let round = 0; round < 10; round += 1) {
+					const pending = timers.filter((fn) => typeof fn === "function");
+					if (pending.length === 0) return;
+					for (let index = 0; index < timers.length; index += 1) timers[index] = null;
+					for (const fn of pending) fn();
+					await settle(runtime);
+				}
+			}
+		};
 	} finally {
 		globalThis.fetch = realFetch;
 	}
@@ -2811,6 +2842,10 @@ await checkAsync("notice-gate", "the notice blocks until acknowledged, then neve
 	const renderNotice = async function (noticeReply, acknowledgeOk) {
 		const posted = [];
 		const realFetch = globalThis.fetch;
+		// The notice read retries a failure (3 attempts per call, twice at mount level), so this harness
+		// needs a collected clock too: without it the retry timers never fire and the failure state is
+		// never reached. `advance()` below runs them the same way the main scenario does.
+		const localTimers = [];
 		globalThis.fetch = async function (input, init) {
 			const url = typeof input === "string" ? input : String(input);
 			const method = init !== undefined && init !== null && init.method !== undefined ? init.method : "GET";
@@ -2827,9 +2862,28 @@ await checkAsync("notice-gate", "the notice blocks until acknowledged, then neve
 			const runtime = createHookRuntime();
 			// `fetch` in the module scope is the function itself (that is how `pageFetcher` probes it),
 			// not a wrapper object.
-			applyWith({ configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: 8388608 }) }), fetch: globalThis.fetch }, runtime);
+			applyWith({
+				configForms: createConfigForms({ served: [ "session-log-upload" ], form: createWritableForm({ mode: "official-only", endpoint: SERVED_ENDPOINT, maxBytes: 8388608 }) }),
+				fetch: globalThis.fetch,
+				setTimeout: function (fn) {
+					localTimers.push(fn);
+					return localTimers.length;
+				},
+				clearTimeout: function (id) {
+					if (typeof id === "number") localTimers[id - 1] = null;
+				}
+			}, runtime);
 			await settle(runtime);
-			return { runtime, posted };
+			const advance = async function () {
+				for (let round = 0; round < 10; round += 1) {
+					const pending = localTimers.filter((fn) => typeof fn === "function");
+					if (pending.length === 0) return;
+					for (let index = 0; index < localTimers.length; index += 1) localTimers[index] = null;
+					for (const fn of pending) fn();
+					await settle(runtime);
+				}
+			};
+			return { runtime, posted, advance };
 		} finally {
 			globalThis.fetch = realFetch;
 		}
@@ -2869,7 +2923,8 @@ await checkAsync("notice-gate", "the notice blocks until acknowledged, then neve
 
 	// ── a failed read shows the notice, in flow, never as a modal ───────────────────────────
 	{
-		const { runtime } = await renderNotice({ ok: false, status: 500, body: {} });
+		const { runtime, advance } = await renderNotice({ ok: false, status: 500, body: {} });
+		await advance();
 		assert(noticeModal(runtime) === undefined, "a failed acknowledgement read rendered a blocking modal");
 		assert(noticeBanner(runtime) !== undefined, "a failed acknowledgement read did not show the notice banner");
 	}
@@ -3513,6 +3568,9 @@ await checkAsync("notice-write-failure", "a failed notice write says so, keeps t
 // 50 ─ a failed notice read renders an in-flow banner, not a blocking modal ───────────────────
 await checkAsync("notice-banner", "a failed notice read renders a usable banner, not a blocking modal, and the rest of the section survives", async () => {
 	const failed = await noticeScenario([ { status: 500, body: {} } ]);
+	// The read retries before it reports a failure, so drive the collected clock first: three attempts
+	// (immediate, then two delayed) is what it takes to conclude the Host really cannot answer.
+	await failed.advance();
 	assert(noticeModal(failed.runtime) === undefined, "a failed read rendered a blocking modal");
 	const banner = noticeBanner(failed.runtime);
 	assert(banner !== undefined, "a failed read did not show the notice banner");
@@ -3532,6 +3590,7 @@ await checkAsync("notice-banner", "a failed notice read renders a usable banner,
 // 51 ─ the banner escape never records consent, and the notice returns on the next mount ──────
 await checkAsync("notice-banner-escape", "the banner escape records nothing and the notice returns on the next mount", async () => {
 	const first = await noticeScenario([ { status: 500, body: {} } ]);
+	await first.advance();
 	assert(noticeBanner(first.runtime) !== undefined, "no banner to escape from");
 	const dismiss = noticeDismissButton(first.runtime);
 	assert(dismiss !== undefined, "the banner has no escape control");
@@ -3544,13 +3603,22 @@ await checkAsync("notice-banner-escape", "the banner escape records nothing and 
 	assert(radios(first.runtime).length === 4, "the escape broke the section");
 	// A fresh mount shows the notice again: the escape was not a recorded acknowledgement.
 	const second = await noticeScenario([ { status: 500, body: {} } ]);
+	await second.advance();
 	assert(noticeBanner(second.runtime) !== undefined, "the notice did not return on the next mount");
 	return "escape dismisses this mount only, writes nothing, and the notice returns on remount";
 });
 
 // 52 ─ Try again re-runs a failed read and clears the failure line ─────────────────────────────
 await checkAsync("notice-retry", "Try again re-reads the acknowledgement and clears the failure line", async () => {
-	const scenario = await noticeScenario([ { status: 500, body: {} }, { status: 200, body: { acknowledged: false } } ]);
+	// Measured from the shipped retry structure, not guessed: `readNotice` makes 3 attempts per call
+	// (delays 0/120/400) and the mount effect retries twice more, so the banner appears only after NINE
+	// identical failures. The tenth read is the user's Try again, and it succeeds.
+	const failing = { status: 500, body: {} }
+	const replies = []
+	for (let index = 0; index < 9; index += 1) replies.push(failing)
+	replies.push({ status: 200, body: { acknowledged: false } })
+	const scenario = await noticeScenario(replies);
+	await scenario.advance();
 	assert(noticeBanner(scenario.runtime) !== undefined, "the first read failure did not show the banner");
 	const retry = noticeRetryButton(scenario.runtime);
 	assert(retry !== undefined, "the failed read has no retry control");

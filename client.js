@@ -1831,22 +1831,34 @@ window.__ModuleLoader__.load({
 				const failedRead = { acknowledged: false, failed: true };
 				const fetcher = pageFetcher();
 				if (fetcher === null) return failedRead;
-				let response;
-				try {
-					response = await fetcher(NOTICE_ROUTE, { headers: { accept: "application/json" } });
-				} catch (_error) {
-					return failedRead;
+				// The first mount after DSH restarts can lose this race. DSH names its browser cookie
+				// after `host:port`, so a fresh launch issues a NEW cookie name; the settings page can
+				// render and call this before the browser has stored it, and that one request 401s.
+				// The user then sees the notice, opens the page again a moment later, and it is gone —
+				// which is exactly the "first time it pops, second time it does not" report. Three
+				// attempts with a short backoff covers the window without making the page wait: a
+				// successful read returns immediately on attempt one.
+				const delays = [0, 120, 400];
+				for (const delay of delays) {
+					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+					let response;
+					try {
+						response = await fetcher(NOTICE_ROUTE, { headers: { accept: "application/json" } });
+					} catch (_error) {
+						continue;
+					}
+					if (response === null || response === undefined || response.ok !== true) continue;
+					let body;
+					try {
+						body = await response.json();
+					} catch (_error) {
+						continue;
+					}
+					const root = asObject(body);
+					if (root === null || typeof root.acknowledged !== "boolean") continue;
+					return { acknowledged: root.acknowledged === true, failed: false };
 				}
-				if (response === null || response === undefined || response.ok !== true) return failedRead;
-				let body;
-				try {
-					body = await response.json();
-				} catch (_error) {
-					return failedRead;
-				}
-				const root = asObject(body);
-				if (root === null || typeof root.acknowledged !== "boolean") return failedRead;
-				return { acknowledged: root.acknowledged === true, failed: false };
+				return failedRead;
 			}
 
 			/**
@@ -2437,25 +2449,51 @@ window.__ModuleLoader__.load({
 
 				React.useEffect(function () {
 					let alive = true;
-					let attempt;
-					try {
-						attempt = Promise.resolve(bridge.readNotice());
-					} catch (_error) {
-						attempt = Promise.resolve(null);
-					}
-					void attempt.then(function (result) {
-						const outcome = asObject(result);
-						if (!alive) return;
-						// Never default to hiding the notice: only a positive acknowledgement hides it.
-						setNoticeState(outcome === null
-							? { acknowledged: false, failed: true }
-							: { acknowledged: outcome.acknowledged === true, failed: outcome.failed === true });
-					}, function () {
-						// A failed read shows the notice, and says the read failed: the safe direction.
-						if (alive) setNoticeState({ acknowledged: false, failed: true });
-					});
+					let retryTimer = null;
+					// One delayed retry on top of the attempts inside `readNotice`. The first mount after
+					// a DSH restart can call this before the browser has stored the credential for the
+					// NEW port (DSH names its cookie after `host:port`), and the user's report is exactly
+					// that: it pops the first time, and is gone the second. Waiting a moment and asking
+					// again turns that into "it never popped", instead of showing a consent dialog over a
+					// connection blip.
+					const MAX_MOUNT_RETRIES = 2;
+					let mountAttempt = 0;
+					const run = function () {
+						let attempt;
+						try {
+							attempt = Promise.resolve(bridge.readNotice());
+						} catch (_error) {
+							attempt = Promise.resolve(null);
+						}
+						void attempt.then(function (result) {
+							if (!alive) return;
+							const outcome = asObject(result);
+							const settled = outcome === null
+								? { acknowledged: false, failed: true }
+								: { acknowledged: outcome.acknowledged === true, failed: outcome.failed === true };
+							// A failed read is retried a couple of times before it is shown: a transient
+							// credential race is not the same fact as "the Host cannot answer".
+							if (settled.failed === true && mountAttempt < MAX_MOUNT_RETRIES) {
+								mountAttempt += 1;
+								retryTimer = setTimeout(run, 700 * mountAttempt);
+								return;
+							}
+							// Never default to hiding the notice: only a positive acknowledgement hides it.
+							setNoticeState(settled);
+						}, function () {
+							if (!alive) return;
+							if (mountAttempt < MAX_MOUNT_RETRIES) {
+								mountAttempt += 1;
+								retryTimer = setTimeout(run, 700 * mountAttempt);
+								return;
+							}
+							setNoticeState({ acknowledged: false, failed: true });
+						});
+					};
+					run();
 					return function () {
 						alive = false;
+						if (retryTimer !== null) clearTimeout(retryTimer);
 					};
 				}, [ bridge, noticeAttempt ]);
 
