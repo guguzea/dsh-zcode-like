@@ -42,6 +42,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { ScanCache, memoryScanCache } from '../host/foreign/cache.js'
+import * as antigravity from '../host/foreign/antigravity.js'
 import * as cline from '../host/foreign/cline.js'
 import * as cursor from '../host/foreign/cursor.js'
 import { ADAPTERS, adapterFor, readForeignSession, scanAll } from '../host/foreign/index.js'
@@ -574,9 +575,109 @@ function buildClineStore() {
   }
 }
 
-/** The bare home: every harness directory exists but holds no store. */
+/**
+ * The Antigravity store, in the shape measured on a real installation.
+ *
+ * Two databases: one index (`conversation_summaries.db`) describing every conversation, and one
+ * per-conversation database. The transcript text lives in the index's full-text table as plain text,
+ * and the step boundary column is a BLOB of `[lineIndex, corpusOrdinal]` pairs. The second value is
+ * carried through untouched by the adapter, so the fixture deliberately makes it irregular (0,1 then
+ * 170,171) to catch an implementation that slices by it.
+ */
+function buildAntigravityStore() {
+  const base = join(home, '.gemini', 'antigravity')
+  const conversations = join(base, 'conversations')
+  mkdirSync(conversations, { recursive: true })
+  if (SQLITE === null) return
+
+  const userBody = 'first question\n'
+  const agentBody = ['answer one', '', '', 'answer two', '', 'answer three', ''].join('\n')
+
+  const index = new SQLITE.DatabaseSync(join(base, 'conversation_summaries.db'))
+  try {
+    index.exec(`
+      CREATE TABLE conversation_summaries (
+        conversation_id TEXT PRIMARY KEY,
+        title TEXT,
+        preview TEXT,
+        step_count INTEGER,
+        last_modified_time TEXT,
+        workspace_uris TEXT,
+        parent_conversation_id TEXT,
+        nesting_depth INTEGER
+      );
+      CREATE TABLE conversations_fts (
+        conversation_id TEXT,
+        chunk_index INTEGER,
+        chunk_first_step INTEGER,
+        chunk_last_step INTEGER,
+        user_body TEXT,
+        agent_body TEXT,
+        user_step_byte_offsets BLOB,
+        agent_step_byte_offsets BLOB
+      );
+    `)
+    const insertSummary = index.prepare(
+      'INSERT INTO conversation_summaries (conversation_id, title, preview, step_count, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    insertSummary.run(
+      'ag-parent-0001',
+      'Fixture conversation',
+      'Fixture conversation',
+      6,
+      '2026-11-16 15:40:19.859236+00:00',
+      '["file:///f%3A/AGTEST"]',
+      '',
+      0,
+    )
+    insertSummary.run(
+      'ag-child-0002',
+      '',
+      '',
+      4,
+      '2026-11-16 15:40:06.314654+00:00',
+      '["file:///f%3A/AGTEST"]',
+      'ag-parent-0001',
+      1,
+    )
+    const insertChunk = index.prepare(
+      'INSERT INTO conversations_fts (conversation_id, chunk_index, chunk_first_step, chunk_last_step, user_body, agent_body, user_step_byte_offsets, agent_step_byte_offsets) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    // Boundaries are line indices into the bodies: one user step, three assistant steps.
+    insertChunk.run(
+      'ag-parent-0001',
+      0,
+      0,
+      5,
+      userBody,
+      agentBody,
+      Buffer.from('[[1,0]]', 'utf8'),
+      Buffer.from('[[1,0],[4,170],[6,171]]', 'utf8'),
+    )
+  } finally {
+    index.close()
+  }
+
+  // The per-conversation database: its own schema is protobuf-bearing and is deliberately NOT read,
+  // so the fixture only needs to exist with the right name and a plausible size.
+  const conversation = new SQLITE.DatabaseSync(join(conversations, 'ag-parent-0001.db'))
+  try {
+    conversation.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB);')
+    conversation.exec("INSERT INTO steps (idx, step_payload) VALUES (0, x'080e2003');")
+  } finally {
+    conversation.close()
+  }
+}
+
+/**
+ * The bare home: every harness directory exists but holds no store.
+ *
+ * Antigravity gets `.gemini/antigravity` rather than `.gemini`, because `.gemini` alone can belong to
+ * the Gemini CLI — the adapter treats the inner directory as the installation marker, and this fixture
+ * has to match that judgement or the "installed but empty" contract means nothing.
+ */
 function buildBareHome() {
-  for (const directory of ['.zcode', '.qoder-cn', '.cursor', '.workbuddy', '.cline']) {
+  for (const directory of ['.zcode', '.qoder-cn', join('.gemini', 'antigravity'), '.cursor', '.workbuddy', '.cline']) {
     mkdirSync(join(bare, directory), { recursive: true })
   }
 }
@@ -689,6 +790,7 @@ buildQoderStore()
 buildCursorStore()
 buildWorkbuddyStore()
 buildClineStore()
+buildAntigravityStore()
 buildBareHome()
 buildCacheHome()
 buildCursorMetaStore()
@@ -1157,15 +1259,59 @@ try {
   })
 
   // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-  // 7. the registry
+  // 6b. Antigravity (SQLite index + plain-text FTS extraction)
+await check('antigravity scans the index and reports both conversations', async () => {
+  const scanned = await antigravity.scan({ home })
+  assert.equal(scanned.available, true)
+  assert.equal(scanned.error, null)
+  assert.equal(scanned.sessions.length, 2)
+  const parent = scanned.sessions.find((entry) => entry.id === 'ag-parent-0001')
+  const child = scanned.sessions.find((entry) => entry.id === 'ag-child-0002')
+  assert.ok(parent !== undefined, 'the parent row is missing')
+  assert.ok(child !== undefined, 'the child row is missing')
+  // The index row carries the title, the decoded workspace and the step count; the model is NOT in
+  // the store, so the adapter reports it empty rather than inventing one.
+  assert.equal(parent.title, 'Fixture conversation')
+  assert.equal(parent.cwd, 'f:/AGTEST')
+  assert.equal(parent.messageCount, 6)
+  assert.equal(parent.provider, '')
+  assert.equal(parent.model, '')
+  // The parent link is a bare id; the registry adds the harness prefix.
+  assert.equal(child.parentId, 'ag-parent-0001')
+  assert.equal(child.title, '')
+})
+
+await check('antigravity reads the transcript from the plain-text extraction', async () => {
+  const read = await antigravity.readSession('ag-parent-0001', { home })
+  assert.equal(read.error, null)
+  assert.equal(read.cwd, 'f:/AGTEST')
+  assert.equal(read.messages.length, 4)
+  assert.equal(read.messages[0].role, 'user')
+  assert.equal(read.messages[0].blocks[0].text, 'first question')
+  // The boundary column's SECOND value (0,170,171) is a corpus ordinal, not an offset: an adapter
+  // that sliced by it would collapse these three turns into one. The first value drives the split.
+  const assistantTexts = read.messages.filter((message) => message.role === 'assistant').map((message) => message.blocks[0].text)
+  assert.deepEqual(assistantTexts, ['answer one', 'answer two', 'answer three'])
+})
+
+await check('antigravity refuses unknown and unsafe ids without throwing', async () => {
+  assert.equal((await antigravity.readSession('nope-9999', { home })).error, 'not-found')
+  assert.equal((await antigravity.readSession('../escape', { home })).error, 'invalid-id')
+  assert.equal((await antigravity.readSession('', { home })).error, 'invalid-id')
+  assert.equal((await antigravity.scan({ home: bare })).available, true)
+  assert.deepEqual((await antigravity.scan({ home: empty })).sessions, [])
+})
+
+// 7. the registry
   // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-  await check('ADAPTERS is the five harnesses in presentation order, each with a label', () => {
+  await check('ADAPTERS is the six harnesses in presentation order, each with a label', () => {
     assert.deepEqual(
       ADAPTERS.map((adapter) => [adapter.harness, adapter.label]),
       [
         ['zcode', 'ZCode'],
         ['qoder', 'Qoder'],
+        ['antigravity', 'Antigravity'],
         ['cursor', 'Cursor'],
         ['workbuddy', 'WorkBuddy'],
         ['cline', 'Cline'],
@@ -1188,12 +1334,12 @@ try {
     }
   })
 
-  await check('scanAll returns one group per harness, in order, with the five-time shape', async () => {
+  await check('scanAll returns one group per harness, in order, with the six-time shape', async () => {
     const result = await scanAll({ home })
     assert.equal(Array.isArray(result.harnesses), true)
     assert.deepEqual(
       result.harnesses.map((group) => group.harness),
-      ['zcode', 'qoder', 'cursor', 'workbuddy', 'cline'],
+      ['zcode', 'qoder', 'antigravity', 'cursor', 'workbuddy', 'cline'],
     )
     for (const group of result.harnesses) {
       assert.deepEqual(Object.keys(group).sort(), ['available', 'error', 'harness', 'label', 'sessions'])
@@ -1204,7 +1350,7 @@ try {
     }
     assert.deepEqual(
       result.harnesses.map((group) => group.available),
-      [true, true, true, true, true],
+      [true, true, true, true, true, true],
     )
     const clineGroup = result.harnesses.find((group) => group.harness === 'cline')
     assert.equal(clineGroup.error, 'unsupported-schema')
@@ -1300,7 +1446,7 @@ try {
     const controller = new AbortController()
     controller.abort()
     const result = await scanAll({ home, signal: controller.signal })
-    assert.equal(result.harnesses.length, 5)
+    assert.equal(result.harnesses.length, 6)
     for (const group of result.harnesses) {
       assert.equal(group.error, 'aborted', group.harness)
       assert.deepEqual(group.sessions, [], group.harness)

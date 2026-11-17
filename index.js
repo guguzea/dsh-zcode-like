@@ -1848,11 +1848,51 @@ export function apply(ctx, rawConfig) {
                     response.end(JSON.stringify({ error: 'method-not-allowed' }))
                     return
                   }
+                  // The payload functions expect a Fetch-style request (they call `request.json()` and
+                  // read `request.method`). This is a Node `IncomingMessage`, which has neither, so the
+                  // body is buffered here and exposed through the same tiny surface. Without this the
+                  // upload route answered "the request body is not JSON" for a perfectly valid body.
+                  const wrapped = {
+                    method,
+                    headers: request.headers,
+                    body: null,
+                    async json() {
+                      const raw = await readBody()
+                      if (raw.length === 0) throw new Error('empty body')
+                      return JSON.parse(raw)
+                    },
+                    async text() {
+                      return readBody()
+                    },
+                  }
+                  let bodyPromise = null
+                  const readBody = () => {
+                    if (bodyPromise !== null) return bodyPromise
+                    bodyPromise = new Promise((resolve, reject) => {
+                      const chunks = []
+                      let size = 0
+                      // The same ceiling the Fetch registry applied: a hostile local client must not be
+                      // able to make the Host buffer an unbounded body.
+                      const limit = FOREIGN_READ_BYTES
+                      request.on('data', (chunk) => {
+                        size += chunk.length
+                        if (size > limit) {
+                          reject(new Error('request body too large'))
+                          request.destroy()
+                          return
+                        }
+                        chunks.push(chunk)
+                      })
+                      request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+                      request.on('error', reject)
+                    })
+                    return bodyPromise
+                  }
                   let payload
                   try {
-                    payload = await route.payload(request, method)
+                    payload = await route.payload(wrapped, method)
                   } catch (error) {
-                    payload = { error: messageOf(error) }
+                    payload = { ok: false, error: messageOf(error) }
                   }
                   response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
                   response.end(JSON.stringify(payload === undefined ? {} : payload))

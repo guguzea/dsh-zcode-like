@@ -494,7 +494,8 @@ await check('every shipped host file is present', () => {
     join('host', 'eligibility.js'),
     join('host', 'failure.js'),
     join('host', 'foreign-forge.js'),
-    join('host', 'foreign', 'cache.js'),
+    join('host', 'foreign', 'antigravity.js'),
+  join('host', 'foreign', 'cache.js'),
     join('host', 'foreign', 'cline.js'),
     join('host', 'foreign', 'cursor.js'),
     join('host', 'foreign', 'index.js'),
@@ -3203,7 +3204,7 @@ await check('scan on a machine without any harness store still answers, with eve
   const host = foreignHost()
   try {
     const payload = await withForeignHome(emptyHome, () => foreignScan(host))
-    assert.equal(payload.harnesses.length, 5, `expected the five adapters, got ${payload.harnesses.length}`)
+    assert.equal(payload.harnesses.length, 6, `expected the six adapters, got ${payload.harnesses.length}`)
     for (const group of payload.harnesses) {
       assert.equal(typeof group.harness, 'string')
       assert.equal(group.available, false, `${group.harness} claimed to be available on an empty home`)
@@ -3508,6 +3509,32 @@ await check('the apply route ignores any request body and is never reachable as 
     assert.ok(rawRoutes === 1, `expected one webServer.register call site (the page-facing loop), saw ${rawRoutes}`)
     assert.ok(source.includes('const loopback = typeof host === \'string\' && /^(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::\\d+)?$/i.test(host)'), 'the page-facing routes are not loopback-fenced')
     assert.ok(source.includes("response.writeHead(403"), 'a non-loopback request is not refused')
+})
+
+// 22 ─ the page-facing route table matches the Connection route table ─────────────────────────────
+await check('the page-facing routes cover the same seven names as the Connection route table', () => {
+  // Two transports serve one route table. If a name is added to one and not the other, the settings
+  // page silently loses that feature while HTTP callers keep it — which is exactly the class of bug
+  // that made the whole page read nothing.
+  const hostSource = readFileSync(join(root, 'index.js'), 'utf8')
+  const expected = ['ledger', 'scan', 'notice', 'foreign-scan', 'foreign-upload', 'update-check', 'update-apply']
+  const pageFacing = [...hostSource.matchAll(/name: '([a-z-]+)'/g)].map((match) => match[1])
+  for (const name of expected) {
+    assert.ok(pageFacing.includes(name), `the page-facing route table has no ${name}`)
+  }
+  // The handler receives a Node `IncomingMessage`, which has no `.json()`. The payload functions call
+  // it anyway, so the handler must buffer the body and expose that surface — without it a valid upload
+  // POST answered "the request body is not JSON".
+  assert.ok(hostSource.includes('async json()'), 'the page-facing handler never exposes a JSON body reader')
+  assert.ok(hostSource.includes('FOREIGN_READ_BYTES'), 'the buffered body is not bounded')
+  // And the client half must ask for the same names under the same prefix.
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+  for (const name of expected) {
+    assert.ok(
+      client.includes(`/plugins/@local/dsh-session-log-upload/${name}"`),
+      `the client does not fetch the ${name} route under the /plugins prefix`,
+    )
+  }
 })
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks passed`)

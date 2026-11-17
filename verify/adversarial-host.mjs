@@ -1689,7 +1689,7 @@ check('FIXED: the schema now constrains `mode` to the four frozen ids', () => {
 // ══ 9. dependency-freedom ══════════════════════════════════════════════════════════════════════
 console.log('\n9. dependency-freedom')
 
-const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'host/foreign-forge.js', 'host/foreign/cache.js', 'host/foreign/index.js', 'host/foreign/shared.js', 'host/foreign/zcode.js', 'host/foreign/qoder.js', 'host/foreign/cursor.js', 'host/foreign/workbuddy.js', 'host/foreign/cline.js', 'host/update.js', 'client.js']
+const SHIPPED_FILES = ['index.js', 'host/config.js', 'host/eligibility.js', 'host/failure.js', 'host/logfield.js', 'host/notice.js', 'host/upload.js', 'host/watermark.js', 'host/foreign-forge.js', 'host/foreign/antigravity.js', 'host/foreign/cache.js', 'host/foreign/index.js', 'host/foreign/shared.js', 'host/foreign/zcode.js', 'host/foreign/qoder.js', 'host/foreign/cursor.js', 'host/foreign/workbuddy.js', 'host/foreign/cline.js', 'host/update.js', 'client.js']
 
 check('every static import/require in every shipped file is node: or relative (react/react-dom excepted)', () => {
   const offenders = []

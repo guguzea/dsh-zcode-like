@@ -12,6 +12,7 @@
  * @module session-log-upload/foreign
  */
 
+import * as antigravity from './antigravity.js'
 import * as cline from './cline.js'
 import * as cursor from './cursor.js'
 import * as qoder from './qoder.js'
@@ -24,7 +25,7 @@ import * as zcode from './zcode.js'
  * The order is part of the interface: the page renders the groups in this order, so it is the order
  * a person reads when comparing what the machine has.
  */
-export const ADAPTERS = [zcode, qoder, cursor, workbuddy, cline]
+export const ADAPTERS = [zcode, qoder, antigravity, cursor, workbuddy, cline]
 
 /** A thrown value as one line of text. */
 function messageOf(error) {

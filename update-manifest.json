@@ -38,6 +38,11 @@
       "sha256": "c7570f2abacde90d68a7221a46eeff09518fc1405e46dca4841de42122f79f84"
     },
     {
+      "path": "host/foreign/antigravity.js",
+      "bytes": 15522,
+      "sha256": "475bb7c3ba67422d646c0cd8c33137f62d2eabdcde51c4be57fcdc934b462433"
+    },
+    {
       "path": "host/foreign/cache.js",
       "bytes": 10701,
       "sha256": "f7c2baaa6198264b9696a7a0c4685091b20a3fe08c12ca3bb16c4152e2f0f17a"
@@ -54,8 +59,8 @@
     },
     {
       "path": "host/foreign/index.js",
-      "bytes": 5289,
-      "sha256": "476a6834be1872199aa9034d89bb4a8e47f66d2b6af0574118e009610c533f6b"
+      "bytes": 5350,
+      "sha256": "97e0e75eac8aa97712659268f5cc713a0672b7a1e4dc31fa6d99fee67af6b9a1"
     },
     {
       "path": "host/foreign/qoder.js",
@@ -109,8 +114,8 @@
     },
     {
       "path": "index.js",
-      "bytes": 106696,
-      "sha256": "a2934844c07fc09ec0321830e62290146d0fd4a31dba80770db86ee21fe5a2cd"
+      "bytes": 108786,
+      "sha256": "8696a35b3f607dfbe61c4d59922f8673204c97986df12bbbaaf62001339d09b8"
     },
     {
       "path": "locale/en.json",
@@ -128,5 +133,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "页面改用 /plugins 通道"
+  "notes": "新增 Antigravity 扫描支持"
 }
