@@ -3251,6 +3251,33 @@ await checkAsync("foreign-truncated", "a truncated import says so instead of onl
 	return "a truncated import is distinguishable from a complete one";
 });
 
+// 40b ─ a skipped import is its own outcome, never "Sent" ────────────────────────────────────
+await checkAsync("foreign-already-sent", "an already-delivered conversation says nothing was re-sent, and is not counted as a send", async () => {
+	// The Host answers `ok: true` with `skipped: 'already-sent'` when its watermark already covers
+	// every event. That result sent nothing and wrote no ledger row, so rendering it as a plain success
+	// is the difference between "it worked" and "it did nothing" — the exact confusion this fixes.
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { body: { ok: true, requests: 0, bytes: 0, skipped: "already-sent" } }, { body: { ok: true, requests: 1 } } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	for (const id of [ "zcode/sess_a", "zcode/sess_b" ]) tickForeign(scenario.runtime, id, true);
+	clickForeign(scenario.runtime, "send");
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	const skippedRow = foreignStatusTextOf(scenario.runtime, "zcode/sess_a");
+	const sentRow = foreignStatusTextOf(scenario.runtime, "zcode/sess_b");
+	assert(skippedRow.length > 0, "the skipped row rendered nothing");
+	assert(skippedRow !== sentRow, "a skipped import renders exactly like a real send");
+	assert(/re-sent|already/i.test(skippedRow), `the skipped row reads ${JSON.stringify(skippedRow)}`);
+	assert(!/re-sent|already/i.test(sentRow), `a real send was described as skipped: ${JSON.stringify(sentRow)}`);
+	// The batch line must not claim a send either.
+	const summary = textOf(scenario.runtime.tree());
+	assert(/1 were already sent|already sent/i.test(summary), `the summary does not mention the skip: ${summary.slice(-240)}`);
+	return "a skipped import is named as skipped on its row and in the batch line, and is not counted as a send";
+});
+
 // 41 ─ the DSH folder chooser cascades: a ticked folder covers its Sessions ──────────────────
 await checkAsync("chooser-cascade", "a ticked folder covers its Sessions: checked, disabled, hinted, and not saved as Session ids", async () => {
 	const scenario = await chooserScenario(CHOOSER_WORKSPACES, { uploadSessionIds: [ "s2" ] });

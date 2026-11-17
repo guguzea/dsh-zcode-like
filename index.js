@@ -1522,7 +1522,13 @@ export function apply(ctx, rawConfig) {
     // caller gets a named failure and no watermark is written, so the next attempt re-reads from the same
     // offset rather than skipping a range that never left.
     const auth = await resolveAuth(live.endpoint)
-    if (auth === undefined) return { ok: false, id, error: `no credential resolved for ${live.credentialRef} at ${live.endpoint}` }
+    if (auth === undefined) {
+      const reason = `no credential resolved for ${live.credentialRef} at ${live.endpoint}`
+      // Recorded, not just returned. A page that never shows the error and a Host that never logs it is
+      // how an import can fail with no trace anywhere — which is exactly what happened here.
+      failures.record({ kind: 'no-credential', status: null, retryable: false, sessionId: id, detail: reason })
+      return { ok: false, id, error: reason }
+    }
 
     const version = forged.base.sessionFormatVersion
     const stored = watermark.read(forgedId)
@@ -1545,7 +1551,11 @@ export function apply(ctx, rawConfig) {
     for (let guard = 0; guard < 100000; guard += 1) {
       const built = buildForeignField({ forged, afterSeq, maxBytes: live.maxBytes })
       if (built.field === null) {
-        if (requests === 0) return { ok: false, id, forgedId, requests, bytes, error: String(built.reason ?? 'nothing to send') }
+        if (requests === 0) {
+          const reason = String(built.reason ?? 'nothing to send')
+          failures.record({ kind: 'payload-too-large', status: null, retryable: false, sessionId: id, detail: reason })
+          return { ok: false, id, forgedId, requests, bytes, error: reason }
+        }
         break
       }
       bytes += jsonBytes(built.field)
@@ -1580,7 +1590,16 @@ export function apply(ctx, rawConfig) {
       }
 
       if (result.ok !== true) {
-        return { ok: false, id, forgedId, requests, bytes, throughSeq, error: String(result.error ?? 'upload failed') }
+        const reason = String(result.error ?? 'upload failed')
+        // The HTTP classification `uploadLogField` already produced is the closed set the page renders.
+        failures.record({
+          kind: typeof result.kind === 'string' ? result.kind : 'transport',
+          status: typeof result.status === 'number' ? result.status : null,
+          retryable: result.retryable === true,
+          sessionId: id,
+          detail: reason,
+        })
+        return { ok: false, id, forgedId, requests, bytes, throughSeq, error: reason }
       }
       requests += 1
       throughSeq = result.throughSeq

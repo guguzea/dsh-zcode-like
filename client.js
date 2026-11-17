@@ -156,9 +156,11 @@ window.__ModuleLoader__.load({
 				"foreign.statusWaiting": "Waiting",
 				"foreign.statusSending": "Sending…",
 				"foreign.statusStopped": "Stopped",
+				"foreign.statusAlready": "Already sent in full — nothing was re-sent.",
 				"foreign.stop": "Stop sending",
 				"foreign.stopping": "Stopping…",
 				"foreign.summary": "Sent {sent}, not sent {notSent}.",
+				"foreign.summaryAlready": "{already} were already sent in full and nothing was re-sent.",
 				"foreign.statusOk": "Sent ({requests} requests)",
 		"foreign.statusOkTruncated": "Sent ({requests} requests; only the first part of this conversation was sent)",
 				"foreign.statusFailed": "Failed: {error}",
@@ -307,9 +309,11 @@ window.__ModuleLoader__.load({
 				"foreign.statusWaiting": "等待中",
 				"foreign.statusSending": "发送中…",
 				"foreign.statusStopped": "已停止",
+				"foreign.statusAlready": "之前已完整发送过，这次没有重发。",
 				"foreign.stop": "停止发送",
 				"foreign.stopping": "正在停止…",
 				"foreign.summary": "已发送 {sent} 个，未发送 {notSent} 个。",
+				"foreign.summaryAlready": "其中 {already} 个之前已经完整发送过，这次没有重发。",
 				"foreign.statusOk": "发送成功（{requests} 次请求）",
 		"foreign.statusOkTruncated": "发送成功（{requests} 次请求，只发送了这段对话的前一部分）",
 				"foreign.statusFailed": "失败：{error}",
@@ -1040,6 +1044,9 @@ window.__ModuleLoader__.load({
 			// A stopped row was never attempted: it must not read as waiting (still queued) or as
 			// failed (the Host said nothing about it). "Stopped" is its own honest outcome.
 			if (state.kind === "stopped") return t("foreign.statusStopped");
+			// A conversation the Host had already delivered in full sends nothing. It is not a failure, but
+// it is also not a send, and saying "sent" here is what made a no-op look like an import.
+			if (state.kind === "already") return t("foreign.statusAlready");
 			if (state.kind === "ok") {
 				const requests = numberOrNull(state.requests);
 				// A truncated import is still a success, but saying only "sent" would hide that the tail of
@@ -1064,9 +1071,15 @@ window.__ModuleLoader__.load({
 			if (state === null) return null;
 			const sent = numberOrNull(state.sent);
 			const notSent = numberOrNull(state.notSent);
-			return t("foreign.summary")
+			const already = numberOrNull(state.already);
+			const line = t("foreign.summary")
 				.replace("{sent}", sent === null ? t("upload.valueUnknown") : String(sent))
 				.replace("{notSent}", notSent === null ? t("upload.valueUnknown") : String(notSent));
+			// A skipped row is its own fact, not a send and not a failure: nothing went out because the
+			// Host had already delivered that conversation in full. Saying so is the difference between
+			// "it worked" and "it did nothing", which is exactly the confusion this line removes.
+			if (already === null || already <= 0) return line;
+			return line + " " + t("foreign.summaryAlready").replace("{already}", String(already));
 		}
 		/**
 		 * The send label with the number of ticked sessions substituted. The locale files carry
@@ -1793,6 +1806,10 @@ window.__ModuleLoader__.load({
 					// The Host reports whether the read budget cut the conversation short. Dropping this flag
 					// here would make a partial import read as a complete one on the row.
 					truncated: record.truncated === true,
+					// `ok: true` with `skipped: "already-sent"` means NOTHING was sent: the watermark already
+					// covered every event. Dropping it made a no-op indistinguishable from a real import —
+					// the row said "sent", the user re-sent, and the ledger rightly showed no new record.
+					skipped: firstString(record.skipped),
 					error: firstString(record.error),
 					status: status
 				};
@@ -3151,6 +3168,7 @@ window.__ModuleLoader__.load({
 						let sent = 0;
 						let failed = 0;
 						let stopped = 0;
+						let already = 0;
 						for (let index = 0; index < ids.length; index++) {
 							const id = ids[index];
 							if (foreignStopRef.current === true) {
@@ -3176,11 +3194,18 @@ window.__ModuleLoader__.load({
 							}
 							const outcome = asObject(result);
 							const ok = outcome !== null && outcome.ok === true;
-							if (ok) sent++;
+							// `ok` with `skipped: 'already-sent'` sent nothing: the watermark already covered
+							// every event. Counting it as a send is what made a no-op look like a real import
+							// while the ledger correctly stayed unchanged.
+							const alreadySent = ok && outcome !== null && firstString(outcome.skipped) === "already-sent";
+							if (ok && !alreadySent) sent++;
+							else if (alreadySent) already++;
 							else failed++;
 							setForeignStatus(function (previous) {
 								const next = Object.assign(Object.create(null), previous);
-								if (ok) {
+								if (alreadySent) {
+									next[id] = { kind: "already" };
+								} else if (ok) {
 									next[id] = { kind: "ok", requests: numberOrNull(outcome.requests), truncated: outcome.truncated === true };
 								} else {
 									next[id] = {
@@ -3195,7 +3220,7 @@ window.__ModuleLoader__.load({
 						setForeignSending(false);
 						foreignStopRef.current = false;
 						setForeignStopRequested(false);
-						setForeignSummary({ sent: sent, notSent: failed + stopped });
+						setForeignSummary({ sent: sent, notSent: failed + stopped, already: already });
 					})();
 				};
 
