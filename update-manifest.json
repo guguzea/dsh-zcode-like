@@ -114,8 +114,8 @@
     },
     {
       "path": "index.js",
-      "bytes": 108786,
-      "sha256": "8696a35b3f607dfbe61c4d59922f8673204c97986df12bbbaaf62001339d09b8"
+      "bytes": 109091,
+      "sha256": "74691c8d1fd2752fbd440eb21a284ba7c6e239f1cc6aed0230113b3bb79cfd92"
     },
     {
       "path": "locale/en.json",
@@ -133,5 +133,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "Antigravity 会话显示模型"
+  "notes": "Antigravity 会话显示模型；注册失败可见"
 }

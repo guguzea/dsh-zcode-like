@@ -1799,9 +1799,12 @@ export function apply(ctx, rawConfig) {
   function registerPluginRoutes() {
     const webServer = ctx.get('webServer')
     if (webServer === null || webServer === undefined || typeof webServer.register !== 'function') {
-      log('debug', `session-log-upload: no webServer, so ${PLUGIN_ROUTE_PREFIX}/… is not registered; the page will read nothing`)
+      // `warn`, not `debug`: when this returns early the settings page can read nothing, and that has
+      // to be visible in the Host log without turning on debug logging first.
+      log('warn', `session-log-upload: no webServer service, so ${PLUGIN_ROUTE_PREFIX}/… is not registered; the settings page will read nothing`)
       return
     }
+    log('info', `session-log-upload: registering ${String(PLUGIN_ROUTE_PREFIX)}/… on the web server`)
     const routes = [
       { name: 'ledger', methods: ['GET'], payload: () => ledgerPayload(), what: 'the Settings page will not show the detailed log' },
       { name: 'scan', methods: ['GET'], payload: () => scanPayload(), what: 'the Settings page cannot offer a folder list' },
