@@ -838,7 +838,7 @@ async function disclosedValues(value, rounds) {
  * server can answer. The page now resolves the path against `document.baseURI` and keeps the pathname,
  * which yields `/api/...` under both a plain http origin and the custom scheme.
  */
-const LEDGER_ROUTE = "/api/session-log-upload.ledger";
+const LEDGER_ROUTE = "/plugins/@local/dsh-session-log-upload/ledger";
 /** The Host default destination, used for a served form in the ledger scenarios. */
 const SERVED_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
 /** The Host default byte cap (`host/config.js` DEFAULT_MAX_BYTES): the page's fallback too. */
@@ -862,7 +862,7 @@ function ledgerFetch(replies) {
 	const noticeQueue = Array.isArray(noticeReplies) ? noticeReplies.slice() : [ noticeReplies ];
 	const stub = function (input, init) {
 		const url = typeof input === "string" ? input : String(input);
-		if (url.indexOf("session-log-upload.notice") >= 0) {
+		if (url.indexOf("@local/dsh-session-log-upload/notice") >= 0) {
 			const reply = noticeQueue.length > 1 ? noticeQueue.shift() : noticeQueue[0];
 			const status = typeof reply.status === "number" ? reply.status : 200;
 			const hasBody = reply !== undefined && Object.prototype.hasOwnProperty.call(reply, "body") ? true : reply !== undefined && reply.acknowledged !== undefined;
@@ -1189,7 +1189,7 @@ async function noticeScenario(replies, writeReply) {
 	globalThis.fetch = async function (input, init) {
 		const url = typeof input === "string" ? input : String(input);
 		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
-		if (url.indexOf("session-log-upload.notice") >= 0) {
+		if (url.indexOf("@local/dsh-session-log-upload/notice") >= 0) {
 			if (method === "POST") {
 				posts.push(true);
 				return replyOf(writeReply === undefined ? { status: 200, body: { acknowledged: true } } : writeReply);
@@ -1307,7 +1307,7 @@ function foreignFetch(settings) {
 	const fetchStub = function (input, init) {
 		const url = typeof input === "string" ? input : String(input);
 		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
-		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("@local/dsh-session-log-upload/notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
 		if (url.indexOf("foreign-scan") >= 0) {
 			calls.push({ url: url, method: method, body: null });
 			return respond(scanReply);
@@ -1423,8 +1423,8 @@ function foreignRowOrder(runtime) {
 function chooserFetch(workspaces) {
 	return function (input) {
 		const url = typeof input === "string" ? input : String(input);
-		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
-		if (url.indexOf("session-log-upload.scan") >= 0) return Promise.resolve(foreignResponse(200, { workspaces: workspaces }));
+		if (url.indexOf("@local/dsh-session-log-upload/notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("@local/dsh-session-log-upload/scan") >= 0) return Promise.resolve(foreignResponse(200, { workspaces: workspaces }));
 		return Promise.resolve(foreignResponse(200, { generatedAt: 1, directory: "C:\\l", total: 0, sessions: [] }));
 	};
 }
@@ -1637,7 +1637,7 @@ function updateFetch(settings) {
 	const stub = function (input, init) {
 		const url = typeof input === "string" ? input : String(input);
 		const method = init !== null && init !== undefined && typeof init.method === "string" ? init.method : "GET";
-		if (url.indexOf("session-log-upload.notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
+		if (url.indexOf("@local/dsh-session-log-upload/notice") >= 0) return Promise.resolve(foreignResponse(200, { acknowledged: true }));
 		if (url.indexOf("update-check") >= 0) {
 			calls.push({ url: url, method: method, body: null });
 			const reply = checks.length > 1 ? checks.shift() : checks[0];
@@ -2211,27 +2211,36 @@ await checkAsync("narrow-dialog", "the confirmation dialog names the destination
 });
 
 // 23b ─ the route address must survive the desktop shell's custom scheme ───────────────────
-await checkAsync("route-base", "every Host route resolves to a root-relative path, not one relative to a custom scheme", async () => {
-	// This is the bug that made the whole plugin look broken inside the desktop shell: routes were
-	// fetched as bare `api/...`, which resolved against `dsh-app://app/` and became
-	// `dsh-app://app/api/session-log-upload.ledger`. No HTTP server answers that, so every read 404'd
-	// while the same routes answered 200 to any HTTP caller. The shipped third-party plugin that lives
-	// in the same shell solves it the same way this does: resolve against `document.baseURI` and keep the
-	// PATHNAME.
+await checkAsync("route-base", "every Host route is a root-absolute /plugins path, not one relative to a custom scheme", async () => {
+	// This is the bug that made the whole plugin look broken inside the desktop shell. Two things were
+	// wrong at once:
+	//
+	//   1. the routes were fetched as bare `api/...`, which resolved against `dsh-app://app/` and became
+	//      `dsh-app://app/api/...` — a URL no HTTP server answers, so every read 404'd while the same
+	//      paths answered 200/401 to any HTTP caller;
+	//   2. they were registered on Connection's Fetch registry as `/api/...`, which the page cannot
+	//      address from the shell's scheme at all.
+	//
+	// The shipped third-party plugin that works in this shell registers under `/plugins/<package>/...`
+	// on the web server, and the page fetches that root-absolutely. Both halves are asserted here.
 	const scenario = await ledgerScenario([ { status: 200, body: { generatedAt: 1, total: 0, sessions: [], attribution: { resolvable: { userAgent: false, userId: false } }, lastFailure: null, consecutiveFailures: 0 } } ]);
 	const call = scenario.fetch.calls[0];
 	assert(call !== undefined, "the ledger route was never fetched");
-	// Under the test runtime `document` is absent, so the fallback path is what runs: the plain Host
-	// path with its leading slash. That is the shape the shell needs, and the previous bare form is the
-	// one that broke.
-	assert(call.input === "/api/session-log-upload.ledger", `the ledger was fetched from ${JSON.stringify(call.input)}`);
-	assert(call.input.startsWith("/api/"), `the route is not root-relative: ${JSON.stringify(call.input)}`);
-	// The source must build it through the resolver, never by slicing a leading slash off.
+	assert(call.input === "/plugins/@local/dsh-session-log-upload/ledger", `the ledger was fetched from ${JSON.stringify(call.input)}`);
+	assert(call.input.startsWith("/plugins/"), `the route is not under the /plugins prefix: ${JSON.stringify(call.input)}`);
+	assert(call.input.startsWith("/"), `the route is not root-absolute: ${JSON.stringify(call.input)}`);
+	// The source must build routes through the resolver, never by slicing a leading slash off.
 	const source = fs.readFileSync(new URL("../client.js", import.meta.url), "utf8");
 	assert(!/ROUTE = [A-Z_]+PATH\.slice\(1\)/.test(source), "a route constant still strips its leading slash");
 	assert((source.match(/fetcher\(hostRoute\(/g) ?? []).length >= 8, "not every route fetch goes through hostRoute");
-	assert(source.includes('new URL(path.replace(/^\\//, ""), document.baseURI)'), "hostRoute no longer resolves against document.baseURI");
-	return "routes are root-relative and resolved against the page base; no route strips its leading slash";
+	// And the Host half must register the SAME paths on the web server, or the page asks for nothing.
+	const host = fs.readFileSync(new URL("../index.js", import.meta.url), "utf8");
+	assert(host.includes("export const PLUGIN_ROUTE_PREFIX = '/plugins/@local/dsh-session-log-upload'"), "the Host has no /plugins prefix");
+	assert(host.includes("webServer.register({"), "the Host does not register the page-facing routes on the web server");
+	for (const name of [ 'ledger', 'scan', 'notice', 'foreign-scan', 'foreign-upload', 'update-check', 'update-apply' ]) {
+		assert(host.includes(`name: '${name}'`), `the Host registers no page-facing route for ${name}`);
+	}
+	return "routes are root-absolute /plugins paths, fetched through the resolver and registered on the web server";
 });
 
 // 24 ─ the upload ledger table ──────────────────────────────────────────────────────────
@@ -2592,7 +2601,7 @@ await checkAsync("detailed-log-rename", "no user-visible copy says 台账 or led
 	assert(zhFlat["upload.ledger.description"].includes("索引") && zhFlat["upload.ledger.description"].includes("不含日志内容本身"), "the zh description does not say the file is an index without the content");
 	// Key names and the route keep their internal names on purpose: renaming them is pure churn.
 	assert(clientSource.includes("upload.ledger.title"), "the locale key names should stay `upload.ledger.*`");
-	assert(clientSource.includes("LEDGER_PATH = \"/api/session-log-upload.ledger\""), "the route path should stay unchanged");
+	assert(clientSource.includes("LEDGER_PATH = \"/plugins/@local/dsh-session-log-upload/ledger\""), "the route path should stay unchanged");
 	return "copy renamed to 详细日志 / detailed log; keys and route unchanged; index wording present";
 });
 
@@ -2904,7 +2913,7 @@ await checkAsync("list-readback", "a list saved through the served form is read 
 // checks below drive the parts that make it a gate: no backdrop dismiss, the button dead until the box
 // is ticked, and dismissal only after the Host confirms it stored the acknowledgement.
 await checkAsync("notice-gate", "the notice blocks until acknowledged, then never reappears", async () => {
-	const NOTICE = "session-log-upload.notice";
+	const NOTICE = "@local/dsh-session-log-upload/notice";
 
 	const renderNotice = async function (noticeReply, acknowledgeOk) {
 		const posted = [];
@@ -3061,7 +3070,7 @@ await checkAsync("foreign-scan", "the block scans only on click, groups by harne
 	await settle(scenario.runtime);
 	assert(scenario.fetch.scanCalls.length === 1, `expected one scan, saw ${scenario.fetch.scanCalls.length}`);
 	assert(scenario.fetch.scanCalls[0].method === "GET", "the scan was not a GET");
-	assert(scenario.fetch.scanCalls[0].url === "/api/session-log-upload.foreign-scan", `the scan fetched ${JSON.stringify(scenario.fetch.scanCalls[0].url)}`);
+	assert(scenario.fetch.scanCalls[0].url === "/plugins/@local/dsh-session-log-upload/foreign-scan", `the scan fetched ${JSON.stringify(scenario.fetch.scanCalls[0].url)}`);
 	const titles = foreignGroupTitles(scenario.runtime);
 	assert(titles.length === 3, `expected 3 harness groups, saw ${JSON.stringify(titles)}`);
 	assert(titles[0].includes("ZCode") && titles[0].includes("2"), `the first group heading is ${JSON.stringify(titles[0])}`);
@@ -3170,7 +3179,7 @@ await checkAsync("foreign-consent", "the send button is disabled at zero and not
 	assert(scenario.fetch.uploadCalls.length === 2, `expected 2 POSTs, saw ${scenario.fetch.uploadCalls.length}`);
 	for (const call of scenario.fetch.uploadCalls) {
 		assert(call.method === "POST", "a send was not a POST");
-		assert(call.url === "/api/session-log-upload.foreign-upload", `a send fetched ${JSON.stringify(call.url)}`);
+		assert(call.url === "/plugins/@local/dsh-session-log-upload/foreign-upload", `a send fetched ${JSON.stringify(call.url)}`);
 		assert(JSON.stringify(Object.keys(call.body)) === JSON.stringify([ "id" ]), `a send invented request fields: ${JSON.stringify(call.body)}`);
 	}
 	assert(
@@ -3502,7 +3511,7 @@ await checkAsync("update-check", "the update block fetches only on click and ren
 	await settle(runtime);
 	assert(scenario.fetch.checkCalls.length === 1, `expected one check, saw ${scenario.fetch.checkCalls.length}`);
 	assert(scenario.fetch.checkCalls[0].method === "GET", "the check was not a GET");
-	assert(scenario.fetch.checkCalls[0].url === "/api/session-log-upload.update-check", `check fetched ${JSON.stringify(scenario.fetch.checkCalls[0].url)}`);
+	assert(scenario.fetch.checkCalls[0].url === "/plugins/@local/dsh-session-log-upload/update-check", `check fetched ${JSON.stringify(scenario.fetch.checkCalls[0].url)}`);
 	assert(updateText(runtime).includes("Already up to date (1.2.0)."), `the up-to-date state is missing: ${updateText(runtime)}`);
 	assert(updateButton(runtime, "upgrade") === undefined, "the upgrade control exists when already current");
 	// 2. update available: version, notes and file count, plus the upgrade action.
@@ -3548,7 +3557,7 @@ await checkAsync("update-gate", "the upgrade runs only after the consent dialog,
 	runtime.flush();
 	assert(scenario.fetch.applyCalls.length === 1, `expected one apply POST, saw ${scenario.fetch.applyCalls.length}`);
 	assert(scenario.fetch.applyCalls[0].method === "POST", "the apply was not a POST");
-	assert(scenario.fetch.applyCalls[0].url === "/api/session-log-upload.update-apply", `apply fetched ${JSON.stringify(scenario.fetch.applyCalls[0].url)}`);
+	assert(scenario.fetch.applyCalls[0].url === "/plugins/@local/dsh-session-log-upload/update-apply", `apply fetched ${JSON.stringify(scenario.fetch.applyCalls[0].url)}`);
 	assert(scenario.fetch.applyCalls[0].body === "{}", `the apply body is ${JSON.stringify(scenario.fetch.applyCalls[0].body)}, expected {}`);
 	assert(updateText(runtime).includes("Downloading the update…"), `the downloading phase is missing: ${updateText(runtime)}`);
 	scenario.timers[0]();
@@ -3605,7 +3614,7 @@ await checkAsync("update-failed", "a failed apply shows the failure and leaves t
 
 // 49 ─ a failed notice write is said out loud, not swallowed ──────────────────────────────────
 await checkAsync("notice-write-failure", "a failed notice write says so, keeps the dialog and the tick, and allows a retry", async () => {
-	const NOTICE = "session-log-upload.notice";
+	const NOTICE = "@local/dsh-session-log-upload/notice";
 	const realFetch = globalThis.fetch;
 	let posts = 0;
 	globalThis.fetch = async function (input, init) {

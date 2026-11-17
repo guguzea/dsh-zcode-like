@@ -440,6 +440,27 @@ export const UPDATE_CHECK_ROUTE_PATH = '/api/session-log-upload.update-check'
 /** The update apply route: `POST {}` downloads, verifies, backs up and replaces this plugin's files. */
 export const UPDATE_APPLY_ROUTE_PATH = '/api/session-log-upload.update-apply'
 
+/**
+ * The same routes under the prefix the desktop shell forwards.
+ *
+ * This is the transport the SETTINGS PAGE can actually use. The page is loaded from the shell's custom
+ * scheme, and the shell forwards every non-asset path on that scheme to the Host — but the shipped
+ * third-party plugin that works in this shell registers under `/plugins/<package>/...`, not `/api/...`.
+ * `/api/...` is reached through Connection's Fetch registry, which the page cannot address from the
+ * custom scheme at all: a diagnostic run inside the page reported
+ * `dsh-app://app/api/session-log-upload.ledger` with status 404, and the Host answered 200/401 to the
+ * same path over HTTP, so the request never left the page.
+ *
+ * `/plugins/...` answers both, which is why it is the shape that works: the shell forwards it with the
+ * Host credential attached, and a plain HTTP caller reaches it too.
+ */
+export const PLUGIN_ROUTE_PREFIX = '/plugins/@local/dsh-session-log-upload'
+
+/** The page-facing path for one route name, e.g. `pluginRoutePath('ledger')`. */
+export function pluginRoutePath(name) {
+  return `${PLUGIN_ROUTE_PREFIX}/${String(name)}`
+}
+
 /** The directory this plugin runs from: the one holding index.js and package.json. */
 const PLUGIN_DIRECTORY = fileURLToPath(new URL('.', import.meta.url))
 
@@ -712,6 +733,8 @@ export function apply(ctx, rawConfig) {
 
   // ── The upload ledger the Settings page reads (authenticated, read-only) ─────────────────────
   registerLedgerRoute()
+  // ── The same routes under the prefix the settings page can actually reach ────────────────────
+  registerPluginRoutes()
 
   // ── Unload: stop in-flight log-only requests ──────────────────────────────────────────────────
   disposers.push(
@@ -1665,6 +1688,7 @@ export function apply(ctx, rawConfig) {
     const routes = [
       {
         path: LEDGER_ROUTE_PATH,
+        pluginPath: pluginRoutePath('ledger'),
         effect: 'session-log-upload: upload ledger route',
         methods: ['GET'],
         payload: () => ledgerPayload(),
@@ -1672,6 +1696,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: SCAN_ROUTE_PATH,
+        pluginPath: pluginRoutePath('scan'),
         effect: 'session-log-upload: session directory scan route',
         methods: ['GET'],
         payload: () => scanPayload(),
@@ -1679,6 +1704,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: NOTICE_ROUTE_PATH,
+        pluginPath: pluginRoutePath('notice'),
         effect: 'session-log-upload: liability notice route',
         // POST is how the page records "I have read this". It is authenticated like the GETs; an
         // unauthenticated POST would let any local process dismiss the notice for the user.
@@ -1694,6 +1720,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: FOREIGN_SCAN_ROUTE_PATH,
+        pluginPath: pluginRoutePath('foreign-scan'),
         effect: 'session-log-upload: other-harness scan route',
         methods: ['GET'],
         payload: () => foreignScanPayload(),
@@ -1701,6 +1728,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: FOREIGN_UPLOAD_ROUTE_PATH,
+        pluginPath: pluginRoutePath('foreign-upload'),
         effect: 'session-log-upload: other-harness send route',
         methods: ['POST'],
         // One conversation per request: the page drives it serially so a failure names a row.
@@ -1709,6 +1737,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: UPDATE_CHECK_ROUTE_PATH,
+        pluginPath: pluginRoutePath('update-check'),
         effect: 'session-log-upload: update check route',
         methods: ['GET'],
         payload: () => updateCheckPayload(),
@@ -1716,6 +1745,7 @@ export function apply(ctx, rawConfig) {
       },
       {
         path: UPDATE_APPLY_ROUTE_PATH,
+        pluginPath: pluginRoutePath('update-apply'),
         effect: 'session-log-upload: update apply route',
         // POST only: this replaces the plugin's own files, and a GET must never write.
         methods: ['POST'],
@@ -1734,8 +1764,7 @@ export function apply(ctx, rawConfig) {
                 requestBody: 'buffered',
                 // Authentication is inherited, not implemented here: Connection dispatches this only
                 // after its browser-credential check, so a request without the page cookie is refused
-                // with 401 before this handler runs. Registering on the raw web server instead would
-                // expose Session data to any local process (docs/state-channel.md §2.3-§2.4).
+                // with 401 before this handler runs.
                 fetch: async (request) =>
                   new Response(JSON.stringify(await route.payload(request)), {
                     status: 200,
@@ -1749,6 +1778,93 @@ export function apply(ctx, rawConfig) {
         log(
           'warn',
           `session-log-upload: the route ${route.path} could not be registered (${messageOf(error)}); ${route.what}, but the plugin, the mode and the "off" suppression are unaffected`,
+        )
+      }
+    }
+  }
+
+  /**
+   * Register the same routes on the web server under `/plugins/<package>/...`.
+   *
+   * **This is the only transport the settings page can use.** The page is loaded from the desktop
+   * shell's custom scheme; the shell forwards every non-asset path to the Host, and the shipped
+   * third-party plugin that works in this shell registers under `/plugins/<package>/...`. Connection's
+   * Fetch registry (`/api/...`) is not reachable from that scheme at all — the page reported
+   * `dsh-app://app/api/session-log-upload.ledger` with status 404 while the Host answered the same path
+   * over HTTP, which means the request never left the page.
+   *
+   * Every route here is registered in its own wrapped effect for the same reason as the Connection
+   * routes: a duplicate path or a reload race must not dispose the `mode: 'off'` exclusion.
+   */
+  function registerPluginRoutes() {
+    const webServer = ctx.get('webServer')
+    if (webServer === null || webServer === undefined || typeof webServer.register !== 'function') {
+      log('debug', `session-log-upload: no webServer, so ${PLUGIN_ROUTE_PREFIX}/… is not registered; the page will read nothing`)
+      return
+    }
+    const routes = [
+      { name: 'ledger', methods: ['GET'], payload: () => ledgerPayload(), what: 'the Settings page will not show the detailed log' },
+      { name: 'scan', methods: ['GET'], payload: () => scanPayload(), what: 'the Settings page cannot offer a folder list' },
+      {
+        name: 'notice',
+        methods: ['GET', 'POST'],
+        payload: async (request, method) => {
+          if (method === 'POST') {
+            const recorded = notice.acknowledge()
+            return { acknowledged: recorded.acknowledged, at: recorded.at }
+          }
+          return notice.snapshot()
+        },
+        what: 'the Settings page cannot show or record the liability notice',
+      },
+      { name: 'foreign-scan', methods: ['GET'], payload: () => foreignScanPayload(), what: 'the Settings page cannot list other-harness conversations' },
+      { name: 'foreign-upload', methods: ['POST'], payload: (request) => foreignUploadPayload(request), what: 'the Settings page cannot send other-harness conversations' },
+      { name: 'update-check', methods: ['GET'], payload: () => updateCheckPayload(), what: 'the Settings page cannot check for updates' },
+      { name: 'update-apply', methods: ['POST'], payload: () => updateApplyPayload(), what: 'the Settings page cannot apply an update' },
+    ]
+    for (const route of routes) {
+      const routePath = `${PLUGIN_ROUTE_PREFIX}/${route.name}`
+      try {
+        disposers.push(
+          ctx.effect(
+            () =>
+              webServer.register({
+                kind: 'exact',
+                path: routePath,
+                handler: async (request, response) => {
+                  // Loopback only: this is the local UI talking to its own Host. A request whose Host
+                  // header is not a loopback authority is refused before the payload runs, which is the
+                  // same fence the shipped third-party plugin applies.
+                  const host = request === null || request === undefined || request.headers === undefined ? undefined : request.headers.host
+                  const loopback = typeof host === 'string' && /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(host)
+                  if (!loopback) {
+                    response.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+                    response.end(JSON.stringify({ error: 'request-not-trusted' }))
+                    return
+                  }
+                  const method = typeof request.method === 'string' ? request.method : 'GET'
+                  if (!route.methods.includes(method)) {
+                    response.writeHead(405, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+                    response.end(JSON.stringify({ error: 'method-not-allowed' }))
+                    return
+                  }
+                  let payload
+                  try {
+                    payload = await route.payload(request, method)
+                  } catch (error) {
+                    payload = { error: messageOf(error) }
+                  }
+                  response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+                  response.end(JSON.stringify(payload === undefined ? {} : payload))
+                },
+              }),
+            `session-log-upload: plugin route ${routePath}`,
+          ),
+        )
+      } catch (error) {
+        log(
+          'warn',
+          `session-log-upload: the plugin route ${routePath} could not be registered (${messageOf(error)}); ${route.what}`,
         )
       }
     }

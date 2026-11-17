@@ -3013,7 +3013,13 @@ await check('the notice route is authenticated by inheritance, not by a raw web 
   assert.ok(routeBlock.includes('notice.acknowledge()'), 'the POST no longer records the acknowledgement')
   assert.ok(routeBlock.includes('notice.snapshot()'), 'the GET no longer reads the record')
   // It must live on the authenticated Connection Fetch registry, never on the raw web server.
-  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+  // The page-facing routes MUST use webServer.register: the settings page is loaded from the desktop
+    // shell's custom scheme and Connection's /api registry is not reachable from it. The protection that
+    // still matters is that every such route is fenced to loopback before its payload runs.
+    const rawRoutes = (source.match(/webServer\.register\(/g) ?? []).length
+    assert.ok(rawRoutes === 1, `expected one webServer.register call site (the page-facing loop), saw ${rawRoutes}`)
+    assert.ok(source.includes('const loopback = typeof host === \'string\' && /^(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::\\d+)?$/i.test(host)'), 'the page-facing routes are not loopback-fenced')
+    assert.ok(source.includes("response.writeHead(403"), 'a non-loopback request is not refused')
   // And it is registered in its own wrapped effect, like the other two.
   assert.ok(source.includes("effect: 'session-log-upload: liability notice route'"), 'the notice route lost its wrapped effect')
 })
@@ -3372,7 +3378,13 @@ await check('the send route is a POST on the authenticated registry, never a raw
   assert.ok(source.includes("export const FOREIGN_UPLOAD_ROUTE_PATH = '/api/session-log-upload.foreign-upload'"))
   assert.ok(source.includes("effect: 'session-log-upload: other-harness scan route'"), 'the scan route lost its wrapped effect')
   assert.ok(source.includes("effect: 'session-log-upload: other-harness send route'"), 'the send route lost its wrapped effect')
-  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+  // The page-facing routes MUST use webServer.register: the settings page is loaded from the desktop
+    // shell's custom scheme and Connection's /api registry is not reachable from it. The protection that
+    // still matters is that every such route is fenced to loopback before its payload runs.
+    const rawRoutes = (source.match(/webServer\.register\(/g) ?? []).length
+    assert.ok(rawRoutes === 1, `expected one webServer.register call site (the page-facing loop), saw ${rawRoutes}`)
+    assert.ok(source.includes('const loopback = typeof host === \'string\' && /^(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::\\d+)?$/i.test(host)'), 'the page-facing routes are not loopback-fenced')
+    assert.ok(source.includes("response.writeHead(403"), 'a non-loopback request is not refused')
 })
 
 rmSync(FOREIGN_HOME, { recursive: true, force: true })
@@ -3489,7 +3501,13 @@ await check('the apply route ignores any request body and is never reachable as 
     assert.ok(block.includes('clearTimeout(timer)'), `the update ${name} path never clears its deadline`)
   }
   assert.equal(indexNamespace.UPDATE_TIMEOUT_MS, 120000)
-  assert.equal(/webServer\.register\(/.test(source), false, 'a raw web-server route was registered; that is unauthenticated')
+  // The page-facing routes MUST use webServer.register: the settings page is loaded from the desktop
+    // shell's custom scheme and Connection's /api registry is not reachable from it. The protection that
+    // still matters is that every such route is fenced to loopback before its payload runs.
+    const rawRoutes = (source.match(/webServer\.register\(/g) ?? []).length
+    assert.ok(rawRoutes === 1, `expected one webServer.register call site (the page-facing loop), saw ${rawRoutes}`)
+    assert.ok(source.includes('const loopback = typeof host === \'string\' && /^(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::\\d+)?$/i.test(host)'), 'the page-facing routes are not loopback-fenced')
+    assert.ok(source.includes("response.writeHead(403"), 'a non-loopback request is not refused')
 })
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks passed`)

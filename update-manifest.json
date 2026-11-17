@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 207863,
-      "sha256": "9bd6418f9f4b9f0d130d6f21c6d8ecc2f412dfecda91048f892c9fb556743534"
+      "bytes": 207964,
+      "sha256": "4fe4d0de6a80f463cbd8411b40f01d393cfb9e01cefebbea5b94a8e93ee53889"
     },
     {
       "path": "cordis.patch.yml",
@@ -109,8 +109,8 @@
     },
     {
       "path": "index.js",
-      "bytes": 100245,
-      "sha256": "6a50e14c6a82c6ee240f237d31c4b9526ef502c033a03b4479f456a199ed069c"
+      "bytes": 106696,
+      "sha256": "a2934844c07fc09ec0321830e62290146d0fd4a31dba80770db86ee21fe5a2cd"
     },
     {
       "path": "locale/en.json",
@@ -128,5 +128,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "修复自定义协议下的路由地址"
+  "notes": "页面改用 /plugins 通道"
 }

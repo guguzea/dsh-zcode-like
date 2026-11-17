@@ -1128,7 +1128,7 @@ async function renderWithLedger(handler, body, extraProps = {}) {
           // consumes a ledger reply (which made the ledger look "read twice") and so the notice dialog
           // stays out of the way of these checks — they are about the ledger, not about consent.
           const url = typeof input === 'string' ? input : String(input)
-          if (url.indexOf('session-log-upload.notice') >= 0) return jsonResponse({ acknowledged: true })
+          if (url.indexOf('@local/dsh-session-log-upload/notice') >= 0) return jsonResponse({ acknowledged: true })
           calls.push({ input, init })
           return handler(input, init)
         }

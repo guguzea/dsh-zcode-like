@@ -382,7 +382,7 @@ window.__ModuleLoader__.load({
 			maxBytes: 134217728
 		});
 		/** Host route serving the upload ledger (docs/state-channel.md §4). */
-		const LEDGER_PATH = "/api/session-log-upload.ledger";
+		const LEDGER_PATH = "/plugins/@local/dsh-session-log-upload/ledger";
 		/**
 		 * Host routes are fetched from the Host, never from whatever scheme the page was loaded under.
 		 *
@@ -397,38 +397,39 @@ window.__ModuleLoader__.load({
 		 * So each request now goes to an absolute URL built from a real HTTP origin when one can be
 		 * determined, and falls back to the document base only when nothing better exists.
 		 */
-		const SCAN_PATH = "/api/session-log-upload.scan";
-		const NOTICE_PATH = "/api/session-log-upload.notice";
-		const FOREIGN_SCAN_PATH = "/api/session-log-upload.foreign-scan";
-		const FOREIGN_UPLOAD_PATH = "/api/session-log-upload.foreign-upload";
-		const UPDATE_CHECK_PATH = "/api/session-log-upload.update-check";
-		const UPDATE_APPLY_PATH = "/api/session-log-upload.update-apply";
+		const SCAN_PATH = "/plugins/@local/dsh-session-log-upload/scan";
+		const NOTICE_PATH = "/plugins/@local/dsh-session-log-upload/notice";
+		const FOREIGN_SCAN_PATH = "/plugins/@local/dsh-session-log-upload/foreign-scan";
+		const FOREIGN_UPLOAD_PATH = "/plugins/@local/dsh-session-log-upload/foreign-upload";
+		const UPDATE_CHECK_PATH = "/plugins/@local/dsh-session-log-upload/update-check";
+		const UPDATE_APPLY_PATH = "/plugins/@local/dsh-session-log-upload/update-apply";
 		/**
 		 * Resolve one route to the exact string the page must fetch.
 		 *
-		 * The working pattern comes from the shipped third-party plugin that shares this shell
-		 * (`dsh-our-free-model/client.js`): resolve the route against `document.baseURI` and keep only
-		 * the PATHNAME. Under the desktop shell's custom scheme that yields `/api/...` — a root-relative
-		 * path the shell forwards to its HTTP host — while under a plain http origin it yields the same
-		 * `/api/...`, which is exactly what the Host serves.
+		 * The routes live under `/plugins/<package>/...`, which is the prefix the desktop shell forwards to
+		 * its Host with the Host credential attached. That is why a root-absolute path is correct here and
+		 * a document-relative one is not: the page is loaded from the shell's custom scheme, so a bare
+		 * `plugins/...` would resolve to `dsh-app://app/plugins/...` (which is what actually happened
+		 * before this was root-absolute) while `/plugins/...` resolves to the same origin and gets
+		 * forwarded.
 		 *
-		 * What must NOT be done is what this plugin used to do: strip the leading slash and hand fetch a
-		 * bare relative `api/...`. That resolved against the custom scheme and became
-		 * `dsh-app://app/api/session-log-upload.ledger`, a URL no HTTP server can answer, which is why
-		 * every route read came back 404 in this shell while the same routes answered 200 to any HTTP
-		 * caller.
+		 * `document.baseURI` is still consulted, because a Host served behind a sub-path needs the prefix
+		 * that the page's own base carries.
 		 *
-		 * @param path - the Host route path, always starting with `/api`.
-		 * @returns a root-relative path, or the original path when the URL cannot be resolved.
+		 * @param path - the Host route path, always starting with `/`.
+		 * @returns a root-relative path, or the path unchanged when the base cannot be resolved.
 		 */
 		function hostRoute(path) {
 			try {
 				if (typeof document !== "undefined" && document !== null && typeof document.baseURI === "string") {
-					const resolved = new URL(path.replace(/^\//, ""), document.baseURI)
-					if (typeof resolved.pathname === "string" && resolved.pathname.length > 0) return resolved.pathname
+					const base = new URL(document.baseURI)
+					// Only a path-bearing base needs prefixing; the shell's `dsh-app://app/` base has a
+					// root pathname, so the route stays exactly as declared.
+					const prefix = base.pathname === "/" ? "" : base.pathname.replace(/\/+$/, "")
+					if (prefix.length > 0 && !path.startsWith(prefix)) return prefix + path
 				}
 			} catch (_error) {
-				/* fall through to the plain path */
+				/* fall through to the declared path */
 			}
 			return path
 		}
