@@ -118,6 +118,33 @@ export class WatermarkStore {
   }
 
   /**
+   * Forget the watermark for one Session, so the next attempt transmits from the beginning.
+   *
+   * This exists for the deliberate re-send: a conversation the user asked to send again has to start
+   * from event 0, and leaving the old watermark in place would make the re-send a no-op. It is only
+   * ever called when the user turned the re-send switch on and confirmed the destination.
+   *
+   * Best-effort like `write`: never throws, and the flush is scheduled the same way so the removal is
+   * atomic on disk.
+   *
+   * @param sessionId the Session id.
+   * @returns `true` when a record existed and was removed.
+   */
+  remove(sessionId) {
+    try {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return false
+      const records = this._ensureLoaded()
+      if (!Object.prototype.hasOwnProperty.call(records, sessionId)) return false
+      delete records[sessionId]
+      this._scheduleFlush()
+      return true
+    } catch (error) {
+      this._fail(error)
+      return false
+    }
+  }
+
+  /**
    * List every stored watermark, for the upload ledger.
    *
    * **Metadata only.** The store holds the Session id and this plugin's own acceptance bookkeeping,

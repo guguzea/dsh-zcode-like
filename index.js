@@ -1531,7 +1531,19 @@ export function apply(ctx, rawConfig) {
     }
 
     const version = forged.base.sessionFormatVersion
-    const stored = watermark.read(forgedId)
+    // `force` is the deliberate re-send: the user turned the switch on and confirmed the destination.
+    // It forgets the watermark first, so the loop below starts at event 0 and genuinely transmits the
+    // conversation again. Only an exact `true` counts — a string, a number or an object must not be able
+    // to re-send anything, because this path duplicates data the watermark exists to send once.
+    const force = body.force === true
+    if (force) {
+      const hadWatermark = watermark.remove(forgedId)
+      log(
+        'info',
+        `session-log-upload: re-sending "${forgedId}" on request (previous watermark ${hadWatermark ? 'cleared' : 'absent'})`,
+      )
+    }
+    const stored = force ? undefined : watermark.read(forgedId)
     let afterSeq = stored !== undefined && stored.sessionFormatVersion === version ? stored.afterSeq : -1
     if (afterSeq >= forged.events.length - 1) {
       return { ok: true, id, forgedId, requests: 0, bytes: 0, throughSeq: afterSeq, error: null, skipped: 'already-sent' }

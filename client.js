@@ -167,6 +167,8 @@ window.__ModuleLoader__.load({
 				"foreign.statusUnknown": "unknown error",
 				"foreign.warnTitle": "Send these conversations to the destination?",
 				"foreign.warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
+				"foreign.warnBodyResend": "These are not DSH sessions, and the re-send switch is ON: anything already delivered will be transmitted AGAIN, wrapped as a new DSH session record and sent to the destination below. It leaves this machine and cannot be recalled.",
+				"foreign.resendLabel": "Re-send conversations that were already delivered in full",
 				"foreign.warnConfirm": "Send",
 				"update.title": "Plugin update",
 				"update.currentVersion": "Current version",
@@ -320,6 +322,8 @@ window.__ModuleLoader__.load({
 				"foreign.statusUnknown": "未知错误",
 				"foreign.warnTitle": "要把这些会话发送到下面的目标吗？",
 				"foreign.warnBody": "这些不是 DSH 会话。发出去的内容会被包装成一段 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
+				"foreign.warnBodyResend": "这些不是 DSH 会话，并且「再次发送」开关已打开：之前已经发送过的内容会再发一遍，包装成新的 DSH 会话记录，发送到下面写明的目标。它会离开这台机器，且无法撤回。",
+				"foreign.resendLabel": "再次发送那些已经完整发送过的会话",
 				"foreign.warnConfirm": "发送",
 				"update.title": "插件更新",
 				"update.currentVersion": "当前版本",
@@ -531,6 +535,7 @@ window.__ModuleLoader__.load({
 .slu-checks{display:flex;flex-direction:column;gap:2px;max-height:280px;overflow:auto}
 .slu-check{display:flex;align-items:center;gap:8px;padding:3px 4px;box-sizing:border-box;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;cursor:pointer}
 .slu-check:hover{background-color:var(--dsw-alias-bg-layer-2)}
+.slu-resend{margin:2px 0 10px;align-items:flex-start}
 .slu-check input{flex:none;margin:0;cursor:pointer}
 .slu-checkPath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .slu-checkWorkspace{font-weight:600;color:var(--dsw-alias-label-primary)}
@@ -1772,7 +1777,11 @@ window.__ModuleLoader__.load({
 			 * @param id - the composite id from the scan payload.
 			 * @returns `{ok, id, requests, bytes, truncated, error, status}`.
 			 */
-			async function uploadForeign(id) {
+			async function uploadForeign(id, options) {
+				const settings = options === undefined || options === null ? {} : options;
+				// Only a literal `true` re-sends: this path duplicates data, so nothing truthy-but-odd
+				// (a string, a number) may reach the Host as a re-send request.
+				const force = settings.force === true;
 				const failed = function (status) {
 					return { ok: false, id: typeof id === "string" && id.length > 0 ? id : null, requests: null, bytes: null, error: null, status: numberOrNull(status) };
 				};
@@ -1784,7 +1793,7 @@ window.__ModuleLoader__.load({
 					response = await fetcher(hostRoute(FOREIGN_UPLOAD_ROUTE), {
 						method: "POST",
 						headers: { accept: "application/json", "content-type": "application/json" },
-						body: JSON.stringify({ id: id })
+						body: JSON.stringify(force ? { id: id, force: true } : { id: id })
 					});
 				} catch (_error) {
 					return failed(null);
@@ -2191,6 +2200,9 @@ window.__ModuleLoader__.load({
 				React.createElement("h2", { id: titleId, className: "slu-panelTitle" }, props.title),
 				React.createElement("p", { id: bodyId, className: "slu-panelBody" }, props.body),
 				React.createElement("p", { className: "slu-panelEndpoint" }, props.endpointLabel + ": " + props.endpoint),
+				// An optional extra control, rendered under the destination so it reads as part of the same
+				// decision. Only the other-harness send uses it today (the re-send switch).
+				props.extra === undefined || props.extra === null ? null : props.extra,
 				React.createElement("div", { className: "slu-panelActions" },
 					React.createElement("button", {
 						ref: cancelRef,
@@ -2497,6 +2509,10 @@ window.__ModuleLoader__.load({
 				const [ foreignPicked, setForeignPicked ] = React.useState(function () { return Object.create(null); });
 				const [ foreignStatus, setForeignStatus ] = React.useState(function () { return Object.create(null); });
 				const [ foreignConfirm, setForeignConfirm ] = React.useState(null);
+				// The deliberate re-send switch, living in the consent dialog rather than on a row: it
+				// duplicates data that was already delivered, so it belongs next to the destination the user
+				// is agreeing to. Reset to false whenever the dialog opens or closes.
+				const [ foreignResend, setForeignResend ] = React.useState(false);
 				const [ foreignSending, setForeignSending ] = React.useState(false);
 				// Stopping a batch is cooperative: a ref is checked at the top of each loop iteration,
 				// so the POST already in flight finishes (the Host committed its watermark) and no new
@@ -3128,11 +3144,20 @@ window.__ModuleLoader__.load({
 				/** Open the consent gate for the current tick set. Nothing is sent here. */
 				const startForeignSend = function () {
 					if (foreignSending === true || selectedForeign.length === 0) return;
+					// The re-send switch starts OFF on every confirmation: it duplicates data, so it must be a
+					// fresh decision each time rather than a sticky setting carried over from last time.
+					setForeignResend(false);
 					setForeignConfirm(selectedForeign.slice());
+				};
+
+				/** The re-send switch in the consent dialog. Only a real boolean toggle turns it on. */
+				const setForeignResendWanted = function (wanted) {
+					setForeignResend(wanted === true);
 				};
 
 				const cancelForeignSend = function () {
 					setForeignConfirm(null);
+					setForeignResend(false);
 				};
 
 				/**
@@ -3155,7 +3180,11 @@ window.__ModuleLoader__.load({
 				 */
 				const confirmForeignSend = function () {
 					const ids = foreignConfirm === null ? [] : foreignConfirm;
+					// Captured before the dialog closes: the batch reads this once, so every row of one
+					// confirmation shares the same decision.
+					const force = foreignResend === true;
 					setForeignConfirm(null);
+					setForeignResend(false);
 					if (ids.length === 0 || foreignSending === true) return;
 					foreignStopRef.current = false;
 					setForeignStopRequested(false);
@@ -3188,7 +3217,7 @@ window.__ModuleLoader__.load({
 							});
 							let result = null;
 							try {
-								result = typeof bridge.uploadForeign === "function" ? await bridge.uploadForeign(id) : null;
+								result = typeof bridge.uploadForeign === "function" ? await bridge.uploadForeign(id, { force: force }) : null;
 							} catch (_error) {
 								result = null;
 							}
@@ -3917,11 +3946,25 @@ window.__ModuleLoader__.load({
 				// a DSH session record. No POST happens until this dialog is confirmed.
 				const foreignDialog = foreignConfirm === null ? null : React.createElement(ConfirmDialog, {
 					title: t("foreign.warnTitle"),
-					body: t("foreign.warnBody"),
+					body: foreignResend === true ? t("foreign.warnBodyResend") : t("foreign.warnBody"),
 					endpointLabel: t("upload.destinationLabel"),
 					endpoint: endpoint === null ? t("upload.endpointUnknown") : endpoint,
 					confirmLabel: t("foreign.warnConfirm"),
 					cancelLabel: t("upload.warnCancel"),
+					// The re-send switch. Off by default, and the dialog body changes to say what it will do,
+					// because "send these" and "send these AGAIN even though they already went" are different
+					// promises about the same button.
+					extra: React.createElement("label", { className: "slu-check slu-resend" },
+						React.createElement("input", {
+							type: "checkbox",
+							checked: foreignResend === true,
+							["data-foreign-resend"]: "true",
+							onChange: function (event) {
+								setForeignResendWanted(event !== null && event !== undefined && event.target !== null && event.target !== undefined && event.target.checked === true);
+							}
+						}),
+						React.createElement("span", null, t("foreign.resendLabel"))
+					),
 					["onConfirm"]: confirmForeignSend,
 					["onCancel"]: cancelForeignSend
 				});

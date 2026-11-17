@@ -1385,6 +1385,11 @@ function foreignStatusTextOf(runtime, id) {
 	return node === undefined ? "" : textOf(node);
 }
 
+/** The re-send switch in the send confirmation dialog, or undefined when it is not open. */
+function foreignResendSwitch(runtime) {
+	return runtime.findAll(function (node) { return node.props["data-foreign-resend"] === "true"; })[0];
+}
+
 /** The end-of-batch summary line, or "" when no batch has finished. */
 function foreignSummaryTextOf(runtime) {
 	const node = runtime.findAll(function (node) { return node.props["data-foreign-summary"] === "true"; })[0];
@@ -3276,6 +3281,68 @@ await checkAsync("foreign-already-sent", "an already-delivered conversation says
 	const summary = textOf(scenario.runtime.tree());
 	assert(/1 were already sent|already sent/i.test(summary), `the summary does not mention the skip: ${summary.slice(-240)}`);
 	return "a skipped import is named as skipped on its row and in the batch line, and is not counted as a send";
+});
+
+// 40c ─ the re-send switch: off by default, and it is what makes the POST carry force ───────────
+await checkAsync("foreign-resend-switch", "the re-send switch is off by default, and only a ticked switch makes the POST carry force", async () => {
+	const scenario = await foreignScenario({
+		scan: { body: FOREIGN_SCAN_PAYLOAD },
+		uploads: [ { body: { ok: true, requests: 1 } }, { body: { ok: true, requests: 1 } } ]
+	});
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	tickForeign(scenario.runtime, "zcode/sess_a", true);
+
+	// First confirmation: the switch exists, starts unticked, and no request body carries force.
+	clickForeign(scenario.runtime, "send");
+	const switchBox = foreignResendSwitch(scenario.runtime);
+	assert(switchBox !== undefined, "the consent dialog has no re-send switch");
+	assert(switchBox.props.checked !== true, "the re-send switch starts ticked");
+	assert(scenario.fetch.uploadCalls.length === 0, "opening the dialog sent something");
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 1, `expected one POST, saw ${scenario.fetch.uploadCalls.length}`);
+	const plain = scenario.fetch.uploadCalls[0].body;
+	assert(plain.id === "zcode/sess_a", `the first POST id is ${JSON.stringify(plain.id)}`);
+	assert(plain.force === undefined, `an unticked switch still sent force: ${JSON.stringify(plain)}`);
+
+	// Second confirmation with the switch ticked: the body now carries force: true.
+	tickForeign(scenario.runtime, "zcode/sess_a", true);
+	clickForeign(scenario.runtime, "send");
+	const again = foreignResendSwitch(scenario.runtime);
+	assert(again !== undefined, "the switch vanished on the second dialog");
+	assert(again.props.checked !== true, "the switch remembered the previous dialog's state");
+	again.props.onChange({ target: { checked: true } });
+	scenario.runtime.flush();
+	clickButton(scenario.runtime, "Send");
+	await settle(scenario.runtime);
+	assert(scenario.fetch.uploadCalls.length === 2, `expected two POSTs, saw ${scenario.fetch.uploadCalls.length}`);
+	const forced = scenario.fetch.uploadCalls[1].body;
+	assert(forced.id === "zcode/sess_a", `the second POST id is ${JSON.stringify(forced.id)}`);
+	assert(forced.force === true, `a ticked switch did not send force: ${JSON.stringify(forced)}`);
+	return "the switch is off by default, resets between dialogs, and only a tick carries force: true";
+});
+
+await checkAsync("foreign-resend-cancel", "cancelling a re-send sends nothing and leaves the switch off next time", async () => {
+	const scenario = await foreignScenario({ scan: { body: FOREIGN_SCAN_PAYLOAD }, uploads: [ { body: { ok: true, requests: 1 } } ] });
+	clickForeign(scenario.runtime, "scan");
+	await settle(scenario.runtime);
+	tickForeign(scenario.runtime, "zcode/sess_a", true);
+	clickForeign(scenario.runtime, "send");
+	const switchBox = foreignResendSwitch(scenario.runtime);
+	switchBox.props.onChange({ target: { checked: true } });
+	scenario.runtime.flush();
+	// The dialog body must say what the switch will do before it is confirmed.
+	const dialogText = textOf(scenario.runtime.tree());
+	assert(/AGAIN|再发一遍/.test(dialogText), `the dialog does not warn about re-sending: ${dialogText.slice(-260)}`);
+	clickButton(scenario.runtime, "Cancel");
+	scenario.runtime.flush();
+	assert(scenario.fetch.uploadCalls.length === 0, "cancelling still POSTed");
+	// Reopening starts from a clean off state.
+	clickForeign(scenario.runtime, "send");
+	const reopened = foreignResendSwitch(scenario.runtime);
+	assert(reopened !== undefined && reopened.props.checked !== true, "the switch stayed on after a cancel");
+	return "the dialog warns before a re-send, a cancel sends nothing, and the switch resets";
 });
 
 // 41 ─ the DSH folder chooser cascades: a ticked folder covers its Sessions ──────────────────

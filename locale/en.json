@@ -144,6 +144,8 @@
     "statusUnknown": "unknown error",
     "warnTitle": "Send these conversations to the destination?",
     "warnBody": "These are not DSH sessions. Their content will be wrapped as a DSH session record and sent to the destination below. It leaves this machine and cannot be undone.",
+    "warnBodyResend": "These are not DSH sessions, and the re-send switch is ON: anything already delivered will be transmitted AGAIN, wrapped as a new DSH session record and sent to the destination below. It leaves this machine and cannot be recalled.",
+    "resendLabel": "Re-send conversations that were already delivered in full",
     "warnConfirm": "Send"
   },
   "update": {

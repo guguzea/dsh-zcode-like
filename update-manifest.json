@@ -9,8 +9,8 @@
     },
     {
       "path": "client.js",
-      "bytes": 209921,
-      "sha256": "3f84478ec3287093c32dd1312239f8c35a7894b7cd0a0c2e4cc46fcaebc86080"
+      "bytes": 213091,
+      "sha256": "1ed70138c21ca7fa81294037b08732e2f19d6cf584b8ac550cd0ffe353c685b9"
     },
     {
       "path": "cordis.patch.yml",
@@ -104,8 +104,8 @@
     },
     {
       "path": "host/watermark.js",
-      "bytes": 10030,
-      "sha256": "fa5e3376646c877c11381273aab1c7424ef5382e12da265112c820c733465557"
+      "bytes": 11057,
+      "sha256": "be2e2463be677dbefcdca1c329fc5fd2aea6359b405181298e8ebfb625e5c9bb"
     },
     {
       "path": "icon.svg",
@@ -114,18 +114,18 @@
     },
     {
       "path": "index.js",
-      "bytes": 110063,
-      "sha256": "a4f790cc5c6eb8b97cb0d494f5755b38cdf6b4b526baac5f8ed1df873f882748"
+      "bytes": 110783,
+      "sha256": "e2ca03ab0ccd1e0183570eb49b4414f1b6810528a30a099fd2f6f6701e85a286"
     },
     {
       "path": "locale/en.json",
-      "bytes": 11333,
-      "sha256": "64edfcfdbf412d3422d25c5951f984efcadb8b2579ea53a86139dda84857df8f"
+      "bytes": 11668,
+      "sha256": "e3e48d7a7f1ba6535b35fc08d1027de73f0bd6f91053f2570625356a13ee7efa"
     },
     {
       "path": "locale/zh.json",
-      "bytes": 10897,
-      "sha256": "39a2b37ee8c913cb37a341422e18b6c43b9a1d20f3ec5226163c9977153b0ef7"
+      "bytes": 11223,
+      "sha256": "613893c5078289b7686ba6e750d85da2777e49a24cd38288716863e413d02d26"
     },
     {
       "path": "package.json",
@@ -133,5 +133,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "已发送过的会话不再显示为发送成功"
+  "notes": "支持强制再次发送"
 }

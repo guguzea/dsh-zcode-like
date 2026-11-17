@@ -1079,6 +1079,32 @@ await check('write ignores unusable values and creates nothing', () => {
   assert.equal(store.read('session-1'), undefined)
 })
 
+await check('remove forgets one Session and leaves the others, atomically on disk', async () => {
+  const directory = join(root, 'verify', '.host-unit-watermark-remove')
+  rmSync(directory, { recursive: true, force: true })
+  const store = new WatermarkStore(directory)
+  store.write('session-keep', { afterSeq: 7, sessionFormatVersion: 4 })
+  store.write('session-drop', { afterSeq: 11, sessionFormatVersion: 4 })
+  await store.flush()
+  assert.ok(existsSync(join(directory, 'watermarks.json')), 'the store was not written at all')
+
+  // Removing an absent id is a no-op that reports false, never a throw.
+  assert.equal(store.remove('never-seen'), false)
+  assert.equal(store.remove(''), false)
+  assert.equal(store.remove(undefined), false)
+
+  assert.equal(store.remove('session-drop'), true, 'a stored Session was not removed')
+  assert.equal(store.read('session-drop'), undefined, 'the removed watermark is still readable')
+  assert.equal(store.read('session-keep').afterSeq, 7, 'removing one Session disturbed another')
+  await store.flush()
+
+  // The removal must reach disk, not just memory: a fresh store reads the same table.
+  const reloaded = new WatermarkStore(directory)
+  assert.equal(reloaded.read('session-drop'), undefined, 'the removal was not flushed to disk')
+  assert.equal(reloaded.read('session-keep').afterSeq, 7)
+  rmSync(directory, { recursive: true, force: true })
+})
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 section('10. the two-step command consent gate, the live volatile mode, and "off" without llm')
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
