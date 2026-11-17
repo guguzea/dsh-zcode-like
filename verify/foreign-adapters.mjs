@@ -664,6 +664,24 @@ function buildAntigravityStore() {
   try {
     conversation.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB);')
     conversation.exec("INSERT INTO steps (idx, step_payload) VALUES (0, x'080e2003');")
+    // `gen_metadata` is where the serving model lives: one protobuf row per generation, each carrying
+    // the model id behind the same length-delimited tag (`0x9a 0x01`). Two rows, same model, so the
+    // adapter's majority rule is exercised. A third row carries the tag followed by a NON-model payload
+    // (a body fragment), which must be rejected by the shape check rather than reported.
+    conversation.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER);')
+    const modelBlob = (model) => {
+      const payload = Buffer.from(model, 'utf8')
+      return Buffer.concat([Buffer.from([0x9a, 0x01, payload.length]), payload])
+    }
+    const insertGen = conversation.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)')
+    const first = modelBlob('gemini-fixture-model')
+    insertGen.run(0, first, first.length)
+    const second = modelBlob('gemini-fixture-model')
+    insertGen.run(1, second, second.length)
+    // A decoy: same tag, a payload that is NOT a model id.
+    const decoyText = Buffer.from('NOT A MODEL ID', 'utf8')
+    const decoy = Buffer.concat([Buffer.from([0x9a, 0x01, decoyText.length]), decoyText])
+    insertGen.run(2, decoy, decoy.length)
   } finally {
     conversation.close()
   }
@@ -1274,8 +1292,8 @@ await check('antigravity scans the index and reports both conversations', async 
   assert.equal(parent.title, 'Fixture conversation')
   assert.equal(parent.cwd, 'f:/AGTEST')
   assert.equal(parent.messageCount, 6)
-  assert.equal(parent.provider, '')
-  assert.equal(parent.model, '')
+  assert.equal(parent.provider, 'google')
+  assert.equal(parent.model, 'gemini-fixture-model')
   // The parent link is a bare id; the registry adds the harness prefix.
   assert.equal(child.parentId, 'ag-parent-0001')
   assert.equal(child.title, '')
@@ -1292,6 +1310,40 @@ await check('antigravity reads the transcript from the plain-text extraction', a
   // that sliced by it would collapse these three turns into one. The first value drives the split.
   const assistantTexts = read.messages.filter((message) => message.role === 'assistant').map((message) => message.blocks[0].text)
   assert.deepEqual(assistantTexts, ['answer one', 'answer two', 'answer three'])
+})
+
+await check('antigravity reports the serving model read from the conversation database', async () => {
+  // The model is not in the index: it is inside the per-conversation `gen_metadata` protobuf, behind a
+  // stable length-delimited tag. The fixture also plants a decoy with the same tag and a non-model
+  // payload, so an adapter that took any payload after the tag would report the decoy instead.
+  const scanned = await antigravity.scan({ home })
+  const parent = scanned.sessions.find((entry) => entry.id === 'ag-parent-0001')
+  assert.ok(parent !== undefined, 'the parent row is missing')
+  assert.equal(parent.model, 'gemini-fixture-model')
+  assert.equal(parent.provider, 'google')
+  // The child has no conversation database, so its model is honestly empty rather than copied.
+  const child = scanned.sessions.find((entry) => entry.id === 'ag-child-0002')
+  assert.ok(child !== undefined, 'the child row is missing')
+  assert.equal(child.model, '')
+  // readSession reports the same model, so the forged source marker names it too.
+  const read = await antigravity.readSession('ag-parent-0001', { home })
+  assert.equal(read.model, 'gemini-fixture-model')
+  assert.equal(read.provider, 'google')
+})
+
+await check('antigravity model extraction rejects non-model payloads', () => {
+  const tag = Buffer.from([0x9a, 0x01])
+  const encode = (text) => {
+    const payload = Buffer.from(text, 'utf8')
+    return Buffer.concat([tag, Buffer.from([payload.length]), payload])
+  }
+  assert.equal(antigravity.modelFromBlob(encode('gemini-3.8-flash-tiered')), 'gemini-3.8-flash-tiered')
+  // The shape check is what keeps a body fragment out.
+  assert.equal(antigravity.modelFromBlob(encode('NOT A MODEL ID')), '')
+  assert.equal(antigravity.modelFromBlob(Buffer.from('no tag here')), '')
+  assert.equal(antigravity.modelFromBlob(Buffer.from([])), '')
+  // A truncated blob must not throw.
+  assert.equal(antigravity.modelFromBlob(Buffer.from([0x9a, 0x01])), '')
 })
 
 await check('antigravity refuses unknown and unsafe ids without throwing', async () => {

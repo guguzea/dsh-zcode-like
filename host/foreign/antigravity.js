@@ -29,7 +29,19 @@
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { emptyScan, emptySession, homeOf, isAborted, messageOf, signalOf, textOf, titleOf, toMillis } from './shared.js'
+import {
+  emptyScan,
+  emptySession,
+  homeOf,
+  isAborted,
+  messageOf,
+  readCacheEntry,
+  signalOf,
+  textOf,
+  titleOf,
+  toMillis,
+  writeCacheEntry,
+} from './shared.js'
 
 /** Stable harness id; part of every composite id and of the forged session id. */
 export const harness = 'antigravity'
@@ -214,14 +226,111 @@ export function splitByBoundaries(body, boundaries) {
 }
 
 /**
+ * Read the serving model out of one conversation database.
+ *
+ * The model is not in the index; it lives in the per-conversation `gen_metadata` table, one row per
+ * generation, inside a protobuf blob. Measured on a real store: every row of a conversation carries the
+ * same model under the same length-delimited field tag (`0x9a 0x01`), so the majority value is the
+ * conversation's model. Decoding the whole schema is neither possible nor needed — the tag plus a
+ * lowercase-id shape check is enough, and it is what makes this honest rather than a guess:
+ *
+ *   conversation A: 33/33 rows say `gemini-4-hydrogen`
+ *   conversation B: 19/19 rows say `gemini-3.8-flash-tiered`
+ *
+ * A conversation with no such row reports `''`. A conversation whose rows disagree reports the most
+ * frequent value, which is the honest answer when a conversation changed models mid-flight.
+ *
+ * @param dbPath the per-conversation database path.
+ * @returns the model id, or `''` when it cannot be determined.
+ */
+async function modelOf(dbPath) {
+  if (!existsSync(dbPath)) return ''
+  const opened = await openDatabase(dbPath)
+  if (opened.db === null) return ''
+  try {
+    let rows
+    try {
+      rows = opened.db.prepare('SELECT data FROM gen_metadata').all()
+    } catch {
+      // The table is absent in a conversation that never generated anything.
+      return ''
+    }
+    const counts = new Map()
+    for (const row of rows) {
+      const value = row === null || row === undefined ? undefined : row.data
+      if (value === undefined || value === null) continue
+      // `node:sqlite` returns BLOBs as `Uint8Array`, not `Buffer`.
+      const buffer = value instanceof Uint8Array ? Buffer.from(value.buffer, value.byteOffset, value.byteLength) : null
+      if (buffer === null) continue
+      const found = modelFromBlob(buffer)
+      if (found.length === 0) continue
+      counts.set(found, (counts.get(found) ?? 0) + 1)
+    }
+    let best = ''
+    let bestCount = 0
+    for (const [text, count] of counts) {
+      if (count > bestCount) {
+        best = text
+        bestCount = count
+      }
+    }
+    return best
+  } catch {
+    return ''
+  } finally {
+    closeDatabase(opened.db)
+  }
+}
+
+/** The protobuf field tag that carries the model id in a `gen_metadata` row. */
+const MODEL_FIELD_TAG = Buffer.from([0x9a, 0x01])
+
+/** A model id: lowercase, digits, dots and dashes. This is what keeps a body fragment out. */
+const MODEL_SHAPE = /^[a-z][a-z0-9.-]{2,40}$/
+
+/**
+ * Pull the model id out of one `gen_metadata` protobuf blob.
+ *
+ * Only length-delimited payloads immediately after {@link MODEL_FIELD_TAG} that also match
+ * {@link MODEL_SHAPE} are accepted, and the FIRST such match wins: a conversation's first generation
+ * names the model, while later blobs can embed body text that happens to contain the same byte pair
+ * (observed: the first row of one conversation matched inside its own prompt text).
+ *
+ * @param buffer the raw blob.
+ * @returns the model id, or `''`.
+ */
+export function modelFromBlob(buffer) {
+  try {
+    let pos = 0
+    for (;;) {
+      const at = buffer.indexOf(MODEL_FIELD_TAG, pos)
+      if (at < 0) return ''
+      let cursor = at + MODEL_FIELD_TAG.length
+      if (cursor >= buffer.length) return ''
+      const length = buffer[cursor]
+      cursor += 1
+      // A multi-byte length means this is not the short model field; keep scanning past it.
+      if ((length & 0x80) === 0) {
+        const payload = buffer.subarray(cursor, cursor + length)
+        const text = payload.toString('utf8')
+        if (MODEL_SHAPE.test(text)) return text
+      }
+      pos = at + 1
+    }
+  } catch {
+    return ''
+  }
+}
+
+/**
  * One `conversation_summaries` row, as the contract's summary shape.
  *
  * @param row the raw row object.
  * @param sizeBytes the conversation database size, when known.
- * @param titleById map used to name a parent that the row itself does not describe.
+ * @param model the serving model for this conversation, or `''`.
  * @returns the session summary.
  */
-function summaryOf(row, sizeBytes, titleById) {
+function summaryOf(row, sizeBytes, model) {
   const id = textOf(row.conversation_id)
   const title = titleOf(row.title) ?? titleOf(row.preview) ?? ''
   const workspace = workspacePath(row.workspace_uris)
@@ -237,10 +346,9 @@ function summaryOf(row, sizeBytes, titleById) {
     updatedAt: toMillis(row.last_modified_time) ?? 0,
     // Every step is one user or assistant turn in this store, so the step count IS the message count.
     messageCount: Number.isSafeInteger(stepCount) && stepCount > 0 ? stepCount : 0,
-    // Antigravity does not record the serving model per conversation in the index, and inventing one
-    // would put a lie into the source marker. Reported empty.
-    provider: '',
-    model: '',
+    // Antigravity is Google's harness, so the provider is known even when the exact model is not.
+    provider: 'google',
+    model: typeof model === 'string' ? model : '',
     bytes: Number.isSafeInteger(sizeBytes) && sizeBytes > 0 ? sizeBytes : 0,
   }
 }
@@ -277,25 +385,40 @@ export async function scan(options) {
         .all()
       if (isAborted(signal)) return emptyScan(true, 'aborted')
 
-      // Sizes come from the per-conversation files; a missing file is not an error, it only means the
-      // size hint is unknown.
+      // Sizes and models come from the per-conversation files. Both are cached against the file's own
+      // identity so a second scan does not reopen every database: the model of an existing conversation
+      // does not change, and opening one file per row on every scan would be the whole cost.
       const sizes = new Map()
+      const models = new Map()
       for (const row of rows) {
         const id = textOf(row.conversation_id)
         if (!isSafeId(id)) continue
         const file = conversationDatabasePath(home, id)
+        let info = null
         try {
-          if (existsSync(file)) sizes.set(id, statSync(file).size)
+          if (existsSync(file)) info = statSync(file)
         } catch {
-          /* a size hint is optional */
+          info = null
         }
+        if (info === null) continue
+        sizes.set(id, info.size)
+        const stamp = `antigravity-model-v1:${String(info.size)}:${String(Math.trunc(info.mtimeMs))}`
+        const cached = readCacheEntry(options, `antigravity:model:${id}:${stamp}`)
+        if (typeof cached === 'string') {
+          models.set(id, cached)
+          continue
+        }
+        const model = await modelOf(file)
+        models.set(id, model)
+        writeCacheEntry(options, `antigravity:model:${id}:${stamp}`, model)
+        if (isAborted(signal)) return emptyScan(true, 'aborted')
       }
 
       const sessions = []
       for (const row of rows) {
         const id = textOf(row.conversation_id)
         if (!isSafeId(id)) continue
-        sessions.push(summaryOf(row, sizes.get(id), null))
+        sessions.push(summaryOf(row, sizes.get(id), models.get(id) ?? ''))
       }
       if (sessions.length === 0) return { available: true, error: null, sessions: [] }
       return { available: true, error: null, sessions }
@@ -364,8 +487,10 @@ export async function readSession(id, options) {
         title: titleOf(summary.title) ?? titleOf(summary.preview) ?? '',
         cwd: workspacePath(summary.workspace_uris),
         createdAt: toMillis(summary.last_modified_time) ?? 0,
-        provider: '',
-        model: '',
+        // Same source as `scan`: the conversation's own `gen_metadata`, so the forged source marker
+        // names the model that actually served it.
+        provider: 'google',
+        model: await modelOf(conversationDatabasePath(home, id)),
         truncated: false,
         messages: [],
       }

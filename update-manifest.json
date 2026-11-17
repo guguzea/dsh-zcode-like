@@ -39,8 +39,8 @@
     },
     {
       "path": "host/foreign/antigravity.js",
-      "bytes": 15522,
-      "sha256": "475bb7c3ba67422d646c0cd8c33137f62d2eabdcde51c4be57fcdc934b462433"
+      "bytes": 20170,
+      "sha256": "1fa9d656bb5697200902641ac8edbbf36c596d137353440640b5a1f81caa7ec0"
     },
     {
       "path": "host/foreign/cache.js",
@@ -133,5 +133,5 @@
       "sha256": "5334c7a2f68c7db9dcfd8bdb63f9ad43db85185c076a3b88ff579cbe6458d62a"
     }
   ],
-  "notes": "新增 Antigravity 扫描支持"
+  "notes": "Antigravity 会话显示模型"
 }
